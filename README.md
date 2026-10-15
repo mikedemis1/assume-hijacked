@@ -96,22 +96,28 @@ Details for each: [docs/attacks.md](docs/attacks.md#not-protected-yet).
 ```mermaid
 flowchart LR
     subgraph static
+        direction TB
         secrets[secrets: gitleaks]
         sast[sast: bandit]
         deps[deps: pip-audit]
         lock[lock-check]
         hado[hadolint]
         chk[checkov]
+        secrets ~~~ sast ~~~ deps ~~~ lock ~~~ hado ~~~ chk
     end
     subgraph test
-        pytest[pytest + PostgreSQL service]
+        direction TB
+        pytest["pytest +<br/>PostgreSQL service"]
     end
     subgraph build
+        direction TB
         scan[build-scan: trivy]
-        smoke[smoke: whole stack in dind]
+        smoke["smoke: whole<br/>stack in dind"]
+        scan ~~~ smoke
     end
-    subgraph mutation["mutation (schedule / by hand)"]
-        mut[mutmut, one job per module]
+    subgraph mutation["mutation: schedule or by hand"]
+        direction TB
+        mut["mutmut,<br/>one job per module"]
     end
     static --> test --> build --> mutation
 ```
