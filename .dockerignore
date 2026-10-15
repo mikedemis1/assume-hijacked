@@ -1,0 +1,15 @@
+# Keep secrets and local files out of the build context and the images.
+.env
+.env.*
+# Hidden files and folders (.git, .venv, caches, editor and tool folders) and Markdown
+# docs: the images need none of them.
+.*
+*.md
+context
+wheels
+tests
+*.egg-info
+*.pem
+__pycache__
+reports
+mutants

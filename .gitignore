@@ -1,0 +1,61 @@
+# Terraform: providers and modules downloaded by `terraform init`
+.terraform/
+
+# Terraform state: can contain IDs and secrets in plain text
+*.tfstate
+*.tfstate.*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Variable values (subscription ID, tenant ID, ...). Commit only *.tfvars.example
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Local overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Saved plans: contain full resource values
+*.tfplan
+tfplan
+
+# Terraform CLI config (can hold tokens)
+.terraformrc
+terraform.rc
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local wheels used only when the PyPI index page for a package cannot be fetched
+wheels/
+
+# Private notes: kept on disk, not in the repo
+context/
+
+# Pipeline output (ci/*.sh): scan reports and mutmut's working copy
+reports/
+mutants/
+.cache/

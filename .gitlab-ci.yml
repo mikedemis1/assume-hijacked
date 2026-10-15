@@ -1,0 +1,240 @@
+# Security pipeline for assume-hijacked.
+# Every job runs one script in ci/; each script also runs on a PC (README, "CI pipeline").
+# Keyword reference: https://docs.gitlab.com/ci/yaml/
+#
+# Images: tag for humans, digest for the pull (a tag can move, a digest cannot). Each tag was at
+# least 14 days old on Docker Hub when pinned (checked 2026-10-15). The python and postgres
+# digests are the ones in the Dockerfile and compose.yaml, so CI tests what ships.
+# ci/lib.sh holds the same references for local runs; tests/test_ci.py fails if they differ.
+
+# Branch pipelines, or merge request pipelines when a merge request is open, never both:
+# https://docs.gitlab.com/ci/yaml/workflow/
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+stages:
+  - static    # secrets, sast, deps, lock-check, lint-container-*: no database, no Docker daemon
+  - test      # unit and attack tests against a PostgreSQL service
+  - build     # build-scan (image + trivy) and smoke (the whole stack), Docker-in-Docker
+  - mutation  # mutmut, schedules and by hand only
+
+default:
+  interruptible: true
+
+# pip's download cache for the Python jobs, keyed on the dev lock: a new lock starts a new cache.
+# pip still checks every file against the lock's sha256 (--require-hashes), cached or not.
+# https://docs.gitlab.com/ci/caching/
+.pip-cache:
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    key:
+      files:
+        - requirements-dev.lock
+    paths:
+      - .cache/pip
+
+# --- static -------------------------------------------------------------------------------
+
+secrets:
+  # gitleaks: https://github.com/gitleaks/gitleaks
+  # Full history: GIT_DEPTH 0 turns off the shallow clone and fetches all branches and tags
+  # (https://docs.gitlab.com/ci/pipelines/settings/, "Limit the number of changes fetched during
+  # clone"); ci/secrets.sh also unshallows if a runner ignores it.
+  stage: static
+  image:
+    name: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: "0"
+    GIT_STRATEGY: clone
+  script:
+    - sh ci/secrets.sh
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - reports/gitleaks.json
+
+sast:
+  # bandit: https://bandit.readthedocs.io/en/latest/config.html
+  extends: .pip-cache
+  stage: static
+  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  script:
+    - sh ci/sast.sh
+
+deps:
+  # pip-audit: https://github.com/pypa/pip-audit
+  extends: .pip-cache
+  stage: static
+  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  script:
+    - sh ci/deps.sh
+
+lock-check:
+  # pip-tools: https://pip-tools.readthedocs.io/en/stable/
+  # Non-blocking: a wheel added to PyPI later for a pinned version also shows as a difference.
+  extends: .pip-cache
+  stage: static
+  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  allow_failure: true
+  script:
+    - sh ci/lock-check.sh
+
+lint-container-hadolint:
+  # hadolint: https://github.com/hadolint/hadolint (the -alpine tag has the shell a job needs)
+  stage: static
+  image:
+    name: hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552
+    entrypoint: [""]
+  script:
+    - sh ci/hadolint.sh
+
+lint-container-checkov:
+  # checkov: https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html
+  # Dockerfiles and this pipeline. compose.yaml is not scanned: checkov has no Compose framework.
+  stage: static
+  image:
+    name: bridgecrew/checkov:3.3.21@sha256:9aefe56582004ebdac112fe85c3268dc4d3658231a8f023fb714ba9d29539d53
+    entrypoint: [""]
+  script:
+    - sh ci/checkov.sh
+
+# --- test ---------------------------------------------------------------------------------
+
+# A throwaway PostgreSQL for the job: https://docs.gitlab.com/ci/services/
+# It cannot mount db/init, so ci/db-setup.sh runs db/init/init.sh against it over the network,
+# first swapping the bootstrap password below for a random one. The bootstrap value is not a
+# secret: the database lives for one job, has fake data, and only that job's network reaches it.
+.postgres-service:
+  services:
+    - name: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+      alias: postgres
+      variables:
+        POSTGRES_DB: supplier
+        POSTGRES_PASSWORD: &postgres-bootstrap bootstrap-only-replaced-by-ci-db-setup
+  variables:
+    POSTGRES_BOOTSTRAP_PASSWORD: *postgres-bootstrap
+    # tests/conftest.py runs against this host only because GITLAB_CI=true and it is a bare alias.
+    TEST_DB_SERVICE_HOST: postgres
+
+test:
+  # pytest JUnit report: https://docs.gitlab.com/ci/testing/unit_test_reports/
+  extends:
+    - .postgres-service
+    - .pip-cache
+  stage: test
+  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  script:
+    - sh ci/test.sh
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - reports/junit.xml
+    reports:
+      junit: reports/junit.xml
+
+# --- build --------------------------------------------------------------------------------
+
+# Docker-in-Docker with TLS between the job and the daemon:
+# https://docs.gitlab.com/ci/docker/using_docker_build/
+# https://docs.gitlab.com/ci/docker/docker_in_docker/
+# Needs a runner that allows privileged mode (GitLab.com instance runners do).
+.docker-in-docker:
+  image: docker:29.8.1-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca
+  services:
+    - name: docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0
+      alias: docker
+  # The client settings are explicit, as in the docs' TLS example: the docker image's entrypoint
+  # only sets them if the service's certificates already exist when the job starts.
+  # ci/lib.sh wait_for_docker then waits (at most 30 s) until the daemon answers.
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+
+build-scan:
+  # trivy: https://trivy.dev/latest/docs/configuration/filtering/
+  # Two runs (ci/build-scan.sh): a full report kept as artifacts, including unfixed and
+  # fix_deferred vulnerabilities, and the gate on HIGH/CRITICAL with a fix.
+  # Container scanning report format: https://docs.gitlab.com/ci/yaml/artifacts_reports/
+  extends: .docker-in-docker
+  stage: build
+  script:
+    - sh ci/build-scan.sh
+  artifacts:
+    when: always
+    expire_in: 90 days
+    paths:
+      - reports/trivy-all.json
+      - reports/gl-container-scanning-report.json
+    reports:
+      container_scanning: reports/gl-container-scanning-report.json
+
+smoke:
+  # The whole Compose stack on the job's Docker daemon, then pytest -m smoke (ci/smoke.sh).
+  # A few minutes (builds the image, starts seven containers), so it runs on the default branch,
+  # on schedules and by hand, not on every push of every branch.
+  # Rules: https://docs.gitlab.com/ci/jobs/job_rules/
+  extends: .docker-in-docker
+  stage: build
+  timeout: 30m
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - when: manual
+      allow_failure: true
+  script:
+    - sh ci/smoke.sh
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - reports/smoke-junit.xml
+    reports:
+      junit: reports/smoke-junit.xml
+
+# --- mutation -----------------------------------------------------------------------------
+
+mutation:
+  # mutmut 3: https://mutmut.readthedocs.io/en/latest/ (settings in pyproject.toml [tool.mutmut])
+  # Slow (one mutant at a time, each runs its tests against the database): on schedules
+  # (https://docs.gitlab.com/ci/pipelines/schedules/) and by hand, never on a push.
+  # One job per module (https://docs.gitlab.com/ci/yaml/#parallelmatrix), in parallel, each
+  # with its own database (10 to 15 minutes each when rehearsed locally). Each fails if its
+  # score drops below its "Mutation score baseline" line in README.md.
+  # needs: [] starts it at once, so a red build or smoke job does not skip it on a schedule;
+  # interruptible: false, so a new push does not cancel a long run.
+  extends:
+    - .postgres-service
+    - .pip-cache
+  stage: mutation
+  needs: []
+  interruptible: false
+  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  timeout: 1h
+  parallel:
+    matrix:
+      - MUTANTS:
+          - "app.agent.core*"
+          - "app.agent.guard*"
+          - "app.executor*"
+          - "app.tools.lookup_account*"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - when: manual
+      allow_failure: true
+  script:
+    - sh ci/mutation.sh
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - mutants/mutmut-cicd-stats.json

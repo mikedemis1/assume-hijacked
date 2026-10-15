@@ -1,0 +1,133 @@
+name: assume-hijacked
+
+x-app: &app
+  build:
+    context: .
+    additional_contexts:
+      wheels: ${LOCAL_WHEELS_DIR:-./build/empty}
+    secrets:
+      - pip_cert
+  # Every component of the app sits on the internal network only: it cannot reach the internet.
+  networks:
+    - backend
+  depends_on:
+    db:
+      condition: service_healthy
+
+# Non-secret settings shared by every component that talks to the database.
+# Each service adds ONLY its own DB_PASSWORD_<ROLE> next to this.
+x-db-common: &db-common
+  DB_HOST: db
+  DB_PORT: "5432"
+  DB_NAME: supplier
+  VULNERABLE: ${VULNERABLE:-false}
+
+# Build-time only. Normally an empty file. On a network that intercepts TLS
+# (e.g. antivirus HTTPS scanning), set PIP_CERT_FILE in .env to the CA bundle.
+# LOCAL_WHEELS_DIR (default: an empty folder) can point at a folder of .whl files
+# that are installed first, for packages whose PyPI page cannot be downloaded.
+secrets:
+  pip_cert:
+    file: ${PIP_CERT_FILE:-./build/no-pip-cert.empty}
+
+# backend has no route to the outside (internal: true). The tools, the executor and the agent are only
+# on this network, so a hijacked component cannot send data out or download anything.
+#
+# Docker does not publish a host port for a container that is only on an internal network
+# (checked on Docker Desktop for Windows: `docker port` shows nothing and 127.0.0.1:<port> refuses).
+# The tests and psql on this PC need the db port, so the db is also on `hostaccess`, a normal
+# network that nothing else joins. Only the db has a route out; no tool can reach hostaccess.
+networks:
+  backend:
+    internal: true
+  hostaccess: {}
+
+services:
+  db:
+    # Pinned by digest (multi-arch index). Tag postgres:17-alpine, resolved 2026-10-15.
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    networks:
+      - backend
+      - hostaccess
+    environment:
+      POSTGRES_DB: supplier
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      DB_PASSWORD_TOOL_READ_TICKET: ${DB_PASSWORD_TOOL_READ_TICKET:?set DB_PASSWORD_TOOL_READ_TICKET in .env}
+      DB_PASSWORD_TOOL_LOOKUP_ACCOUNT: ${DB_PASSWORD_TOOL_LOOKUP_ACCOUNT:?set DB_PASSWORD_TOOL_LOOKUP_ACCOUNT in .env}
+      DB_PASSWORD_TOOL_REQUEST_DISCONNECTION: ${DB_PASSWORD_TOOL_REQUEST_DISCONNECTION:?set DB_PASSWORD_TOOL_REQUEST_DISCONNECTION in .env}
+      DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT: ${DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT:?set DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT in .env}
+      DB_PASSWORD_TOOL_SET_TEMP_PROTECTION: ${DB_PASSWORD_TOOL_SET_TEMP_PROTECTION:?set DB_PASSWORD_TOOL_SET_TEMP_PROTECTION in .env}
+      DB_PASSWORD_EXECUTOR: ${DB_PASSWORD_EXECUTOR:?set DB_PASSWORD_EXECUTOR in .env}
+      DB_PASSWORD_APPROVER: ${DB_PASSWORD_APPROVER:?set DB_PASSWORD_APPROVER in .env}
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./db/sql:/db/sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d supplier"]
+      interval: 2s
+      retries: 30
+
+  tool-read-ticket:
+    <<: *app
+    environment:
+      <<: *db-common
+      DB_PASSWORD_TOOL_READ_TICKET: ${DB_PASSWORD_TOOL_READ_TICKET:?set DB_PASSWORD_TOOL_READ_TICKET in .env}
+    command: ["python", "-m", "app.tools.serve", "read_ticket"]
+
+  tool-lookup-account:
+    <<: *app
+    environment:
+      <<: *db-common
+      DB_PASSWORD_TOOL_LOOKUP_ACCOUNT: ${DB_PASSWORD_TOOL_LOOKUP_ACCOUNT:?set DB_PASSWORD_TOOL_LOOKUP_ACCOUNT in .env}
+    command: ["python", "-m", "app.tools.serve", "lookup_account"]
+
+  tool-request-disconnection:
+    <<: *app
+    environment:
+      <<: *db-common
+      DB_PASSWORD_TOOL_REQUEST_DISCONNECTION: ${DB_PASSWORD_TOOL_REQUEST_DISCONNECTION:?set DB_PASSWORD_TOOL_REQUEST_DISCONNECTION in .env}
+    command: ["python", "-m", "app.tools.serve", "request_disconnection"]
+
+  tool-issue-bill-credit:
+    <<: *app
+    environment:
+      <<: *db-common
+      DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT: ${DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT:?set DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT in .env}
+    command: ["python", "-m", "app.tools.serve", "issue_bill_credit"]
+
+  tool-set-temp-protection:
+    <<: *app
+    environment:
+      <<: *db-common
+      DB_PASSWORD_TOOL_SET_TEMP_PROTECTION: ${DB_PASSWORD_TOOL_SET_TEMP_PROTECTION:?set DB_PASSWORD_TOOL_SET_TEMP_PROTECTION in .env}
+    command: ["python", "-m", "app.tools.serve", "set_temp_protection"]
+
+  executor:
+    <<: *app
+    environment:
+      <<: *db-common
+      DB_PASSWORD_EXECUTOR: ${DB_PASSWORD_EXECUTOR:?set DB_PASSWORD_EXECUTOR in .env}
+    # Comes back after a crash or a database restart; the requests wait in the table meanwhile.
+    restart: unless-stopped
+    command: ["python", "-m", "app.executor.main"]
+
+  # No database password here: the agent only talks to the tools.
+  agent:
+    <<: *app
+    profiles: ["manual"]
+    depends_on:
+      - tool-read-ticket
+      - tool-lookup-account
+      - tool-request-disconnection
+      - tool-issue-bill-credit
+      - tool-set-temp-protection
+    environment:
+      VULNERABLE: ${VULNERABLE:-false}
+      TOOL_URL_READ_TICKET: http://tool-read-ticket:8000/mcp
+      TOOL_URL_LOOKUP_ACCOUNT: http://tool-lookup-account:8000/mcp
+      TOOL_URL_REQUEST_DISCONNECTION: http://tool-request-disconnection:8000/mcp
+      TOOL_URL_ISSUE_BILL_CREDIT: http://tool-issue-bill-credit:8000/mcp
+      TOOL_URL_SET_TEMP_PROTECTION: http://tool-set-temp-protection:8000/mcp
+    command: ["python", "-m", "app.agent.main", "1"]
