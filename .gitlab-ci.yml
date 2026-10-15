@@ -1,5 +1,5 @@
 # Security pipeline for assume-hijacked.
-# Every job runs one script in ci/; each script also runs on a PC (README, "CI pipeline").
+# Every job runs one script in ci/; each script also runs on a PC (docs/pipeline.md).
 # Keyword reference: https://docs.gitlab.com/ci/yaml/
 #
 # Images: tag for humans, digest for the pull (a tag can move, a digest cannot). Each tag was at

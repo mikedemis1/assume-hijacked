@@ -45,7 +45,7 @@ trivy() {
 
 # 1. Report, never fails the job: every severity, fixed or not (unfixed, will_not_fix and
 # fix_deferred included), as JSON and in GitLab's container scanning format. The accepted
-# unfixed HIGHs are reviewed from this report (README, "CI pipeline").
+# unfixed HIGHs are reviewed from this report (docs/pipeline.md).
 mkdir -p reports
 trivy image --scanners vuln --exit-code 0 --no-progress --skip-version-check \
     --format json --output /repo/reports/trivy-all.json "$image"

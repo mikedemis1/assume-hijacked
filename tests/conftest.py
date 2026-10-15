@@ -43,7 +43,7 @@ def db_host_allowed(host: str, env: Mapping[str, str]) -> bool:
     to it). The CI case needs all three: GITLAB_CI=true (set by the runner), DB_HOST equal to the
     TEST_DB_SERVICE_HOST named in the pipeline, and a bare alias. An IP address or a dotted name,
     which could point at a shared or production server, is refused even in CI. This stops
-    accidents, not a determined admin (README, "CI pipeline").
+    accidents, not a determined admin (docs/pipeline.md).
     """
     if host in LOCAL_HOSTS:
         return True

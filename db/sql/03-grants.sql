@@ -8,7 +8,7 @@ GRANT USAGE ON SCHEMA public TO
 
 -- Tools: read only the columns their code reads, write requests only. Nobody here can read flags.
 -- Only tool_read_ticket reads the ticket text; the others see who owns a ticket, not what it says.
--- Rows are not scoped: each role still sees these columns for every customer (README, Not protected yet).
+-- Rows are not scoped: each role still sees these columns for every customer (docs/attacks.md, Not protected yet).
 GRANT SELECT (id, body) ON tickets TO tool_read_ticket;
 GRANT SELECT (id, customer_id) ON tickets
     TO tool_lookup_account, tool_request_disconnection, tool_issue_bill_credit;

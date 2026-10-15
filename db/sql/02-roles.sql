@@ -21,7 +21,7 @@ ALTER ROLE executor SET statement_timeout = '30s';
 -- set_temp_protection takes a home's advisory lock until its transaction ends. A tool session
 -- left idle inside a transaction would keep the executor off that home, so it is ended after
 -- 10 s. This only covers an honest tool that hangs: a role can change this setting in its own
--- session, so a hijacked tool can still hold the lock (README, Not protected yet).
+-- session, so a hijacked tool can still hold the lock (docs/attacks.md, Not protected yet).
 ALTER ROLE tool_read_ticket           SET idle_in_transaction_session_timeout = '10s';
 ALTER ROLE tool_lookup_account        SET idle_in_transaction_session_timeout = '10s';
 ALTER ROLE tool_request_disconnection SET idle_in_transaction_session_timeout = '10s';
