@@ -47,9 +47,11 @@ only_mutate = [
 ]
 # Copied next to the mutated code: conftest.py reloads the seed data from db/sql before each test.
 also_copy = ["db/sql/"]
-# These two test files read repository files (locks, Dockerfile, pipeline), not app code; they
-# kill no mutant and would fail in the mutants/ copy, which has none of those files.
+# These test files read repository files (locks, Dockerfile, pipeline, ci/ scripts) or need the
+# running Compose stack (smoke), not app code; they kill no mutant and would fail in the
+# mutants/ copy, which has none of those files. tests/test_ci.py checks this list.
 pytest_add_cli_args_test_selection = [
     "--ignore=tests/test_supply_chain.py",
     "--ignore=tests/test_ci.py",
+    "--ignore=tests/test_smoke.py",
 ]

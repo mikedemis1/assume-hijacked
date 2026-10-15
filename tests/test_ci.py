@@ -236,6 +236,28 @@ def test_every_mutation_module_has_a_job_and_a_baseline():
         )
 
 
+def test_mutmut_does_not_run_the_tests_that_need_the_repository_or_the_stack():
+    """mutmut runs pytest from its mutants/ copy (app/, tests/, pyproject.toml, db/sql/): no ci/,
+    no locks, no Compose stack. These files would fail to collect or to run there (the job once
+    died with "failed to collect stats" on tests/test_smoke.py)."""
+    scope = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mutmut"]
+    ignored = scope["pytest_add_cli_args_test_selection"]
+    for name in ("test_ci", "test_supply_chain", "test_smoke"):
+        assert f"--ignore=tests/{name}.py" in ignored, name
+
+
+def test_smoke_tests_import_without_the_ci_folder(tmp_path):
+    """A copy of tests/test_smoke.py with no ci/ next to it (the mutants/ layout) must still
+    import: pytest collects the whole module before it can skip or ignore anything in it."""
+    (tmp_path / "tests").mkdir()
+    copy = tmp_path / "tests" / "test_smoke.py"
+    copy.write_text((ROOT / "tests" / "test_smoke.py").read_text(encoding="utf-8"), encoding="utf-8")
+    assert not (tmp_path / "ci").exists()
+    spec = importlib.util.spec_from_file_location("smoke_copy_without_ci", copy)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # raised FileNotFoundError when it read ci/lib.sh at import
+
+
 def test_mutation_jobs_start_at_once_and_are_not_cancelled_by_a_push():
     job = _jobs()["mutation"]
     assert job["needs"] == [], "a red build or smoke job must not skip the scheduled mutation run"
@@ -316,8 +338,8 @@ def test_dind_scripts_wait_for_the_daemon_before_building(script, first_docker_u
 def test_smoke_control_container_is_the_pinned_python_image():
     from tests import test_smoke
 
-    assert test_smoke.CONTROL_IMAGE == _lib_images()["PYTHON_IMAGE"]
-    assert DIGEST.search(test_smoke.CONTROL_IMAGE)
+    assert test_smoke.control_image() == _lib_images()["PYTHON_IMAGE"]
+    assert DIGEST.search(test_smoke.control_image())
     assert '"python:3.12-slim"' not in (ROOT / "tests" / "test_smoke.py").read_text(encoding="utf-8")
 
 

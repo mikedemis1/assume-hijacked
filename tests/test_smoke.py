@@ -15,11 +15,17 @@ import pytest
 pytestmark = pytest.mark.smoke
 
 ROOT = Path(__file__).resolve().parent.parent
-# The control container runs the pinned Python image (tag and digest) from ci/lib.sh, the same
-# image the app is built on, never a bare tag that could move.
-CONTROL_IMAGE = re.search(
-    r'^PYTHON_IMAGE="([^"]+)"', (ROOT / "ci" / "lib.sh").read_text(encoding="utf-8"), re.M
-).group(1)
+
+
+@functools.cache
+def control_image():
+    """The control container runs the pinned Python image (tag and digest) from ci/lib.sh, the
+    same image the app is built on, never a bare tag that could move. Read when a test needs it,
+    not at import: mutmut collects this module from its mutants/ copy, which has no ci/ folder."""
+    lib = (ROOT / "ci" / "lib.sh").read_text(encoding="utf-8")
+    return re.search(r'^PYTHON_IMAGE="([^"]+)"', lib, re.M).group(1)
+
+
 # Values of CI that mean "not in CI". Anything else (true, 1, yes) counts as CI.
 CI_OFF = ("", "0", "false", "False", "no")
 
@@ -133,7 +139,7 @@ def control_result(script):
     otherwise the reason it did not."""
     try:
         done = subprocess.run(
-            ["docker", "run", "--rm", CONTROL_IMAGE, "python", "-c", script],
+            ["docker", "run", "--rm", control_image(), "python", "-c", script],
             capture_output=True, text=True, timeout=120, check=False,
         )
     except subprocess.TimeoutExpired:

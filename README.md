@@ -126,9 +126,9 @@ Merge requests from forks run this pipeline with the fork's code. That exposes n
 
 checkov has no Docker Compose framework, so `compose.yaml` is not scanned by a policy tool. Its walls are checked by the smoke tests instead.
 
-Mutation testing changes the code one small edit at a time and reruns the tests. A change no test notices is a gap in a wall's tests. The job runs on schedules and by hand only, one mutant at a time (the tests share one database), as one job per module so the modules run in parallel, each with its own database. Each fails below its baseline, measured on 2026-10-15 with the CI setup rehearsed locally (10 to 15 minutes per module):
+Mutation testing changes the code one small edit at a time and reruns the tests. A change no test notices is a gap in a wall's tests. The job runs on schedules and by hand only, one mutant at a time (the tests share one database), as one job per module so the modules run in parallel, each with its own database. Each fails below its baseline, measured on 2026-10-16 with the CI setup rehearsed locally (10 to 15 minutes per module):
 
-- Mutation score baseline `app.agent.core*`: 91.0%
+- Mutation score baseline `app.agent.core*`: 91.2%
 - Mutation score baseline `app.agent.guard*`: 80.6%
 - Mutation score baseline `app.executor*`: 78.5%
 - Mutation score baseline `app.tools.lookup_account*`: 68.0%
