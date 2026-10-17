@@ -1,15 +1,33 @@
+"""What every tool shares: it reaches the database only through its one api_* function.
+
+A tool never names a ticket. It passes the lease it was given, and the function reads the ticket
+from the lease (db/sql/05-lease.sql). Until the tool gateway signs a token for each call (task
+A7), the lease arrives as a tool argument set by the agent code, never by the model.
+"""
+
 from __future__ import annotations
 
 import psycopg
+from mcp.server.mcpserver.exceptions import ToolError
+
+# The exact text every api_* function raises for an unknown, expired or revoked lease, or one that
+# does not list the calling tool.
+LEASE_INVALID = "lease invalid"
 
 
-def account_for_ticket(conn: psycopg.Connection, ticket_id: int) -> int:
-    """The account of the customer who opened the ticket. The ticket decides, not the LLM."""
-    row = conn.execute(
-        "SELECT a.id AS account_id FROM tickets t "
-        "JOIN accounts a ON a.customer_id = t.customer_id WHERE t.id = %s",
-        (ticket_id,),
-    ).fetchone()
-    if row is None:
-        raise ValueError(f"unknown ticket {ticket_id}")
-    return row["account_id"]
+class LeaseError(ToolError):
+    """The lease is unknown, expired, revoked or does not list this tool.
+
+    A ToolError, so the MCP server passes the text "lease invalid" back to the caller; any other
+    exception reaches it only as "Error executing tool <name>", with no detail."""
+
+
+def call_api(conn: psycopg.Connection, query: str, params: tuple) -> psycopg.Cursor:
+    """Run an api_* call. A refused lease becomes LeaseError("lease invalid") with no database
+    detail (function names, lines), so the agent learns only that the lease was refused."""
+    try:
+        return conn.execute(query, params)
+    except psycopg.errors.RaiseException as err:
+        if err.diag.message_primary == LEASE_INVALID:
+            raise LeaseError(LEASE_INVALID) from None
+        raise

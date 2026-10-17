@@ -1,7 +1,9 @@
 #!/bin/sh
 # Runs once, when the database volume is empty.
-# Roles are cluster-wide, so they are created once. The schema, grants and seed are applied
-# to both databases: supplier (the stack) and supplier_test (the pytest suite only).
+# Roles are cluster-wide, so they are created once. The schema, grants, leases, row-level security
+# and seed are applied to both databases: supplier (the stack) and supplier_test (the pytest suite
+# only). With DEMO_VULNERABLE=1 the stack database also gets 90-vulnerable-demo.sql, the deliberate
+# hole of the VULNERABLE demo; the test database never does (the tests add it when they need it).
 # CI (ci/db-setup.sh) runs this same file against a service container: SQL_DIR points at the
 # checkout and psql takes the server from PGHOST/PGPASSWORD.
 set -eu
@@ -17,6 +19,10 @@ run() {  # run <database> <file>
          -v pw_tool_set_temp_protection="$DB_PASSWORD_TOOL_SET_TEMP_PROTECTION" \
          -v pw_executor="$DB_PASSWORD_EXECUTOR" \
          -v pw_approver="$DB_PASSWORD_APPROVER" \
+         -v pw_gateway="$DB_PASSWORD_GATEWAY" \
+         -v pw_risk_engine="$DB_PASSWORD_RISK_ENGINE" \
+         -v pw_dispatcher="$DB_PASSWORD_DISPATCHER" \
+         -v pw_register_sync="$DB_PASSWORD_REGISTER_SYNC" \
          --username "$POSTGRES_USER" --dbname "$1" -f "$2"
 }
 
@@ -25,7 +31,10 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
 
 run "$POSTGRES_DB" "$SQL_DIR/02-roles.sql"
 for database in "$POSTGRES_DB" supplier_test; do
-    for f in 01-schema.sql 03-grants.sql 04-seed.sql; do
+    for f in 01-schema.sql 03-grants.sql 05-lease.sql 08-rls.sql 04-seed.sql; do
         run "$database" "$SQL_DIR/$f"
     done
 done
+if [ "${DEMO_VULNERABLE:-0}" = "1" ]; then
+    run "$POSTGRES_DB" "$SQL_DIR/90-vulnerable-demo.sql"
+fi

@@ -1,6 +1,6 @@
 # CI only, sourced by ci/test.sh and ci/mutation.sh: `. ci/db-setup.sh`.
 # Turns the job's empty PostgreSQL service container (alias TEST_DB_SERVICE_HOST) into what
-# db/init/init.sh builds for Compose: the eight roles, supplier and supplier_test.
+# db/init/init.sh builds for Compose: the roles, supplier and supplier_test.
 # A service container cannot mount the init scripts, so the job runs the same init.sh over the
 # network: https://docs.gitlab.com/ci/services/
 #
@@ -39,7 +39,8 @@ export PGPASSWORD="$admin_password" POSTGRES_PASSWORD="$admin_password"
 unset admin_password
 
 for role in TOOL_READ_TICKET TOOL_LOOKUP_ACCOUNT TOOL_REQUEST_DISCONNECTION \
-            TOOL_ISSUE_BILL_CREDIT TOOL_SET_TEMP_PROTECTION EXECUTOR APPROVER; do
+            TOOL_ISSUE_BILL_CREDIT TOOL_SET_TEMP_PROTECTION EXECUTOR APPROVER \
+            GATEWAY RISK_ENGINE DISPATCHER REGISTER_SYNC; do
     eval "export DB_PASSWORD_$role=$(rand_hex)"
 done
 

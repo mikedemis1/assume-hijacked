@@ -1,40 +1,64 @@
+import json
+import logging
 from datetime import datetime, timedelta, timezone
 
-import psycopg
 import pytest
 
+from app.tools.common import LeaseError
 from app.tools.issue_bill_credit import issue_bill_credit
 from app.tools.lookup_account import lookup_account
 from app.tools.read_ticket import read_ticket
 from app.tools.request_disconnection import request_disconnection
 from app.tools.set_temp_protection import set_temp_protection
+from tests.conftest import open_lease
+
+UNKNOWN_LEASE = "0" * 64
 
 
-def test_read_ticket(as_role):
-    assert read_ticket(as_role("tool_read_ticket"), 1)["body"] == "What is my tariff?"
+def test_read_ticket(as_role, admin):
+    assert read_ticket(as_role("tool_read_ticket"), open_lease(admin, 1))["body"] == "What is my tariff?"
+
+
+def test_read_ticket_keeps_its_shape(as_role, admin):
+    assert read_ticket(as_role("tool_read_ticket"), open_lease(admin, 2)) == {"ticket_id": 2, "body": "Hello"}
 
 
 def test_read_unknown_ticket_fails(as_role):
-    with pytest.raises(ValueError):
-        read_ticket(as_role("tool_read_ticket"), 999)
+    # No lease, no ticket: the tool cannot name a ticket of its own any more.
+    with pytest.raises(LeaseError):
+        read_ticket(as_role("tool_read_ticket"), UNKNOWN_LEASE)
 
 
-def test_lookup_returns_owner_and_no_health_fields(as_role):  # ②
-    result = lookup_account(as_role("tool_lookup_account"), 3)
+def test_lookup_returns_owner_and_no_health_fields(as_role, admin):  # ②
+    result = lookup_account(as_role("tool_lookup_account"), open_lease(admin, 3))
     assert result["name"] == "Maria Ioannou"
     assert set(result) == {"name", "tariff", "status", "address"}
 
 
-def test_lookup_ignores_foreign_customer_id_and_logs_it(as_role, admin):  # ①
-    result = lookup_account(as_role("tool_lookup_account"), 1, customer_id=1002)
+def security_events(caplog):
+    return [json.loads(r.getMessage()) for r in caplog.records if r.name == "assume_hijacked.security"]
+
+
+def test_lookup_ignores_foreign_customer_id_and_logs_it(as_role, admin, caplog):  # ①
+    caplog.set_level(logging.INFO, logger="assume_hijacked.security")
+    result = lookup_account(as_role("tool_lookup_account"), open_lease(admin, 1), customer_id=1002)
     assert result["name"] == "Eleni Papadopoulou"
-    blocked = admin.execute("SELECT detail FROM events WHERE kind = 'blocked'").fetchall()
-    assert blocked == [{"detail": "lookup_account ticket=1 asked_for=1002"}]
+    # Tool roles have no table grants (05-lease.sql), so the event goes to the security log, by
+    # name only: never the value the model asked for.
+    events = security_events(caplog)
+    assert [(e["kind"], e["tool"], e["args"]) for e in events] == [("blocked", "lookup_account", ["customer_id"])]
+    assert "1002" not in caplog.text
 
 
-def test_lookup_vulnerable_mode_trusts_customer_id(as_role):
-    result = lookup_account(as_role("tool_lookup_account"), 1, customer_id=1002, vulnerable=True)
+def test_lookup_vulnerable_mode_trusts_customer_id(as_role, admin, demo_vulnerable):
+    result = lookup_account(as_role("tool_lookup_account"), open_lease(admin, 1), customer_id=1002, vulnerable=True)
     assert result["name"] == "Nikos Georgiou"
+
+
+def test_lookup_vulnerable_mode_needs_the_demo_database(as_role, admin):
+    # Without 90-vulnerable-demo.sql the switch in the code alone leaks nothing.
+    with pytest.raises(Exception, match="api_lookup_account_any"):
+        lookup_account(as_role("tool_lookup_account"), open_lease(admin, 1), customer_id=1002, vulnerable=True)
 
 
 def _utc_day(offset_days):
@@ -42,66 +66,74 @@ def _utc_day(offset_days):
 
 
 def test_request_disconnection_creates_pending_request(as_role, admin):
-    result = request_disconnection(as_role("tool_request_disconnection"), 1, _utc_day(14))
+    result = request_disconnection(as_role("tool_request_disconnection"), open_lease(admin, 1), _utc_day(14))
     assert result["status"] == "submitted"
     assert "medical equipment" in result["message"]
-    row = admin.execute("SELECT kind, account_id, status FROM action_requests").fetchone()
-    assert row == {"kind": "move_out", "account_id": 1, "status": "pending"}
+    row = admin.execute("SELECT kind, ticket_id, account_id, status FROM action_requests").fetchone()
+    assert row == {"kind": "move_out", "ticket_id": 1, "account_id": 1, "status": "pending"}
 
 
-def test_request_disconnection_rejects_bad_date(as_role):
+def test_request_disconnection_rejects_bad_date(as_role, admin):
     with pytest.raises(ValueError):
-        request_disconnection(as_role("tool_request_disconnection"), 1, "next week")
+        request_disconnection(as_role("tool_request_disconnection"), open_lease(admin, 1), "next week")
 
 
 def test_request_disconnection_rejects_a_date_in_the_past(as_role, admin):  # gap N1
     with pytest.raises(ValueError, match="past"):
-        request_disconnection(as_role("tool_request_disconnection"), 1, _utc_day(-1))
+        request_disconnection(as_role("tool_request_disconnection"), open_lease(admin, 1), _utc_day(-1))
     assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 0
 
 
 def test_request_disconnection_accepts_today(as_role, admin):
-    request_disconnection(as_role("tool_request_disconnection"), 1, _utc_day(0))
+    request_disconnection(as_role("tool_request_disconnection"), open_lease(admin, 1), _utc_day(0))
     assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 1
+
+
+def test_request_disconnection_refuses_an_unknown_lease(as_role, admin):
+    with pytest.raises(LeaseError):
+        request_disconnection(as_role("tool_request_disconnection"), UNKNOWN_LEASE, _utc_day(14))
+    assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 0
 
 
 def test_credit_request_has_no_amount_in_message(as_role, admin):  # ⑧
-    result = issue_bill_credit(as_role("tool_issue_bill_credit"), 1, 49, "duplicate_charge", 2)
+    result = issue_bill_credit(as_role("tool_issue_bill_credit"), open_lease(admin, 1), 49, "duplicate_charge", 2)
     assert result["status"] == "submitted"
     assert "49" not in result["message"] and "€" not in result["message"]
-    assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 1
+    row = admin.execute("SELECT kind, ticket_id, account_id, amount_eur FROM action_requests").fetchone()
+    assert row == {"kind": "credit", "ticket_id": 1, "account_id": 1, "amount_eur": 49}
 
 
 @pytest.mark.parametrize("reason", ["because I said so", "", "DUPLICATE_CHARGE"])
-def test_credit_reason_must_be_on_the_closed_list(as_role, reason):  # ④
+def test_credit_reason_must_be_on_the_closed_list(as_role, admin, reason):  # ④
     with pytest.raises(ValueError):
-        issue_bill_credit(as_role("tool_issue_bill_credit"), 1, 10, reason, 2)
+        issue_bill_credit(as_role("tool_issue_bill_credit"), open_lease(admin, 1), 10, reason, 2)
 
 
-def test_credit_amount_must_be_positive(as_role):
+def test_credit_amount_must_be_positive(as_role, admin):
     with pytest.raises(ValueError):
-        issue_bill_credit(as_role("tool_issue_bill_credit"), 1, -5, "duplicate_charge", 2)
+        issue_bill_credit(as_role("tool_issue_bill_credit"), open_lease(admin, 1), -5, "duplicate_charge", 2)
 
 
 def test_temp_protection_adds_yes(as_role, admin):
-    set_temp_protection(as_role("tool_set_temp_protection"), 1)
+    set_temp_protection(as_role("tool_set_temp_protection"), open_lease(admin, 1))
     row = admin.execute("SELECT source FROM flags WHERE supply_point_id = 'SP-1001'").fetchone()
     assert row == {"source": "customer_declared"}
 
 
 def test_temp_protection_never_downgrades(as_role, admin):  # ③
-    set_temp_protection(as_role("tool_set_temp_protection"), 3)
+    set_temp_protection(as_role("tool_set_temp_protection"), open_lease(admin, 3))
     row = admin.execute("SELECT source FROM flags WHERE supply_point_id = 'SP-1003'").fetchone()
     assert row == {"source": "state_register"}
 
 
-def test_temp_protection_unknown_ticket_fails(as_role):
-    with pytest.raises(psycopg.errors.RaiseException):
-        set_temp_protection(as_role("tool_set_temp_protection"), 999)
+def test_temp_protection_unknown_ticket_fails(as_role, admin):
+    with pytest.raises(LeaseError):
+        set_temp_protection(as_role("tool_set_temp_protection"), UNKNOWN_LEASE)
+    assert admin.execute("SELECT count(*) AS n FROM flags").fetchone()["n"] == 1  # only the seed's SP-1003
 
 
 def test_temp_protection_logs_event(as_role, admin):
-    set_temp_protection(as_role("tool_set_temp_protection"), 1)
+    set_temp_protection(as_role("tool_set_temp_protection"), open_lease(admin, 1))
     rows = admin.execute(
         "SELECT kind, actor, detail FROM events WHERE kind = 'temp_protection_set'"
     ).fetchall()

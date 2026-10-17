@@ -14,7 +14,8 @@ if in_ci; then
     {
         echo "POSTGRES_PASSWORD=$(rand_hex)"
         for role in TOOL_READ_TICKET TOOL_LOOKUP_ACCOUNT TOOL_REQUEST_DISCONNECTION \
-                    TOOL_ISSUE_BILL_CREDIT TOOL_SET_TEMP_PROTECTION EXECUTOR APPROVER; do
+                    TOOL_ISSUE_BILL_CREDIT TOOL_SET_TEMP_PROTECTION EXECUTOR APPROVER \
+                    GATEWAY RISK_ENGINE DISPATCHER REGISTER_SYNC; do
             echo "DB_PASSWORD_$role=$(rand_hex)"
         done
         echo "DB_HOST=127.0.0.1"

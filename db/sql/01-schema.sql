@@ -65,21 +65,25 @@ CREATE TABLE action_requests (
 -- the customer who opened the ticket: the ticket decides, not the tool or the LLM.
 -- A move-out needs a date that is today or later (UTC, the same date the order trigger uses),
 -- or it would wait at notice_sent forever (NULL) or skip the customer's real date (past).
--- Runs as the inserting role, which already has SELECT on tickets (id, customer_id) and accounts.
+-- Tools file requests only through api_request_moveout / api_request_credit (05-lease.sql), which
+-- already set the kind and take the account from the lease's ticket; this is the backstop behind
+-- them. It checks session_user, the role that logged in: inside those SECURITY DEFINER functions
+-- current_user is their owner (api_owner), and a login role cannot change its session_user.
+-- Runs as the inserting role (current_user), which can read tickets and accounts: api_owner.
 CREATE FUNCTION check_action_request() RETURNS trigger
 LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 DECLARE
     owner_account int;
 BEGIN
-    IF (current_user = 'tool_issue_bill_credit' AND NEW.kind <> 'credit')
-       OR (current_user = 'tool_request_disconnection' AND NEW.kind <> 'move_out') THEN
-        RAISE EXCEPTION '% cannot file a % request', current_user, NEW.kind;
+    IF (session_user = 'tool_issue_bill_credit' AND NEW.kind <> 'credit')
+       OR (session_user = 'tool_request_disconnection' AND NEW.kind <> 'move_out') THEN
+        RAISE EXCEPTION '% cannot file a % request', session_user, NEW.kind;
     END IF;
     IF NEW.kind = 'move_out'
        AND (NEW.move_out_date IS NULL OR NEW.move_out_date < (now() AT TIME ZONE 'UTC')::date) THEN
         RAISE EXCEPTION 'a move-out needs a date of today or later, got %', NEW.move_out_date;
     END IF;
-    IF current_user IN ('tool_issue_bill_credit', 'tool_request_disconnection') THEN
+    IF session_user IN ('tool_issue_bill_credit', 'tool_request_disconnection') THEN
         SELECT a.id INTO owner_account
         FROM public.tickets t JOIN public.accounts a ON a.customer_id = t.customer_id
         WHERE t.id = NEW.ticket_id;
@@ -197,7 +201,7 @@ CREATE TABLE disconnection_orders (
 -- taken in UTC so a session cannot move it with SET TimeZone; Greece is ahead of UTC, so the
 -- order can only come later than local midnight, never earlier.
 -- Runs as the inserting role (executor), which can read every table used here.
--- The advisory lock is the same one set_temp_protection takes, so a flag being added and an
+-- The advisory lock is the same one api_set_temp_protection takes, so a flag being added and an
 -- order being written for the same home cannot interleave.
 CREATE FUNCTION check_disconnection_order() RETURNS trigger
 LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
@@ -258,23 +262,4 @@ CREATE TABLE events (
     detail     text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now()
 );
-
--- The only way into flags (decision 3): adds YES, never removes or downgrades.
-CREATE FUNCTION set_temp_protection(p_ticket_id int) RETURNS text
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
-DECLARE
-    sp text;
-BEGIN
-    SELECT a.supply_point_id INTO sp
-    FROM public.tickets t JOIN public.accounts a ON a.customer_id = t.customer_id
-    WHERE t.id = p_ticket_id;
-    IF sp IS NULL THEN
-        RAISE EXCEPTION 'unknown ticket %', p_ticket_id;
-    END IF;
-    PERFORM pg_advisory_xact_lock(hashtext(sp));  -- same lock as check_disconnection_order
-    INSERT INTO public.flags (supply_point_id, source) VALUES (sp, 'customer_declared')
-    ON CONFLICT (supply_point_id) DO NOTHING;
-    INSERT INTO public.events (kind, actor, detail)
-    VALUES ('temp_protection_set', session_user, sp);
-    RETURN 'recorded';
-END $$;
+-- The only way into flags from a tool is api_set_temp_protection (05-lease.sql).

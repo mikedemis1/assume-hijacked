@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 
 import psycopg
 
-from app.tools.common import account_for_ticket
+from app.tools.common import call_api
 
 SUBMITTED = (
     "Your request has been submitted and is being checked. "
@@ -15,15 +15,11 @@ SUBMITTED = (
 )
 
 
-def request_disconnection(conn: psycopg.Connection, ticket_id: int, move_out_date: str) -> dict:
+def request_disconnection(conn: psycopg.Connection, lease: str, move_out_date: str) -> dict:
     day = date.fromisoformat(move_out_date)
     # UTC, like the order trigger. Greece is ahead of UTC, so a customer's "today" always passes.
     if day < datetime.now(timezone.utc).date():
         raise ValueError("move-out date is in the past")
-    account_id = account_for_ticket(conn, ticket_id)
-    conn.execute(
-        "INSERT INTO action_requests (kind, ticket_id, account_id, move_out_date) "
-        "VALUES ('move_out', %s, %s, %s)",
-        (ticket_id, account_id, day),
-    )
+    # The account is the lease's ticket owner's, chosen inside the database function.
+    call_api(conn, "SELECT api_request_moveout(%s, %s)", (lease, day))
     return {"status": "submitted", "message": SUBMITTED}

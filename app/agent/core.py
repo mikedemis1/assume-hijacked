@@ -12,7 +12,8 @@ from app.agent.llm import Reply
 MAX_STEPS = 10
 GIVE_UP = "We could not complete your request automatically. A colleague will contact you."
 
-# Arguments the LLM may set. ticket_id is always set by this code (decision 1).
+# Arguments the LLM may set. The lease (which names the ticket) is always set by this code, and a
+# ticket_id or lease from the model is dropped (decision 1).
 ALLOWED_ARGS = {
     "read_ticket": set(),
     "lookup_account": set(),
@@ -57,8 +58,11 @@ class Agent:
         self.gateway = gateway
         self.vulnerable = vulnerable
 
-    def handle_ticket(self, ticket_id: int) -> str:
-        body = _ticket_body(self.gateway.call("read_ticket", {"ticket_id": ticket_id}))
+    def handle_ticket(self, ticket_id: int, lease: str) -> str:
+        """Answer one ticket. `lease` is the lease opened for this ticket; it goes to every tool
+        and never into the transcript, so the model never sees it. `ticket_id` is for the
+        security log only: the tools take the ticket from the lease."""
+        body = _ticket_body(self.gateway.call("read_ticket", {"lease": lease}))
         if body is None:
             security_event("ticket_unreadable", ticket_id=ticket_id)
             return GIVE_UP
@@ -74,7 +78,7 @@ class Agent:
                     security_event("reply_blocked", ticket_id=ticket_id, reason=reason)
                     return _finish(SAFE_REPLY, submitted, credit_asked)
                 return _finish(action.text, submitted, credit_asked)
-            args, dropped = self._safe_args(action.name, action.args, ticket_id)
+            args, dropped = self._safe_args(action.name, action.args, lease)
             if args is None:
                 security_event("unknown_tool", ticket_id=ticket_id, name=_name(action.name))
                 result = f"ERROR: unknown tool {action.name}"
@@ -98,7 +102,7 @@ class Agent:
         security_event("max_steps", ticket_id=ticket_id)
         return _finish(GIVE_UP, submitted, credit_asked)
 
-    def _safe_args(self, name: str, args: dict, ticket_id: int) -> tuple[dict | None, list[str]]:
+    def _safe_args(self, name: str, args: dict, lease: str) -> tuple[dict | None, list[str]]:
         """The arguments to send, and the names of the ones the model sent that were dropped."""
         if name not in ALLOWED_ARGS:
             return None, []
@@ -109,7 +113,7 @@ class Agent:
             args = {}
         clean = {key: value for key, value in args.items() if key in allowed}
         dropped = [key for key in args if key not in allowed]
-        clean["ticket_id"] = ticket_id
+        clean["lease"] = lease
         return clean, dropped
 
 

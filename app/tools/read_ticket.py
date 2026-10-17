@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import psycopg
 
+from app.tools.common import call_api
 
-def read_ticket(conn: psycopg.Connection, ticket_id: int) -> dict:
-    row = conn.execute("SELECT id, body FROM tickets WHERE id = %s", (ticket_id,)).fetchone()
+
+def read_ticket(conn: psycopg.Connection, lease: str) -> dict:
+    row = call_api(conn, "SELECT id, body FROM api_read_ticket(%s)", (lease,)).fetchone()
     if row is None:
-        raise ValueError(f"unknown ticket {ticket_id}")
+        raise ValueError("the lease's ticket was not found")
     return {"ticket_id": row["id"], "body": row["body"]}

@@ -11,7 +11,10 @@ import re
 import subprocess
 from pathlib import Path
 
+import psycopg
 import pytest
+
+from tests.conftest import TOOLS
 
 pytestmark = pytest.mark.smoke
 
@@ -107,13 +110,34 @@ DB_HOST_PORT = int(os.environ.get("DB_PORT", "5432"))
 TOOL_PORT = 8000
 
 
-def compose(*args, timeout=300):
+def compose(*args, timeout=300, env=None):
     # check=False: when something fails, the assert message shows stderr instead of a bare traceback.
-    return subprocess.run(["docker", "compose", *args], capture_output=True, text=True, timeout=timeout, check=False)
+    return subprocess.run(
+        ["docker", "compose", *args], capture_output=True, text=True, timeout=timeout, check=False, env=env
+    )
+
+
+def open_stack_lease(ticket_id):
+    """A lease for the ticket in the stack database. The dispatcher's job once it exists (task A9);
+    until then the test opens it as the database admin, over the published port."""
+    with psycopg.connect(
+        host=os.environ.get("DB_HOST", "127.0.0.1"),
+        port=DB_HOST_PORT,
+        dbname="supplier",
+        user="postgres",
+        password=os.environ["POSTGRES_PASSWORD"],
+        autocommit=True,
+    ) as conn:
+        return conn.execute("SELECT open_lease(%s, %s, NULL)", (ticket_id, list(TOOLS))).fetchone()[0]
 
 
 def run_agent(ticket_id):
-    done = compose("run", "--rm", "agent", "python", "-m", "app.agent.main", str(ticket_id))
+    # `-e AGENT_LEASE` with no value: Compose takes it from this process's environment, so the
+    # lease is not on any command line.
+    env = {**os.environ, "AGENT_LEASE": open_stack_lease(ticket_id)}
+    done = compose(
+        "run", "--rm", "-e", "AGENT_LEASE", "agent", "python", "-m", "app.agent.main", str(ticket_id), env=env
+    )
     assert done.returncode == 0, f"agent exited {done.returncode}\nstdout: {done.stdout}\nstderr: {done.stderr}"
     return done
 

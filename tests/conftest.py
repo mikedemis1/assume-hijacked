@@ -74,9 +74,18 @@ def pytest_configure():
 from app import config  # noqa: E402  (after .env is loaded)
 
 SEED_SQL = (ROOT / "db" / "sql" / "04-seed.sql").read_text(encoding="utf-8")
+VULNERABLE_SQL = (ROOT / "db" / "sql" / "90-vulnerable-demo.sql").read_text(encoding="utf-8")
 ALL_TABLES = (
     "events, disconnection_orders, occupier_notices, credits, approvals, action_requests, "
-    "register_sync, flags, charges, tickets, accounts, supply_points, customers"
+    "leases, register_sync, flags, charges, tickets, accounts, supply_points, customers"
+)
+# The tool names a lease can list (the leases.allowed_tools check in db/sql/05-lease.sql).
+TOOLS = (
+    "read_ticket",
+    "lookup_account",
+    "request_disconnection",
+    "issue_bill_credit",
+    "set_temp_protection",
 )
 
 
@@ -93,10 +102,9 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-@pytest.fixture
-def admin(settings):
+def admin_connect(settings) -> psycopg.Connection:
     """Superuser connection. Test setup only; no component uses it."""
-    conn = psycopg.connect(
+    return psycopg.connect(
         host=settings.db_host,
         port=settings.db_port,
         dbname=settings.db_name,
@@ -105,8 +113,32 @@ def admin(settings):
         autocommit=True,
         row_factory=dict_row,
     )
+
+
+@pytest.fixture
+def admin(settings):
+    conn = admin_connect(settings)
     yield conn
     conn.close()
+
+
+def open_lease(admin, ticket: int, tools=TOOLS, bound_pod: str | None = None) -> str:
+    """Open a lease as the dispatcher will (task A9). The superuser may call open_lease."""
+    return admin.execute(
+        "SELECT open_lease(%s, %s, %s) AS lease", (ticket, list(tools), bound_pod)
+    ).fetchone()["lease"]
+
+
+@pytest.fixture
+def demo_vulnerable(admin):
+    """The demo-only function from 90-vulnerable-demo.sql, for the tests of the VULNERABLE switch.
+    db/init/init.sh never applies it to the test database, so it is added here and dropped after."""
+    signature = "api_lookup_account_any(text,integer)"
+    existed = admin.execute("SELECT to_regprocedure(%s) IS NOT NULL AS ok", (signature,)).fetchone()["ok"]
+    admin.execute(VULNERABLE_SQL)
+    yield
+    if not existed:
+        admin.execute(f"DROP FUNCTION {signature}")
 
 
 def reset_db(conn) -> None:

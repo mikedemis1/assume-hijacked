@@ -7,6 +7,7 @@ import pytest
 from app.executor.approvals import approve, approver_count
 from app.executor.moveouts import process_moveouts
 from app.tools.set_temp_protection import set_temp_protection
+from tests.conftest import open_lease
 
 # The order trigger uses the database clock, so the tests never jump time with the executor's
 # `now`. They back-date rows as admin instead: notices, approvals, the register sync.
@@ -169,7 +170,7 @@ def test_flag_raised_after_notice_stops_order(admin, as_role, settings, now):
     ex, staff = as_role("executor"), as_role("approver")
     rid = add_moveout(admin)
     process_moveouts(ex, settings, now)
-    set_temp_protection(as_role("tool_set_temp_protection"), 1)
+    set_temp_protection(as_role("tool_set_temp_protection"), open_lease(admin, 1))
     back_date_notice(admin, rid, settings.occupier_wait_hours + 1)
     approve(staff, rid, "staff.anna")
     process_moveouts(ex, settings, now)
@@ -190,7 +191,8 @@ def test_flood_is_rate_limited_and_alerts(admin, as_role, settings, now):  # ⑤
 
 
 def test_forged_alert_does_not_silence_the_flood_alert(admin, as_role, settings, now):
-    as_role("tool_lookup_account").execute(
+    # Tools cannot write events at all any more (05-lease.sql); the approver still can.
+    as_role("approver").execute(
         "INSERT INTO events (kind, detail) VALUES ('ALERT', 'move-out rate limit reached')"
     )
     for _ in range(50):
@@ -396,14 +398,15 @@ def test_executor_cannot_choose_the_time_of_a_notice_or_order(admin, as_role, ta
         )
 
 
-def test_flag_waits_while_the_executor_holds_the_home(as_role):
+def test_flag_waits_while_the_executor_holds_the_home(admin, as_role):
     ex, tool = as_role("executor"), as_role("tool_set_temp_protection")
+    lease = open_lease(admin, 1)
     tool.execute("SET lock_timeout = '200ms'")
     with ex.transaction():
         ex.execute("SELECT pg_advisory_xact_lock(hashtext('SP-1001'))")
         with pytest.raises(psycopg.errors.LockNotAvailable):
-            set_temp_protection(tool, 1)
-    set_temp_protection(tool, 1)  # lock released at commit
+            set_temp_protection(tool, lease)
+    set_temp_protection(tool, lease)  # lock released at commit
 
 
 def test_a_held_home_lock_fails_that_request_and_the_batch_goes_on(admin, as_role, settings, now):  # gap I9
