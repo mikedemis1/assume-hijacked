@@ -33,6 +33,16 @@ output "spoke_subnet_ids" {
   value       = { for name, s in azurerm_subnet.spoke : name => s.id }
 }
 
+output "spoke_subnet_address_prefixes" {
+  description = "Spoke subnet address prefixes by name. infra/lab uses them as firewall rule sources."
+  value       = local.spoke_subnets
+}
+
+output "aks_pod_cidr" {
+  description = "Overlay pod range the AKS NSG rules allow. infra/lab uses it as the cluster's pod_cidr, so the two cannot drift."
+  value       = var.aks_pod_cidr
+}
+
 output "aks_subnet_ids" {
   description = "The two AKS subnets as a list: the value for infra/base `spoke_subnet_ids` (Key Vault firewall)."
   value       = [for n in local.aks_subnet_names : azurerm_subnet.spoke[n].id]

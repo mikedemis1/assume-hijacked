@@ -22,7 +22,7 @@ locals {
   aks_common_rules = {
     allow-aks-subnets-in = {
       priority         = 100, direction = "Inbound", access = "Allow", protocol = "*"
-      dest_port_ranges = ["*"], source_prefixes = local.aks_prefixes, dest_prefixes = ["*"]
+      dest_port_ranges = ["*"], source_prefixes = local.aks_cluster_prefixes, dest_prefixes = ["*"]
     }
     allow-load-balancer-in = {
       priority         = 110, direction = "Inbound", access = "Allow", protocol = "*"
@@ -38,7 +38,7 @@ locals {
     }
     allow-aks-subnets-out = {
       priority         = 100, direction = "Outbound", access = "Allow", protocol = "*"
-      dest_port_ranges = ["*"], source_prefixes = ["*"], dest_prefixes = local.aks_prefixes
+      dest_port_ranges = ["*"], source_prefixes = ["*"], dest_prefixes = local.aks_cluster_prefixes
     }
     allow-postgres-to-pe = {
       priority         = 110, direction = "Outbound", access = "Allow", protocol = "Tcp"

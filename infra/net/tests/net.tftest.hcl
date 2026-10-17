@@ -608,6 +608,51 @@ run "outputs_give_c3_what_it_needs" {
     condition     = output.hub_vnet_id == azurerm_virtual_network.hub.id && output.spoke_vnet_id == azurerm_virtual_network.spoke.id
     error_message = "VNet IDs must be published."
   }
+
+  assert {
+    condition     = output.spoke_subnet_address_prefixes["snet-aks-system"] == "10.20.0.0/24" && output.spoke_subnet_address_prefixes["snet-aks-sandbox"] == "10.20.1.0/24"
+    error_message = "The AKS subnet prefixes must be published (infra/lab firewall rule sources)."
+  }
+}
+
+run "aks_nsgs_allow_overlay_pod_traffic" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for n in ["snet-aks-system", "snet-aks-sandbox"] : anytrue([
+        for r in azurerm_network_security_group.spoke[n].security_rule :
+        r.direction == "Inbound" && r.access == "Allow" && contains(r.source_address_prefixes, "10.244.0.0/16") && r.priority < 4000
+        ]) && anytrue([
+        for r in azurerm_network_security_group.spoke[n].security_rule :
+        r.direction == "Outbound" && r.access == "Allow" && contains(r.destination_address_prefixes, "10.244.0.0/16") && r.priority < 4096
+      ])
+    ])
+    error_message = "Overlay pod traffic is not encapsulated: both AKS NSGs must allow the pod range in and out before their deny rules."
+  }
+
+  assert {
+    condition = alltrue([
+      for r in azurerm_network_security_group.spoke["snet-pe"].security_rule :
+      !contains(r.source_address_prefixes, "10.244.0.0/16")
+    ])
+    error_message = "The private endpoint subnet sees node IPs only (pods are SNATed); it must not admit the pod range."
+  }
+
+  assert {
+    condition     = output.aks_pod_cidr == "10.244.0.0/16"
+    error_message = "The pod range is published for infra/lab."
+  }
+}
+
+run "pod_range_inside_the_vnets_is_refused" {
+  command = plan
+
+  variables {
+    aks_pod_cidr = "10.20.0.0/16"
+  }
+
+  expect_failures = [var.aks_pod_cidr]
 }
 
 run "only_north_europe_is_accepted" {

@@ -30,6 +30,13 @@ locals {
   aks_subnet_names = ["snet-aks-system", "snet-aks-sandbox"]
   aks_prefixes     = [for n in local.aks_subnet_names : local.spoke_subnets[n]]
 
+  # Node subnets plus the overlay pod range. Azure CNI Overlay does not encapsulate pod
+  # traffic, so subnet NSGs see pod IPs and must allow node<->pod and pod<->pod traffic
+  # (learn.microsoft.com/azure/aks/concepts-network-azure-cni-overlay, "Network security
+  # groups"). Pods leaving the cluster are SNATed to the node IP, so the PE rules keep using
+  # the node prefixes only.
+  aks_cluster_prefixes = concat(local.aks_prefixes, [var.aks_pod_cidr])
+
   private_dns_zones = {
     postgres = "privatelink.postgres.database.azure.com"
     vault    = "privatelink.vaultcore.azure.net"

@@ -57,6 +57,17 @@ variable "spoke_address_space" {
   }
 }
 
+variable "aks_pod_cidr" {
+  description = "Pod range of the AKS overlay network (infra/lab reads it from this stack's output). Overlay pod traffic is not encapsulated, so the AKS subnet NSGs must allow it."
+  type        = string
+  default     = "10.244.0.0/16"
+
+  validation {
+    condition     = can(cidrhost(var.aks_pod_cidr, 0)) && !contains(["10.10.0.0/24", "10.20.0.0/16"], var.aks_pod_cidr)
+    error_message = "aks_pod_cidr must be an IPv4 CIDR outside the hub and spoke ranges."
+  }
+}
+
 variable "dns_block_mode" {
   description = "false: the catch-all DNS rule for \".\" only raises an Alert (everything resolves, every query is logged). true: it Blocks everything that is not on the allowlist. Switch to true only after a session has shown the allowlist is complete."
   type        = bool
