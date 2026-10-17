@@ -1,0 +1,19 @@
+# Cilium for the kind cluster "ah". Chart 1.20.2 from https://helm.cilium.io (scripts/kind-up.sh
+# pins the chart file by sha256). Everything not set here keeps the chart default, including
+# the image digests: the chart pins every Cilium image by sha256 (image.useDigest: true).
+#
+# Lean on purpose: Docker has 6 GB and Compose runs next to the cluster.
+ipam:
+  mode: kubernetes
+
+# One operator replica (the default is two).
+operator:
+  replicas: 1
+
+# Hubble: flows for the evidence and the Walls dashboard. Relay and UI on.
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true
