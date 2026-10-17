@@ -1,0 +1,107 @@
+{{- /*
+azure only: sets up the flexible server with the same db/init/init.sh. It logs in as an Entra
+admin, so no PostgreSQL password exists for it: an init container trades the pod's workload
+identity token for an Entra access token, which psql then uses as the password. The role
+passwords it sets come from its own Key Vault. Runs once, after the first install (init.sh is
+not idempotent).
+*/ -}}
+{{- if eq .Values.env "azure" }}
+{{- $root := . -}}
+{{- $uid := include "ah.appUid" . | int -}}
+{{- $items := list -}}
+{{- range $role := include "ah.dbRoles" . | fromJsonArray -}}
+{{- $items = append $items (dict
+    "key" (printf "DB_PASSWORD_%s" (upper $role))
+    "kvObject" (printf "db-password-%s" (replace "_" "-" $role))) -}}
+{{- end -}}
+{{ include "ah.serviceAccount" (dict "root" $root "name" "db-migrate" "namespace" "ah-core" "workloadIdentity" true) }}
+---
+{{ include "ah.secretSource" (dict "root" $root "name" "db-migrate" "namespace" "ah-core" "items" $items) }}
+---
+{{ include "ah.dbFiles" (dict "root" $root "namespace" "ah-core" "name" "db-migrate") }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: ah-core
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "db-migrate") | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "ah.labels" (dict "root" $root "name" "db-migrate") | nindent 8 }}
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: db-migrate
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      {{- with include "ah.systemPlacement" $root }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        {{- include "ah.podSecurityContext" $uid | nindent 8 }}
+      initContainers:
+        - name: entra-token
+          image: {{ .Values.images.azureCli }}
+          imagePullPolicy: IfNotPresent
+          # AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_FEDERATED_TOKEN_FILE come from the
+          # workload identity webhook.
+          command:
+            - sh
+            - -c
+            - >-
+              az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID"
+              --federated-token "$(cat "$AZURE_FEDERATED_TOKEN_FILE")" --allow-no-subscriptions --output none
+              && az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv
+              > /run/pg-token/token
+          env:
+            - {name: AZURE_CONFIG_DIR, value: /tmp/azure}
+            - {name: HOME, value: /tmp}
+          volumeMounts:
+            - {name: pg-token, mountPath: /run/pg-token}
+            - {name: tmp, mountPath: /tmp}
+          securityContext:
+            {{- include "ah.containerSecurityContext" $uid | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.job | nindent 12 }}
+      containers:
+        - name: migrate
+          image: {{ .Values.images.postgres }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - PGPASSWORD="$(cat /run/pg-token/token)" exec sh /db/init/init.sh
+          env:
+            - {name: PGHOST, value: {{ required "db.host is required with env=azure" .Values.db.host | quote }}}
+            - {name: PGSSLMODE, value: require}
+            - {name: POSTGRES_USER, value: {{ required "azure.dbAdmin is required with env=azure" .Values.azure.dbAdmin | quote }}}
+            - {name: POSTGRES_DB, value: {{ .Values.db.name | quote }}}
+            - {name: SQL_DIR, value: /db/sql}
+            - {name: DEMO_VULNERABLE, value: {{ ternary "1" "0" .Values.db.demoVulnerable | quote }}}
+            {{- include "ah.dbRolePasswordEnv" (dict "root" $root "secret" "db-migrate-secrets") | nindent 12 }}
+          volumeMounts:
+            {{- include "ah.dbFilesMounts" . | nindent 12 }}
+            - {name: pg-token, mountPath: /run/pg-token, readOnly: true}
+            - {name: secrets-store, mountPath: /mnt/secrets-store, readOnly: true}
+          securityContext:
+            {{- include "ah.containerSecurityContext" $uid | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.job | nindent 12 }}
+      volumes:
+        {{- include "ah.dbFilesVolumes" . | nindent 8 }}
+        - name: pg-token
+          emptyDir: {medium: Memory}
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes: {secretProviderClass: db-migrate}
+{{- end }}

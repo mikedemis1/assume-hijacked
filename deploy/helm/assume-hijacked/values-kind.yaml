@@ -1,0 +1,18 @@
+# Local cluster "ah" (deploy/kind, scripts/kind-up.sh).
+env: kind
+
+images:
+  # Placeholder digest. scripts/kind-deploy.sh builds the image, pushes it to the local registry
+  # (127.0.0.1:5001, seen by the nodes as localhost:5001) and overrides this with
+  # --set images.app=localhost:5001/assume-hijacked@sha256:<digest>.
+  app: localhost:5001/assume-hijacked@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+# Local logins without Entra. Never valid with env=azure (values.schema.json).
+console:
+  authMode: dev
+
+# The control-plane node stands in for the AKS system pool (deploy/kind/cluster.yaml).
+placement:
+  system:
+    nodeSelector:
+      ah/pool: system

@@ -1,0 +1,21 @@
+{{- /*
+Approval console (ah-staff). AUTH_MODE=entra validates Entra ID tokens; dev is for kind only
+(values.schema.json refuses it with env=azure, and the console refuses to start that way).
+*/ -}}
+{{- $c := .Values.console -}}
+{{- $env := list
+    (dict "name" "AUTH_MODE" "value" $c.authMode)
+    (dict "name" "ENTRA_TENANT_ID" "value" $c.entra.tenantId)
+    (dict "name" "ENTRA_CLIENT_ID" "value" $c.entra.clientId) -}}
+{{- if eq $c.authMode "dev" -}}
+{{- $env = append $env (dict "name" "CONSOLE_DEV_USERS" "value" $c.devUsers) -}}
+{{- end -}}
+{{ include "ah.workload" (dict
+    "root" .
+    "name" "console"
+    "namespace" "ah-staff"
+    "command" (list "python" "-m" "app.console.main")
+    "ports" (list (dict "name" "http" "port" 8084))
+    "ops" true
+    "env" $env
+    "dbRole" "approver") }}

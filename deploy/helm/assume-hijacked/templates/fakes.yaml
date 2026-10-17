@@ -1,0 +1,17 @@
+{{- /*
+Stand-ins for the outside systems (ah-fakes): the national register, the grid operator (DSO)
+and the SMS provider. They record calls in memory (GET /calls) and have no database.
+*/ -}}
+{{- $root := . -}}
+{{- $fakes := list (list "register" 8090) (list "dso" 8091) (list "sms" 8092) -}}
+{{- range $i, $f := $fakes }}
+{{- if $i }}
+---
+{{- end }}
+{{ include "ah.workload" (dict
+    "root" $root
+    "name" (printf "fake-%s" (index $f 0))
+    "namespace" "ah-fakes"
+    "command" (list "python" "-m" (printf "app.fakes.%s" (index $f 0)))
+    "ports" (list (dict "name" "http" "port" (index $f 1)))) }}
+{{- end }}

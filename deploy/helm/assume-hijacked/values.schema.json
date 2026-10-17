@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "assume-hijacked chart values",
+  "type": "object",
+  "required": ["env", "images", "sandbox", "console", "llm", "db"],
+  "definitions": {
+    "pinnedImage": {
+      "description": "An image by digest: name[:tag]@sha256:<64 hex>. A tag alone can be moved to other content.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$"
+    },
+    "empty": {"type": "string", "maxLength": 0}
+  },
+  "properties": {
+    "env": {"enum": ["kind", "azure"]},
+    "images": {
+      "type": "object",
+      "required": ["app", "postgres"],
+      "additionalProperties": {"$ref": "#/definitions/pinnedImage"}
+    },
+    "sandbox": {
+      "type": "object",
+      "required": ["runtimeClass"],
+      "properties": {"runtimeClass": {"type": "string", "minLength": 1}}
+    },
+    "console": {
+      "type": "object",
+      "required": ["authMode"],
+      "properties": {
+        "authMode": {"enum": ["entra", "dev"]},
+        "devUsers": {"type": "string"}
+      }
+    },
+    "llm": {
+      "type": "object",
+      "required": ["backend", "model", "tokenBudgetPerLease"],
+      "properties": {
+        "backend": {"enum": ["scripted", "anthropic", "foundry"]},
+        "model": {"type": "string", "minLength": 1},
+        "tokenBudgetPerLease": {"type": "integer", "minimum": 1}
+      }
+    },
+    "db": {
+      "type": "object",
+      "required": ["host", "port", "name"],
+      "properties": {
+        "port": {"type": "integer"},
+        "demoVulnerable": {"type": "boolean"}
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "dbPasswords": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "Azure: Entra sign-in only. Dev auth trusts a header and must never reach a real cluster.",
+      "if": {"properties": {"env": {"const": "azure"}}, "required": ["env"]},
+      "then": {"properties": {"console": {"properties": {"authMode": {"const": "entra"}}}}}
+    },
+    {
+      "description": "Azure: no secret material in values; every secret comes from Key Vault.",
+      "if": {"properties": {"env": {"const": "azure"}}, "required": ["env"]},
+      "then": {
+        "properties": {
+          "secrets": {
+            "properties": {
+              "postgresPassword": {"$ref": "#/definitions/empty"},
+              "gatewaySigningKeyPem": {"$ref": "#/definitions/empty"},
+              "anthropicApiKey": {"$ref": "#/definitions/empty"},
+              "dbPasswords": {"maxProperties": 0}
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "Azure: db-migrate needs the Azure CLI image for its Entra token.",
+      "if": {"properties": {"env": {"const": "azure"}}, "required": ["env"]},
+      "then": {"properties": {"images": {"required": ["azureCli"]}}}
+    }
+  ]
+}

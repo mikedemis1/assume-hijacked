@@ -1,0 +1,29 @@
+{{- /*
+The three services the agent calls check its projected token with a TokenReview (audience and
+pod name). That is the only cluster-wide right in the chart.
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ah-tokenreview
+  labels:
+    {{- include "ah.labels" (dict "root" . "name" "tokenreview") | nindent 4 }}
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ah-tokenreview
+  labels:
+    {{- include "ah.labels" (dict "root" . "name" "tokenreview") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ah-tokenreview
+subjects:
+  - {kind: ServiceAccount, name: tool-gateway, namespace: ah-gateway}
+  - {kind: ServiceAccount, name: llm-gateway, namespace: ah-agent}
+  - {kind: ServiceAccount, name: dispatcher, namespace: ah-intake}

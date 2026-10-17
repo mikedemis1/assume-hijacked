@@ -1,0 +1,83 @@
+{{- /*
+The agent runs only as a Job per ticket, created by the dispatcher; the chart never starts one.
+It renders the ServiceAccount and the Job template (ruling R7), as JSON in a ConfigMap mounted
+into the dispatcher. The dispatcher sets metadata.name and the ah/ticket label (both places)
+before it creates the Job; everything else stays as rendered here. The admission policy (B3)
+checks created Jobs against the same fields.
+
+What the agent gets: three projected tokens (audiences tool-gateway, llm-gateway, dispatcher,
+10 minutes each), the three URLs, nothing from a Secret, no API server token, no database.
+*/ -}}
+{{- define "ah.agentJob" -}}
+{{- $uid := include "ah.appUid" . | int -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: ah-agent
+  labels:
+    app.kubernetes.io/name: agent
+    ah/ticket: ""
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent
+        ah/ticket: ""
+    spec:
+      serviceAccountName: agent
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      runtimeClassName: {{ .Values.sandbox.runtimeClass }}
+      restartPolicy: Never
+      securityContext:
+        {{- include "ah.podSecurityContext" $uid | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ .Values.images.app }}
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.agent.main"]
+          env:
+            - name: APP_ENV
+              value: {{ .Values.env | quote }}
+            - name: CALLER_AUTH
+              value: k8s
+            - name: GATEWAY_URL
+              value: http://{{ include "ah.host" (list "tool-gateway" "ah-gateway") }}:8080/mcp
+            - name: LLM_GATEWAY_URL
+              value: http://{{ include "ah.host" (list "llm-gateway" "ah-agent") }}:8083
+            - name: DISPATCHER_URL
+              value: http://{{ include "ah.host" (list "dispatcher" "ah-intake") }}:8081
+          volumeMounts:
+            - name: ah-tokens
+              mountPath: /var/run/secrets/ah
+              readOnly: true
+          securityContext:
+            {{- include "ah.containerSecurityContext" $uid | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources.job | nindent 12 }}
+      volumes:
+        - name: ah-tokens
+          projected:
+            sources:
+              {{- range list "tool-gateway" "llm-gateway" "dispatcher" }}
+              - serviceAccountToken:
+                  audience: {{ . }}
+                  expirationSeconds: 600
+                  path: {{ . }}/token
+              {{- end }}
+{{- end }}
+{{- include "ah.serviceAccount" (dict "root" . "name" "agent" "namespace" "ah-agent" "workloadIdentity" false) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-job-template
+  namespace: ah-intake
+  labels:
+    {{- include "ah.labels" (dict "root" . "name" "agent") | nindent 4 }}
+data:
+  job.json: |
+    {{- include "ah.agentJob" . | fromYaml | toPrettyJson | nindent 4 }}

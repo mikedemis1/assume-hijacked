@@ -1,0 +1,29 @@
+# AKS (infra/lab). The pipeline adds the per-install values from the Terraform outputs:
+# image digests in ACR, db.host, azure.tenantId, azure.dbAdmin, azure.clientIds, azure.keyVaults,
+# console.entra and gateway.publicKeyPem. No secret material here: the schema refuses
+# secrets.* with env=azure; every secret comes from the component's Key Vault.
+env: azure
+
+images:
+  # Placeholders. Upstream images are imported into ACR, which keeps their digest.
+  app: acrplaceholder.azurecr.io/assume-hijacked@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  postgres: acrplaceholder.azurecr.io/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+  azureCli: acrplaceholder.azurecr.io/azure-cli@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+console:
+  authMode: entra
+
+db:
+  # The flexible server's private endpoint name (infra/lab output).
+  host: ""
+
+# AKS has only the system pool (tainted CriticalAddonsOnly) and the Kata sandbox pool, so the
+# components that are not sandboxed run on the system pool and tolerate its taint.
+placement:
+  system:
+    nodeSelector:
+      kubernetes.azure.com/mode: system
+    tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+        effect: NoSchedule

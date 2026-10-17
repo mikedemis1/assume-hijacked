@@ -1,0 +1,8 @@
+{{- /* Executor (ah-core): the only component that carries out effects. No listening port but ops. */ -}}
+{{ include "ah.workload" (dict
+    "root" .
+    "name" "executor"
+    "namespace" "ah-core"
+    "command" (list "python" "-m" "app.executor.main")
+    "ops" true
+    "dbRole" "executor") }}

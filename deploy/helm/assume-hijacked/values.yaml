@@ -1,0 +1,88 @@
+# Settings shared by kind and Azure. values-kind.yaml and values-azure.yaml set what differs;
+# the deploy script adds the per-install values (image digest, secrets, Azure IDs) with --set
+# or one more -f file. values.schema.json checks the merged result.
+
+# kind | azure. Picks where secrets come from (Secrets rendered from values, or Key Vault through
+# the Secrets Store CSI driver) and which database objects are rendered (Postgres StatefulSet +
+# init Job on kind, db-migrate Job on Azure).
+env: kind
+
+# Every image by digest; the schema refuses a tag-only reference.
+#   app       the one application image (all components, the agent Job and the fakes)
+#   postgres  kind: the database; also the psql client of the init Job / db-migrate Job
+#   azureCli  azure only: db-migrate exchanges its workload identity token for an Entra token
+images:
+  # Tag postgres:17-alpine, the same digest as compose.yaml.
+  postgres: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+
+# RuntimeClass of the pods that run untrusted input: the agent Jobs and the five tools.
+# kind: the stand-in class from deploy/kind/runtimeclass.yaml (handler runc, sandbox node);
+# AKS: the Kata class the platform provides.
+sandbox:
+  runtimeClass: kata-vm-isolation
+
+console:
+  # entra | dev. dev reads CONSOLE_DEV_USERS and trusts a header; the schema refuses it with
+  # env=azure, and the console itself refuses to start with AUTH_MODE=dev and APP_ENV=azure.
+  authMode: entra
+  devUsers: "[]"
+  entra:
+    tenantId: ""
+    clientId: ""
+
+llm:
+  backend: scripted          # scripted | anthropic | foundry
+  model: claude-haiku-5-5
+  tokenBudgetPerLease: 20000
+  foundryEndpoint: ""
+
+db:
+  host: postgres.ah-data.svc.cluster.local
+  port: 5432
+  name: supplier
+  # Applies db/sql/90-vulnerable-demo.sql at init (DEMO_VULNERABLE=1). Demo only.
+  demoVulnerable: false
+
+# Public half of the gateway's ES256 signing key (PEM). Not a secret; the tools verify with it.
+gateway:
+  publicKeyPem: ""
+
+# db/init/init.sh and db/sql/*.sql, passed in at deploy time with --set-file so db/ stays the
+# only copy (Helm cannot read files outside the chart directory). Keys of `sql` are file names.
+dbFiles:
+  initSh: ""
+  sql: {}
+
+# kind only. Secret material for the Secrets this chart renders on kind. Empty here on purpose:
+# the deploy script passes them from .env. The schema refuses any of them with env=azure.
+secrets:
+  postgresPassword: ""
+  dbPasswords: {}            # role name -> password, e.g. gateway: ...
+  gatewaySigningKeyPem: ""
+  anthropicApiKey: ""
+
+# azure only. IDs and names that Terraform outputs (infra/base, infra/lab).
+azure:
+  tenantId: ""
+  # Entra principal db-migrate logs in to PostgreSQL as (an Entra admin of the server).
+  dbAdmin: ""
+  clientIds: {}              # component -> client ID of its user-assigned managed identity
+  keyVaults: {}              # component -> physical Key Vault name (infra/base key_vaults output)
+
+# Where the components that are not sandboxed run. The sandboxed ones (agent, tools) are placed
+# by their RuntimeClass.
+placement:
+  system:
+    nodeSelector: {}
+    tolerations: []
+
+resources:
+  app:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+  postgres:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  job:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 500m, memory: 256Mi}

@@ -1,0 +1,34 @@
+{{- /*
+LLM gateway (ah-agent): the agent's only way to a model (POST /next). Checks the agent's
+projected token with TokenReview and caps tokens per lease. The scripted backend needs no key;
+anthropic reads its key from a secret file; foundry uses the workload identity on Azure.
+*/ -}}
+{{- $l := .Values.llm -}}
+{{- $env := list
+    (dict "name" "CALLER_AUTH" "value" "k8s")
+    (dict "name" "LLM_BACKEND" "value" $l.backend)
+    (dict "name" "LLM_MODEL" "value" $l.model)
+    (dict "name" "LLM_TOKEN_BUDGET_PER_LEASE" "value" (toString $l.tokenBudgetPerLease)) -}}
+{{- $files := list -}}
+{{- if eq $l.backend "anthropic" -}}
+{{- $files = append $files (dict
+    "key" "anthropic-api-key"
+    "env" "ANTHROPIC_API_KEY_FILE"
+    "value" .Values.secrets.anthropicApiKey
+    "kvObject" "anthropic-api-key"
+    "what" "secrets.anthropicApiKey") -}}
+{{- end -}}
+{{- if eq $l.backend "foundry" -}}
+{{- $env = append $env (dict "name" "FOUNDRY_ENDPOINT" "value" (required "llm.foundryEndpoint is required with llm.backend=foundry" $l.foundryEndpoint)) -}}
+{{- end -}}
+{{ include "ah.workload" (dict
+    "root" .
+    "name" "llm-gateway"
+    "namespace" "ah-agent"
+    "command" (list "python" "-m" "app.llmgw.main")
+    "ports" (list (dict "name" "http" "port" 8083))
+    "ops" true
+    "env" $env
+    "files" $files
+    "apiToken" true
+    "workloadIdentity" (eq $l.backend "foundry")) }}
