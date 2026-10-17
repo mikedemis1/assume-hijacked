@@ -300,34 +300,66 @@ run "private_endpoint_subnet_accepts_only_5432_and_443_from_the_aks_subnets" {
   }
 }
 
-run "only_the_system_pool_may_reach_entra" {
+run "entra_and_key_vault_paths_exist_on_the_aks_subnets_only" {
   command = plan
 
+  # System pool: Entra for the pods that sign in (LLM gateway, console, db-migrate).
   assert {
     condition = length([
       for r in azurerm_network_security_group.spoke["snet-aks-system"].security_rule : r
       if r.direction == "Outbound" && r.access == "Allow" && contains(r.destination_address_prefixes, "AzureActiveDirectory") && contains(r.destination_port_ranges, "443")
     ]) == 1
-    error_message = "The system subnet (LLM gateway, console, db-migrate) needs an outbound rule to the AzureActiveDirectory tag on 443."
+    error_message = "The system subnet needs an outbound rule to the AzureActiveDirectory tag on 443."
   }
 
+  # Sandbox pool: the Secrets Store CSI provider runs on every node, so it needs Entra and
+  # the vault too. One tag per rule.
+  assert {
+    condition = alltrue([
+      for tag in ["AzureActiveDirectory", "AzureKeyVault.northeurope"] :
+      length([
+        for r in azurerm_network_security_group.spoke["snet-aks-sandbox"].security_rule : r
+        if r.direction == "Outbound" && r.access == "Allow" && r.protocol == "Tcp" && r.destination_port_ranges == toset(["443"]) && r.destination_address_prefixes == toset([tag])
+      ]) == 1
+    ])
+    error_message = "The sandbox subnet needs one outbound 443 rule each for AzureActiveDirectory and the regional AzureKeyVault tag (CSI provider on every node)."
+  }
+
+  # The private endpoint subnet never starts a connection.
   assert {
     condition = length([
-      for k in ["snet-aks-sandbox", "snet-pe"] : k
-      if length([
-        for r in azurerm_network_security_group.spoke[k].security_rule : r
-        if contains(r.destination_address_prefixes, "AzureActiveDirectory")
-      ]) > 0
+      for r in azurerm_network_security_group.spoke["snet-pe"].security_rule : r
+      if r.direction == "Outbound" && r.access == "Allow"
     ]) == 0
-    error_message = "The sandbox and PE subnets must have no Entra rule: tools and agents never sign in."
+    error_message = "The PE subnet must have no outbound allow rule."
   }
 
+  # Control: the sandbox still has no general Internet path.
   assert {
     condition = length([
       for r in azurerm_network_security_group.spoke["snet-aks-sandbox"].security_rule : r
       if r.direction == "Outbound" && r.access == "Allow" && contains(r.destination_address_prefixes, "Internet")
     ]) == 0
     error_message = "The sandbox subnet must have no outbound rule to the general Internet."
+  }
+}
+
+run "no_rule_mixes_service_tags_or_lists_more_than_one" {
+  command = plan
+
+  # Azure refuses a rule with several service tags (or a tag next to other prefixes).
+  # A "tag" here is anything that is not an IPv4 address or CIDR, including "*".
+  assert {
+    condition = alltrue(flatten([
+      for k, nsg in azurerm_network_security_group.spoke : [
+        for r in nsg.security_rule : [
+          for prefixes in [r.source_address_prefixes, r.destination_address_prefixes] :
+          length([for p in prefixes : p if !can(regex("^[0-9]{1,3}([.][0-9]{1,3}){3}(/[0-9]{1,2})?$", p))]) == 0
+          || length(prefixes) == 1
+        ]
+      ]
+    ]))
+    error_message = "A rule may hold one service tag (or *) alone, or any number of IP addresses and CIDRs, never a mix."
   }
 }
 

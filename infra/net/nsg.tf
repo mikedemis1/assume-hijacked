@@ -74,12 +74,29 @@ locals {
     })
 
     snet-aks-sandbox = merge(local.aks_common_rules, {
-      # Tools and agents run here: no Entra tag and no general Internet rule. Only the
-      # Azure platform ranges the node itself needs (registry, AKS control plane).
-      allow-node-platform-out = {
+      # Tools and agents run here: no general Internet rule. Azure allows ONE service tag
+      # per rule, so every tag gets its own rule.
+      #
+      # Platform ranges the node itself needs (registry, AKS control plane):
+      allow-azure-cloud-out = {
         priority         = 140, direction = "Outbound", access = "Allow", protocol = "Tcp"
-        dest_port_ranges = ["443"], source_prefixes = ["*"]
-        dest_prefixes    = ["AzureCloud.northeurope", "MicrosoftContainerRegistry"]
+        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureCloud.northeurope"]
+      }
+      allow-container-registry-out = {
+        priority         = 150, direction = "Outbound", access = "Allow", protocol = "Tcp"
+        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["MicrosoftContainerRegistry"]
+      }
+      # Entra and Key Vault: the Secrets Store CSI provider DaemonSet runs on EVERY node,
+      # the sandbox pool included. It does the workload identity token exchange (Entra) and
+      # reads the vault. The NSG cannot tell it from a pod, so the subnet allows both; the
+      # pods themselves stay limited by their CiliumNetworkPolicy (no Entra, no vault).
+      allow-entra-out = {
+        priority         = 160, direction = "Outbound", access = "Allow", protocol = "Tcp"
+        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureActiveDirectory"]
+      }
+      allow-key-vault-out = {
+        priority         = 170, direction = "Outbound", access = "Allow", protocol = "Tcp"
+        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureKeyVault.northeurope"]
       }
     })
 
