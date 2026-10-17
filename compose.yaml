@@ -7,9 +7,8 @@ x-app: &app
       wheels: ${LOCAL_WHEELS_DIR:-./build/empty}
     secrets:
       - pip_cert
-  # Every component of the app sits on the internal network only: it cannot reach the internet.
-  networks:
-    - backend
+  # No `networks:` here: every service lists its own edge networks (see the block below), so no
+  # service gets a route to another one by default.
   depends_on:
     db:
       condition: service_healthy
@@ -30,24 +29,53 @@ secrets:
   pip_cert:
     file: ${PIP_CERT_FILE:-./build/no-pip-cert.empty}
 
-# backend has no route to the outside (internal: true). The tools, the executor and the agent are only
-# on this network, so a hijacked component cannot send data out or download anything.
+# One network per allowed edge between two services, all `internal: true` (no route out). A service
+# is on exactly the networks of the edges it is allowed to use and on no other, so a hijacked
+# container can only talk to the peers of its own edges. Docker resolves a service name only on a
+# network both share, so the other services are not even visible by name. The names follow the
+# communication matrix of the design.
+#
+# What the stack has today:
+#   edge_agent_<tool> x5   agent -> tool           TEMPORARY: the agent calls the tools directly
+#                                                  until the tool gateway exists (task A8)
+#   edge_<tool>_db x5      tool -> db              matrix row 12
+#   edge_executor_db       executor -> db          matrix row 14
+# Later tasks add their services and their edges (edge_agent_gateway, edge_gateway_<tool>,
+# edge_gateway_risk, edge_gateway_db, edge_risk_db, edge_dispatcher_db, edge_agent_dispatcher,
+# edge_agent_llmgw, edge_executor_fakes, edge_register_db, edge_register_fakes, edge_console_db).
+# Which edges are NOT here is tested: tests/test_smoke.py (agent -> db, tool -> tool,
+# executor -> tools).
 #
 # Docker does not publish a host port for a container that is only on an internal network
 # (checked on Docker Desktop for Windows: `docker port` shows nothing and 127.0.0.1:<port> refuses).
 # The tests and psql on this PC need the db port, so the db is also on `hostaccess`, a normal
-# network that nothing else joins. Only the db has a route out; no tool can reach hostaccess.
+# network that nothing else joins. Only the db has a route out; nothing else is on hostaccess.
 networks:
-  backend:
-    internal: true
+  edge_agent_read_ticket: {internal: true}
+  edge_agent_lookup_account: {internal: true}
+  edge_agent_request_disconnection: {internal: true}
+  edge_agent_issue_bill_credit: {internal: true}
+  edge_agent_set_temp_protection: {internal: true}
+  edge_read_ticket_db: {internal: true}
+  edge_lookup_account_db: {internal: true}
+  edge_request_disconnection_db: {internal: true}
+  edge_issue_bill_credit_db: {internal: true}
+  edge_set_temp_protection_db: {internal: true}
+  edge_executor_db: {internal: true}
   hostaccess: {}
 
 services:
   db:
     # Pinned by digest (multi-arch index). Tag postgres:17-alpine, resolved 2026-10-15.
     image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    # The db is the one service on every database edge, plus hostaccess (see above).
     networks:
-      - backend
+      - edge_read_ticket_db
+      - edge_lookup_account_db
+      - edge_request_disconnection_db
+      - edge_issue_bill_credit_db
+      - edge_set_temp_protection_db
+      - edge_executor_db
       - hostaccess
     environment:
       POSTGRES_DB: supplier
@@ -74,6 +102,9 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_READ_TICKET: ${DB_PASSWORD_TOOL_READ_TICKET:?set DB_PASSWORD_TOOL_READ_TICKET in .env}
+    networks:
+      - edge_read_ticket_db
+      - edge_agent_read_ticket
     command: ["python", "-m", "app.tools.serve", "read_ticket"]
 
   tool-lookup-account:
@@ -81,6 +112,9 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_LOOKUP_ACCOUNT: ${DB_PASSWORD_TOOL_LOOKUP_ACCOUNT:?set DB_PASSWORD_TOOL_LOOKUP_ACCOUNT in .env}
+    networks:
+      - edge_lookup_account_db
+      - edge_agent_lookup_account
     command: ["python", "-m", "app.tools.serve", "lookup_account"]
 
   tool-request-disconnection:
@@ -88,6 +122,9 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_REQUEST_DISCONNECTION: ${DB_PASSWORD_TOOL_REQUEST_DISCONNECTION:?set DB_PASSWORD_TOOL_REQUEST_DISCONNECTION in .env}
+    networks:
+      - edge_request_disconnection_db
+      - edge_agent_request_disconnection
     command: ["python", "-m", "app.tools.serve", "request_disconnection"]
 
   tool-issue-bill-credit:
@@ -95,6 +132,9 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT: ${DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT:?set DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT in .env}
+    networks:
+      - edge_issue_bill_credit_db
+      - edge_agent_issue_bill_credit
     command: ["python", "-m", "app.tools.serve", "issue_bill_credit"]
 
   tool-set-temp-protection:
@@ -102,6 +142,9 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_SET_TEMP_PROTECTION: ${DB_PASSWORD_TOOL_SET_TEMP_PROTECTION:?set DB_PASSWORD_TOOL_SET_TEMP_PROTECTION in .env}
+    networks:
+      - edge_set_temp_protection_db
+      - edge_agent_set_temp_protection
     command: ["python", "-m", "app.tools.serve", "set_temp_protection"]
 
   executor:
@@ -111,12 +154,23 @@ services:
       DB_PASSWORD_EXECUTOR: ${DB_PASSWORD_EXECUTOR:?set DB_PASSWORD_EXECUTOR in .env}
     # Comes back after a crash or a database restart; the requests wait in the table meanwhile.
     restart: unless-stopped
+    # Port 9000 serves /healthz and /metrics (app/common/ops.py). Nothing publishes it and no
+    # monitoring edge exists yet, so only the container itself can reach it today.
+    networks:
+      - edge_executor_db
     command: ["python", "-m", "app.executor.main"]
 
   # No database password here: the agent only talks to the tools.
   agent:
     <<: *app
     profiles: ["manual"]
+    # One edge per tool, nothing else: no route to the db, to the executor or to another service.
+    networks:
+      - edge_agent_read_ticket
+      - edge_agent_lookup_account
+      - edge_agent_request_disconnection
+      - edge_agent_issue_bill_credit
+      - edge_agent_set_temp_protection
     depends_on:
       - tool-read-ticket
       - tool-lookup-account

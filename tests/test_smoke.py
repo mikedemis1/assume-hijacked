@@ -4,6 +4,7 @@ They run the real agent container and look at what the real tool containers and 
 """
 
 import functools
+import itertools
 import json
 import os
 import re
@@ -77,8 +78,33 @@ except OSError as err:
 print("REACHED", address)
 """
 
-# Every service on the internal network except the db (which is also on hostaccess on purpose).
+# Runs inside a container: try a TCP connection to every target at once and print one line each,
+# REACHED or BLOCKED. Always exits 0, so a crashed script (non-zero) is not mistaken for "blocked".
+# A name that does not resolve counts as blocked: on an internal edge network Docker only knows
+# the peers on that network.
+TRY_TCP = """
+import socket
+from concurrent.futures import ThreadPoolExecutor
+
+def attempt(target):
+    host, port = target
+    try:
+        socket.create_connection((host, port), timeout=3).close()
+    except OSError as err:
+        return f"BLOCKED {{host}}:{{port}} {{type(err).__name__}}"
+    return f"REACHED {{host}}:{{port}}"
+
+with ThreadPoolExecutor(8) as pool:
+    for line in pool.map(attempt, {targets!r}):
+        print(line)
+"""
+
+# Every service on an internal network except the db (which is also on hostaccess on purpose).
 WALLED_SERVICES = [*TOOL_HOSTS, "executor", "agent"]
+
+DB_PORT = 5432  # inside the stack; the published host port is DB_HOST_PORT
+DB_HOST_PORT = int(os.environ.get("DB_PORT", "5432"))
+TOOL_PORT = 8000
 
 
 def compose(*args, timeout=300):
@@ -177,3 +203,87 @@ def test_no_external_dns_from_the_walled_services(service):
         f"expected the name lookup from {service} to fail (exit 3), got {done.returncode}\n"
         f"stdout: {done.stdout}\nstderr: {done.stderr}"
     )
+
+
+# --- Network edges (compose.yaml): a service is on the networks of its allowed edges only ---------
+
+def container_ips(service):
+    """Every IP address of the service's running container, one per network it is on."""
+    done = compose("ps", "-q", service)
+    container = done.stdout.strip()
+    assert done.returncode == 0 and container, f"{service} is not running\n{done.stderr}"
+    inspect = subprocess.run(
+        ["docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", container],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert inspect.returncode == 0, inspect.stderr
+    ips = [net["IPAddress"] for net in json.loads(inspect.stdout).values() if net["IPAddress"]]
+    assert ips, f"{service} has no IP address"
+    return ips
+
+
+def try_tcp(source, targets):
+    """Connect from `source` to each (host, port). Returns {target: True if it connected}."""
+    done = probe(source, TRY_TCP.format(targets=list(targets)))
+    assert done.returncode == 0, f"probe from {source} failed\nstdout: {done.stdout}\nstderr: {done.stderr}"
+    reached = {}
+    for line in done.stdout.splitlines():
+        verdict, _, rest = line.partition(" ")
+        if verdict in ("REACHED", "BLOCKED"):
+            host, _, port = rest.split(" ")[0].rpartition(":")
+            reached[(host, int(port))] = verdict == "REACHED"
+    assert set(reached) == set(targets), f"probe output does not cover every target:\n{done.stdout}"
+    return reached
+
+
+def service_targets(service, port):
+    """The service by name and by each of its IPs: the name tests Docker's DNS, the IPs test the route."""
+    return [(service, port), *((ip, port) for ip in container_ips(service))]
+
+
+def assert_blocked(source, targets):
+    reached = try_tcp(source, targets)
+    open_ = [f"{host}:{port}" for (host, port), ok in reached.items() if ok]
+    assert not open_, f"{source} reached {open_}; it must have no route to these"
+
+
+def test_agent_cannot_reach_db_on_any_ip():
+    # The db is on seven networks, so seven IPs. The agent shares none of them.
+    targets = [*service_targets("db", DB_PORT), ("host.docker.internal", DB_HOST_PORT)]
+    assert len(targets) > 3, targets
+    assert_blocked("agent", targets)
+
+
+TOOL_PAIRS = list(itertools.permutations(TOOL_HOSTS, 2))
+
+
+@pytest.mark.parametrize("source,target", TOOL_PAIRS, ids=[f"{s}->{t}" for s, t in TOOL_PAIRS])
+def test_tool_cannot_reach_other_tools(source, target):
+    assert_blocked(source, service_targets(target, TOOL_PORT))
+
+
+@pytest.mark.parametrize("tool", TOOL_HOSTS)
+def test_executor_cannot_reach_tools(tool):
+    assert_blocked("executor", service_targets(tool, TOOL_PORT))
+
+
+# The controls: the same ports on the edges that ARE allowed. Without these, "blocked" above could
+# just mean the service was down or the probe was broken.
+ALLOWED_EDGES = {
+    "agent": [(tool, TOOL_PORT) for tool in TOOL_HOSTS],
+    **{tool: [("db", DB_PORT)] for tool in TOOL_HOSTS},
+    "executor": [("db", DB_PORT)],
+}
+
+
+@pytest.mark.parametrize("source", list(ALLOWED_EDGES))
+def test_allowed_edges_connect(source):
+    reached = try_tcp(source, ALLOWED_EDGES[source])
+    assert all(reached.values()), f"{source} must reach its own peers: {reached}"
+
+
+def test_ip_probe_reaches_the_allowed_db_address_and_no_other():
+    # The executor shares exactly one network with the db, so exactly one of the db's IPs answers.
+    # That shows the probe works by IP, so the agent result above is not a probe that never connects.
+    reached = try_tcp("executor", [(ip, DB_PORT) for ip in container_ips("db")])
+    assert sum(reached.values()) == 1, reached

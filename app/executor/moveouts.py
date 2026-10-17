@@ -6,20 +6,24 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg
 
+from app.common.ops import Metrics
 from app.config import Settings
 from app.executor.alerts import raise_alert_once
 from app.executor.approvals import approver_count
+from app.executor.metrics import count_request
 from app.executor.protection import protection_status
 
 
-def _decide(conn, request_id: int, status: str, reason: str, now: datetime) -> None:
+def _decide(conn, request_id: int, status: str, reason: str, now: datetime) -> str:
     conn.execute(
         "UPDATE action_requests SET status = %s, decision_reason = %s, decided_at = %s WHERE id = %s",
         (status, reason, now, request_id),
     )
+    return status
 
 
-def _process_one(conn, settings: Settings, req, now: datetime, hour_ago: datetime) -> None:
+def _process_one(conn, settings: Settings, req, now: datetime, hour_ago: datetime) -> str | None:
+    """The status the request moved to, or None when it stays where it is."""
     # Held until this request's transaction ends. set_temp_protection takes the same lock,
     # so a flag cannot land between the protection check and the order.
     conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (req["supply_point_id"],))
@@ -35,24 +39,21 @@ def _process_one(conn, settings: Settings, req, now: datetime, hour_ago: datetim
             (hour_ago,),
         ).fetchone()["n"]
         if accepted >= settings.moveout_max_per_hour:
-            _decide(conn, req["id"], "held_rate_limit", "too many move-outs in one hour", now)
+            decided = _decide(conn, req["id"], "held_rate_limit", "too many move-outs in one hour", now)
             raise_alert_once(conn, "move-out rate limit reached", hour_ago)
-            return
+            return decided
         if protection != "NO":
-            _decide(conn, req["id"], "manual_only", f"protection {protection}: human occupant check only", now)
-            return
+            return _decide(conn, req["id"], "manual_only", f"protection {protection}: human occupant check only", now)
         # sent_at is the database's clock (column default); the executor cannot set it.
         conn.execute(
             "INSERT INTO occupier_notices (request_id, supply_point_id) VALUES (%s, %s)",
             (req["id"], req["supply_point_id"]),
         )
-        _decide(conn, req["id"], "notice_sent", "notice sent to the occupier", now)
-        return
+        return _decide(conn, req["id"], "notice_sent", "notice sent to the occupier", now)
 
     # notice_sent: check again, the home may have become protected meanwhile.
     if protection != "NO":
-        _decide(conn, req["id"], "manual_only", f"protection {protection}: human occupant check only", now)
-        return
+        return _decide(conn, req["id"], "manual_only", f"protection {protection}: human occupant check only", now)
     # The same conditions check_disconnection_order applies, so a normal run never hits the trigger.
     # Anything not met yet leaves the request at notice_sent for a later run.
     sent = conn.execute(
@@ -67,10 +68,13 @@ def _process_one(conn, settings: Settings, req, now: datetime, hour_ago: datetim
             "INSERT INTO disconnection_orders (request_id, supply_point_id) VALUES (%s, %s)",
             (req["id"], req["supply_point_id"]),
         )
-        _decide(conn, req["id"], "executed", "order sent to the grid operator", now)
+        return _decide(conn, req["id"], "executed", "order sent to the grid operator", now)
+    return None
 
 
-def process_moveouts(conn: psycopg.Connection, settings: Settings, now: datetime) -> None:
+def process_moveouts(
+    conn: psycopg.Connection, settings: Settings, now: datetime, metrics: Metrics | None = None
+) -> None:
     rows = conn.execute(
         "SELECT r.id, r.status, r.move_out_date, a.supply_point_id FROM action_requests r "
         "JOIN accounts a ON a.id = r.account_id "
@@ -81,8 +85,11 @@ def process_moveouts(conn: psycopg.Connection, settings: Settings, now: datetime
         try:
             # One transaction per request: the row written and the status change land together or not at all.
             with conn.transaction():
-                _process_one(conn, settings, req, now, hour_ago)
+                status = _process_one(conn, settings, req, now, hour_ago)
+            if status is not None:
+                count_request(metrics, "move_out", status)
         except Exception as exc:
+            count_request(metrics, "move_out", "error")
             # One bad request must not stop the batch. Logged outside the failed transaction.
             conn.execute(
                 "INSERT INTO events (kind, detail) VALUES ('executor_error', %s)",

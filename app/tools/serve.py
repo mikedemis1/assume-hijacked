@@ -85,11 +85,11 @@ def build_server(tool: str, settings: Settings) -> MCPServer:
 def main() -> None:
     tool = sys.argv[1]
     # All interfaces of the container: the agent reaches the tool from another container. Each tool
-    # container is only on the internal `backend` network (compose.yaml), so that is the one
-    # non-loopback interface; the network, not the bind address, is the wall (tests/test_smoke.py).
+    # container is only on internal edge networks (compose.yaml), none with a route out; the
+    # network, not the bind address, is the wall (tests/test_smoke.py).
     build_server(tool, config.load()).run(
         transport="streamable-http",
-        host="0.0.0.0",  # nosec B104 - only reachable on the internal backend network, see above
+        host="0.0.0.0",  # nosec B104 - only reachable on internal edge networks, see above
         port=8000,
     )
 

@@ -6,22 +6,35 @@ import time
 from datetime import datetime, timezone
 
 from app import config, db
+from app.common.ops import Heartbeat, Metrics, start_ops_server
 from app.executor.credits import process_credits
 from app.executor.moveouts import process_moveouts
 
 POLL_SECONDS = 5
+OPS_PORT = 9000
 
 
-def run_once(conn, settings, now: datetime) -> None:
-    process_credits(conn, settings, now)
-    process_moveouts(conn, settings, now)
+def run_once(conn, settings, now: datetime, metrics: Metrics | None = None) -> None:
+    process_credits(conn, settings, now, metrics)
+    process_moveouts(conn, settings, now, metrics)
+
+
+def poll(conn, settings, now: datetime, metrics: Metrics, heartbeat: Heartbeat) -> None:
+    """One trip round the loop. The heartbeat is written only after the work finished, so a hung
+    database call turns /healthz into 503 instead of looking healthy."""
+    run_once(conn, settings, now, metrics)
+    metrics.set("executor_last_poll_timestamp_seconds", now.timestamp())
+    heartbeat.beat()
 
 
 def main() -> None:
     settings = config.load()
+    metrics = Metrics()
+    heartbeat = Heartbeat()
+    start_ops_server(OPS_PORT, metrics, heartbeat)
     with db.connect(settings, "executor") as conn:
         while True:
-            run_once(conn, settings, datetime.now(timezone.utc))
+            poll(conn, settings, datetime.now(timezone.utc), metrics, heartbeat)
             time.sleep(POLL_SECONDS)
 
 

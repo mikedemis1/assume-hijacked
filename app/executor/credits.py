@@ -7,8 +7,10 @@ from decimal import Decimal
 
 import psycopg
 
+from app.common.ops import Metrics
 from app.config import Settings
 from app.executor.alerts import raise_alert_once
+from app.executor.metrics import count_request
 
 AUTO_CHECKED_REASONS = {"duplicate_charge"}
 REJECTED_ALERT_COUNT = 5  # refused credit requests for one account in one hour
@@ -65,7 +67,7 @@ def decide_credit(conn: psycopg.Connection, req: dict, settings: Settings, now: 
     return "approved", "duplicate charge confirmed"
 
 
-def _process_one(conn: psycopg.Connection, settings: Settings, req: dict, now: datetime) -> None:
+def _process_one(conn: psycopg.Connection, settings: Settings, req: dict, now: datetime) -> str:
     status, why = decide_credit(conn, req, settings, now)
     if status == "approved":
         # created_at is the database clock; check_credit ties the row to this request.
@@ -80,6 +82,7 @@ def _process_one(conn: psycopg.Connection, settings: Settings, req: dict, now: d
     )
     if status in ("rejected", "held_global"):
         _alert_on_repeated_refusals(conn, req["account_id"], now)
+    return status
 
 
 def _alert_on_repeated_refusals(conn: psycopg.Connection, account_id: int, now: datetime) -> None:
@@ -94,7 +97,9 @@ def _alert_on_repeated_refusals(conn: psycopg.Connection, account_id: int, now: 
         raise_alert_once(conn, f"repeated rejected credits account={account_id}", hour_ago)
 
 
-def process_credits(conn: psycopg.Connection, settings: Settings, now: datetime) -> None:
+def process_credits(
+    conn: psycopg.Connection, settings: Settings, now: datetime, metrics: Metrics | None = None
+) -> None:
     pending = conn.execute(
         "SELECT id, account_id, amount_eur, reason, evidence_ref FROM action_requests "
         "WHERE kind = 'credit' AND status = 'pending' ORDER BY id"
@@ -103,8 +108,10 @@ def process_credits(conn: psycopg.Connection, settings: Settings, now: datetime)
         try:
             # One transaction per request: the credit and the status change land together or not at all.
             with conn.transaction():
-                _process_one(conn, settings, req, now)
+                status = _process_one(conn, settings, req, now)
+            count_request(metrics, "credit", status)
         except Exception as exc:
+            count_request(metrics, "credit", "error")
             # One bad request must not stop the batch. Logged outside the failed transaction.
             conn.execute(
                 "INSERT INTO events (kind, detail) VALUES ('executor_error', %s)",

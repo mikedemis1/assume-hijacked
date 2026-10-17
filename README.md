@@ -6,7 +6,7 @@ The agent acts through five MCP tools. If a prompt injection takes over the mode
 
 The model is a stand-in, `ScriptedLLM`, which obeys any `CALL <tool> <json>` line written in a ticket. That is the worst case on purpose: the tests check the walls, not how well a real model resists. All data is fake.
 
-Status: the local stack runs in Docker Compose (376 tests, 16 smoke tests against the real containers) and the GitLab pipeline is green on GitLab.com. Next is the Azure phase: Terraform, AKS, Azure Firewall, Entra ID workload identity, Key Vault, central logs.
+Status: the local stack runs in Docker Compose (393 tests, 50 smoke tests against the real containers) and the GitLab pipeline is green on GitLab.com. Next is the Azure phase: Terraform, AKS, Azure Firewall, Entra ID workload identity, Key Vault, central logs.
 
 ## How it is built
 
@@ -14,7 +14,7 @@ Status: the local stack runs in Docker Compose (376 tests, 16 smoke tests agains
 flowchart LR
     T["ticket<br/>(attacker writes here)"] --> A["agent<br/>no DB password"]
 
-    subgraph backend["backend network: internal, no route to the internet"]
+    subgraph backend["one internal network per allowed edge, no route to the internet"]
         A --> R[read_ticket]
         A --> L[lookup_account]
         A --> D[request_disconnection]
@@ -83,10 +83,10 @@ Each row, its tests and its limits: [docs/attacks.md](docs/attacks.md).
 ## Not protected yet
 
 - A hijacked agent can pass another ticket's id. There is no signed ticket context yet, so grants are per column, not per row.
-- Containers on the backend network can call any tool. No workload identity or NetworkPolicy until AKS.
+- The agent still calls the tools directly (it has an edge network to each one); the tool gateway that replaces those edges comes later. No workload identity or NetworkPolicy until AKS.
 - Approvals are names, not people. Staff identity comes with Entra ID.
 - The reply guard works from word lists. A spelling nobody listed gets through; templated replies would fix it.
-- Nothing watches whether the executor is alive. If it hangs, nothing goes out, but nobody is told.
+- The executor serves `/healthz` and `/metrics` (port 9000, nothing publishes it), but nothing scrapes them or alerts yet. If it hangs, nothing goes out, but nobody is told.
 - The staff approval page, the occupier SMS and the state register sync are simulated.
 
 Details for each: [docs/attacks.md](docs/attacks.md#not-protected-yet).
