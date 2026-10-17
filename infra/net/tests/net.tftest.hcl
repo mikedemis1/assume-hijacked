@@ -655,6 +655,49 @@ run "pod_range_inside_the_vnets_is_refused" {
   expect_failures = [var.aks_pod_cidr]
 }
 
+run "pod_range_inside_the_spoke_is_refused" {
+  command = plan
+
+  variables {
+    aks_pod_cidr = "10.20.128.0/17"
+  }
+
+  expect_failures = [var.aks_pod_cidr]
+}
+
+run "pod_range_covering_both_vnets_is_refused" {
+  command = plan
+
+  variables {
+    aks_pod_cidr = "10.0.0.0/8"
+  }
+
+  expect_failures = [var.aks_pod_cidr]
+}
+
+run "pod_range_inside_the_hub_is_refused" {
+  command = plan
+
+  variables {
+    aks_pod_cidr = "10.10.0.128/25"
+  }
+
+  expect_failures = [var.aks_pod_cidr]
+}
+
+run "pod_range_outside_both_vnets_is_accepted" {
+  command = plan
+
+  variables {
+    aks_pod_cidr = "192.168.0.0/16"
+  }
+
+  assert {
+    condition     = output.aks_pod_cidr == "192.168.0.0/16"
+    error_message = "A pod range outside hub and spoke must be accepted (control)."
+  }
+}
+
 run "only_north_europe_is_accepted" {
   command = plan
 

@@ -525,6 +525,58 @@ run "firewall_rules_name_their_sources_and_keep_the_model_api_to_the_system_pool
   }
 }
 
+run "service_range_overlapping_the_pod_range_is_refused" {
+  command = plan
+
+  variables {
+    service_cidr = "10.244.128.0/17"
+  }
+
+  expect_failures = [azurerm_kubernetes_cluster.this]
+}
+
+run "foundry_egress_is_off_by_default_and_system_only_when_on" {
+  command = plan
+
+  variables {
+    foundry_enabled = true
+    foundry_fqdn    = "ah-foundry.services.ai.azure.com"
+  }
+
+  assert {
+    condition = anytrue(flatten([
+      for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : [
+        for r in c.rule : r.name == "foundry-api" && toset(r.destination_fqdns) == toset(["ah-foundry.services.ai.azure.com"]) && toset(r.source_addresses) == toset(["10.20.0.0/24"])
+      ]
+    ]))
+    error_message = "With foundry_enabled, the Foundry endpoint is allowed from the system subnet only."
+  }
+}
+
+run "foundry_rule_absent_by_default" {
+  command = plan
+
+  assert {
+    condition = alltrue(flatten([
+      for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : [
+        for r in c.rule : r.name != "foundry-api"
+      ]
+    ]))
+    error_message = "No Foundry rule unless the foundry backend is enabled."
+  }
+}
+
+run "foundry_without_an_exact_host_is_refused" {
+  command = plan
+
+  variables {
+    foundry_enabled = true
+    foundry_fqdn    = "*.services.ai.azure.com"
+  }
+
+  expect_failures = [var.foundry_fqdn]
+}
+
 # ---------------------------------------------------------------- PostgreSQL
 
 run "postgres_is_private_b1ms_17_with_password_and_entra" {
@@ -566,6 +618,29 @@ run "postgres_is_private_b1ms_17_with_password_and_entra" {
     )
     error_message = "The server is reached through a private endpoint in snet-pe registered in the postgres private DNS zone."
   }
+}
+
+run "postgres_allow_lists_pgcrypto" {
+  command = plan
+
+  assert {
+    condition = (
+      azurerm_postgresql_flexible_server_configuration.extensions.name == "azure.extensions"
+      && contains(split(",", upper(azurerm_postgresql_flexible_server_configuration.extensions.value)), "PGCRYPTO")
+      && azurerm_postgresql_flexible_server_configuration.extensions.server_id == azurerm_postgresql_flexible_server.this.id
+    )
+    error_message = "pgcrypto must be allow-listed (azure.extensions): db/sql/05-lease.sql creates it."
+  }
+}
+
+run "extension_list_without_pgcrypto_is_refused" {
+  command = plan
+
+  variables {
+    postgres_extensions = ["CITEXT"]
+  }
+
+  expect_failures = [var.postgres_extensions]
 }
 
 run "postgres_admin_password_never_reaches_the_state" {
@@ -633,7 +708,7 @@ run "key_vault_roles_use_the_physical_vault_ids_from_base" {
   }
 }
 
-run "vault_unknown_to_base_is_refused" {
+run "workload_vault_missing_in_base_is_refused" {
   command = plan
 
   override_data {
@@ -652,6 +727,65 @@ run "vault_unknown_to_base_is_refused" {
         }
       }
     }
+  }
+
+  expect_failures = [terraform_data.manifest_checks]
+}
+
+run "vault_rbac_is_derived_officer_for_db_migrate_user_for_own_vault" {
+  command = plan
+
+  assert {
+    condition = (
+      toset(keys(module.workload_identity["db-migrate"].role_assignments)) == toset(["kv-db-migrate/Key Vault Secrets User", "kv-tool-lookup-account/Key Vault Secrets Officer"])
+      && module.workload_identity["db-migrate"].role_assignments["kv-tool-lookup-account/Key Vault Secrets Officer"].scope_id == data.terraform_remote_state.base.outputs.key_vaults["kv-tool-lookup-account"].id
+    )
+    error_message = "db-migrate gets Secrets Officer on the vault of every component with a DB role (here tool-lookup-account), plus Secrets User on its own vault, nothing else."
+  }
+
+  assert {
+    condition = (
+      toset(keys(module.workload_identity["tool-lookup-account"].role_assignments)) == toset(["kv-tool-lookup-account/Key Vault Secrets User"])
+      && toset(keys(module.workload_identity["llm-gateway"].role_assignments)) == toset(["kv-llm-gateway/Key Vault Secrets User"])
+    )
+    error_message = "Each workload gets Secrets User on its own vault only."
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for c, m in module.workload_identity : [
+        for k, a in m.role_assignments : a.role != "Key Vault Secrets Officer" || c == "db-migrate"
+      ]
+    ]))
+    error_message = "Only db-migrate may hold Secrets Officer."
+  }
+}
+
+run "manifest_asking_for_another_components_vault_is_refused" {
+  command = plan
+
+  variables {
+    capabilities_dir = "tests/fixtures/capabilities-foreign-vault"
+  }
+
+  expect_failures = [terraform_data.manifest_checks]
+}
+
+run "manifest_asking_for_secrets_officer_is_refused" {
+  command = plan
+
+  variables {
+    capabilities_dir = "tests/fixtures/capabilities-officer"
+  }
+
+  expect_failures = [terraform_data.manifest_checks]
+}
+
+run "db_migrate_officer_outside_db_components_is_refused" {
+  command = plan
+
+  variables {
+    capabilities_dir = "tests/fixtures/capabilities-officer-scope"
   }
 
   expect_failures = [terraform_data.manifest_checks]

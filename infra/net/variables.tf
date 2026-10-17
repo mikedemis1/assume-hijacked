@@ -63,8 +63,20 @@ variable "aks_pod_cidr" {
   default     = "10.244.0.0/16"
 
   validation {
-    condition     = can(cidrhost(var.aks_pod_cidr, 0)) && !contains(["10.10.0.0/24", "10.20.0.0/16"], var.aks_pod_cidr)
-    error_message = "aks_pod_cidr must be an IPv4 CIDR outside the hub and spoke ranges."
+    # Two IPv4 ranges overlap when their first addresses (as integers) agree on the shorter
+    # of the two prefixes. Checked against the hub and the spoke address spaces.
+    condition = can(cidrhost(var.aks_pod_cidr, 0)) && try(alltrue([
+      for pair in [[var.aks_pod_cidr, var.hub_address_space], [var.aks_pod_cidr, var.spoke_address_space]] :
+      floor(
+        sum([for i, o in split(".", cidrhost(pair[0], 0)) : tonumber(o) * pow(256, 3 - i)])
+        / pow(2, 32 - min(tonumber(split("/", pair[0])[1]), tonumber(split("/", pair[1])[1])))
+      )
+      != floor(
+        sum([for i, o in split(".", cidrhost(pair[1], 0)) : tonumber(o) * pow(256, 3 - i)])
+        / pow(2, 32 - min(tonumber(split("/", pair[0])[1]), tonumber(split("/", pair[1])[1])))
+      )
+    ]), false)
+    error_message = "aks_pod_cidr must be an IPv4 CIDR that does not overlap the hub or spoke address space (the NSGs allow every port to and from it)."
   }
 }
 

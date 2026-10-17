@@ -91,17 +91,59 @@ locals {
   unplaced  = sort([for c, ns in local.namespaces : c if ns == null])
   all_roles = flatten([for c, m in local.identity_manifests : [for r in try(m.azure.roles, []) : merge(r, { component = c })]])
 
-  # Key Vault roles resolve through the base output; a scope base does not know is reported.
+  # ------------------------------------------------------------ Key Vault RBAC (ruling R18)
+  #
+  # The vault roles are DERIVED here, not copied from the manifests:
+  #   - every workload identity: Key Vault Secrets User on its OWN vault (scope kv-<component>)
+  #     and on no other vault;
+  #   - the db-migrate identity (var.db_admin_component): Key Vault Secrets Officer on the vault
+  #     of every component that has a database role. db-migrate generates each role's password
+  #     on every deploy, runs ALTER ROLE ... PASSWORD and writes secret db-password-<role> into
+  #     that vault.
+  # The manifests may still list vault roles (lane A writes them); a listed role that the rule
+  # above would not grant stops the plan (manifest_checks), so a manifest cannot widen access.
+  own_vault = { for c in keys(local.placed) : c => "kv-${c}" }
+
+  db_components = sort([
+    for k, m in local.manifests : m.component
+    if try(m.db.role, null) != null && m.component != var.db_admin_component
+  ])
+  missing_db_vaults = [for c in local.db_components : "kv-${c}" if !contains(keys(local.key_vaults), "kv-${c}")]
+
   vault_roles     = [for r in local.all_roles : r if startswith(r.scope, "kv-")]
-  unknown_vaults  = sort(distinct([for r in local.vault_roles : r.scope if !contains(keys(local.key_vaults), r.scope)]))
   non_vault_roles = [for r in local.all_roles : r if !startswith(r.scope, "kv-")]
+
+  # Manifest vault roles that break the rule: Officer for anyone but db-migrate, Secrets User on
+  # a vault that is not the component's own, or any other vault role.
+  vault_role_violations = [
+    for r in local.vault_roles : "${r.component}: ${r.role} on ${r.scope}"
+    if !(
+      (r.role == "Key Vault Secrets User" && r.scope == "kv-${r.component}")
+      || (r.role == "Key Vault Secrets Officer" && r.component == var.db_admin_component)
+    )
+  ]
+
+  # Officer grants listed for db-migrate must stay inside the derived set.
+  officer_scope_violations = [
+    for r in local.vault_roles : "${r.component}: ${r.role} on ${r.scope}"
+    if r.role == "Key Vault Secrets Officer" && r.component == var.db_admin_component && !contains([for c in local.db_components : "kv-${c}"], r.scope)
+  ]
+
   identity_grants = {
-    for c, m in local.placed : c => {
-      for r in try(m.azure.roles, []) : "${r.scope}/${r.role}" => {
-        role     = r.role
-        scope_id = local.key_vaults[r.scope].id
-      } if startswith(r.scope, "kv-") && contains(keys(local.key_vaults), r.scope)
-    }
+    for c, m in local.placed : c => merge(
+      contains(keys(local.key_vaults), local.own_vault[c]) ? {
+        "${local.own_vault[c]}/Key Vault Secrets User" = {
+          role     = "Key Vault Secrets User"
+          scope_id = local.key_vaults[local.own_vault[c]].id
+        }
+      } : {},
+      c == var.db_admin_component ? {
+        for d in local.db_components : "kv-${d}/Key Vault Secrets Officer" => {
+          role     = "Key Vault Secrets Officer"
+          scope_id = local.key_vaults["kv-${d}"].id
+        } if contains(keys(local.key_vaults), "kv-${d}")
+      } : {},
+    )
   }
 }
 
@@ -117,8 +159,18 @@ resource "terraform_data" "manifest_checks" {
     }
 
     precondition {
-      condition     = length(local.unknown_vaults) == 0
-      error_message = "The manifests name Key Vaults that infra/base has not created: ${join(", ", local.unknown_vaults)}. Apply infra/base first."
+      condition     = length(local.missing_db_vaults) == 0
+      error_message = "Components with a database role have no Key Vault in infra/base: ${join(", ", local.missing_db_vaults)}. Their manifests need a kv-<component> scope; apply infra/base first."
+    }
+
+    precondition {
+      condition     = length(local.vault_role_violations) == 0
+      error_message = "Vault roles outside the rule (Secrets User on the own vault; Secrets Officer only for ${var.db_admin_component}): ${join("; ", local.vault_role_violations)}."
+    }
+
+    precondition {
+      condition     = length(local.officer_scope_violations) == 0
+      error_message = "${var.db_admin_component} may hold Secrets Officer only on vaults of components with a database role: ${join("; ", local.officer_scope_violations)}."
     }
 
     precondition {

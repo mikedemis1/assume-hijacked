@@ -151,6 +151,17 @@ variable "sandbox_node_count" {
   }
 }
 
+variable "service_cidr" {
+  description = "Kubernetes service range. Must not overlap the pod range (infra/net aks_pod_cidr), the hub or the spoke. The DNS service gets its 10th address."
+  type        = string
+  default     = "10.0.0.0/16"
+
+  validation {
+    condition     = can(cidrhost(var.service_cidr, 10)) && try(tonumber(split("/", var.service_cidr)[1]) >= 12, false)
+    error_message = "service_cidr must be an IPv4 CIDR no wider than /12 (AKS limit)."
+  }
+}
+
 variable "api_authorized_ip_ranges" {
   description = "Public CIDRs that may reach the Kubernetes API (for example the owner's IP as x.x.x.x/32). The firewall's public IP is added automatically when the firewall is on."
   type        = list(string)
@@ -200,6 +211,23 @@ variable "enable_firewall" {
   default     = true
 }
 
+variable "foundry_enabled" {
+  description = "true when llm-gateway uses the foundry backend: the firewall then allows the Foundry endpoint from the system subnet."
+  type        = bool
+  default     = false
+}
+
+variable "foundry_fqdn" {
+  description = "Host name of the Foundry endpoint (for example <resource>.services.ai.azure.com). Required when foundry_enabled."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = !var.foundry_enabled || can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.foundry_fqdn))
+    error_message = "With foundry_enabled, foundry_fqdn must be one exact host name (no wildcard, no scheme)."
+  }
+}
+
 # ---------------------------------------------------------------- PostgreSQL
 
 variable "postgres_admin_login" {
@@ -212,6 +240,17 @@ variable "postgres_admin_password_version" {
   description = "Increase by one to set a new random admin password (write-only argument: Terraform sends the password only when this number changes)."
   type        = number
   default     = 1
+}
+
+variable "postgres_extensions" {
+  description = "Extensions allow-listed on the server (azure.extensions). The schema scripts create pgcrypto."
+  type        = list(string)
+  default     = ["PGCRYPTO"]
+
+  validation {
+    condition     = contains([for e in var.postgres_extensions : upper(e)], "PGCRYPTO")
+    error_message = "PGCRYPTO must stay allow-listed: db/sql/05-lease.sql creates it."
+  }
 }
 
 # ---------------------------------------------------------------- alerts

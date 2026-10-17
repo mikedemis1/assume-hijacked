@@ -23,6 +23,21 @@
 #     (learn.microsoft.com/azure/aks/limit-egress-traffic).
 
 locals {
+  service_cidr = var.service_cidr
+
+  # Overlap test on IPv4 ranges: same start on the shorter prefix.
+  service_pod_ranges = {
+    for k, c in { service = local.service_cidr, pod = local.net.aks_pod_cidr } : k => {
+      start               = sum([for i, o in split(".", cidrhost(c, 0)) : tonumber(o) * pow(256, 3 - i)])
+      bits                = tonumber(split("/", c)[1])
+    }
+  }
+  service_pod_bits = min(local.service_pod_ranges.service.bits, local.service_pod_ranges.pod.bits)
+  service_overlaps_pods = (
+    floor(local.service_pod_ranges.service.start / pow(2, 32 - local.service_pod_bits))
+    == floor(local.service_pod_ranges.pod.start / pow(2, 32 - local.service_pod_bits))
+  )
+
   # The firewall's public IP must be authorized, or nodes behind the firewall cannot reach
   # the API server (their traffic leaves through that IP).
   api_authorized_ip_ranges = concat(
@@ -114,8 +129,8 @@ resource "azurerm_kubernetes_cluster" "this" {
     # Pod range from infra/net, whose AKS NSGs allow exactly this range (overlay pod traffic
     # is not encapsulated). Service range: outside hub 10.10.0.0/24, spoke 10.20.0.0/16 and pods.
     pod_cidr       = local.net.aks_pod_cidr
-    service_cidr   = "10.0.0.0/16"
-    dns_service_ip = "10.0.0.10"
+    service_cidr   = local.service_cidr
+    dns_service_ip = cidrhost(local.service_cidr, 10)
 
     # Advanced Container Networking Services: Cilium FQDN filtering and L7 policy
     # (security) and Hubble flow logs (observability).
@@ -155,6 +170,11 @@ resource "azurerm_kubernetes_cluster" "this" {
     ignore_changes = [
       kubernetes_version, # moved by the patch upgrade channel
     ]
+
+    precondition {
+      condition     = !local.service_overlaps_pods
+      error_message = "The service range ${local.service_cidr} overlaps the pod range ${local.net.aks_pod_cidr} from infra/net."
+    }
   }
 }
 

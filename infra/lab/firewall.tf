@@ -73,14 +73,25 @@ locals {
     }
   }
 
-  llm_rules = {
-    anthropic-api = {
-      sources   = local.system_only
-      fqdn_tags = []
-      fqdns     = ["api.anthropic.com"]
-      http      = false
-    }
-  }
+  llm_rules = merge(
+    {
+      anthropic-api = {
+        sources   = local.system_only
+        fqdn_tags = []
+        fqdns     = ["api.anthropic.com"]
+        http      = false
+      }
+    },
+    # llm-gateway backend "foundry" (decision 7); only when that backend is in use.
+    var.foundry_enabled ? {
+      foundry-api = {
+        sources   = local.system_only
+        fqdn_tags = []
+        fqdns     = [var.foundry_fqdn]
+        http      = false
+      }
+    } : {},
+  )
 }
 
 resource "azurerm_public_ip" "firewall_data" {

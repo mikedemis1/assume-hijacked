@@ -13,13 +13,14 @@
 #      login that can be reset through ARM (`az postgres flexible-server update
 #      --admin-password`) by someone with rights on rg-lab. Day-to-day admin is Entra.
 #      Bump postgres_admin_password_version to rotate it.
-#   2. The per-role workload passwords are NOT created by Terraform. azurerm_key_vault_secret
-#      has value_wo (checked, 4.81.0), but writing a secret is a vault DATA-plane call: the
-#      vaults deny every network except the two AKS subnets (infra/base network_acls, bypass
-#      None), and ci-apply runs on GitLab runners outside them. The lab state would also own
-#      the secrets, so each nightly destroy would delete them. They are generated inside the
-#      cluster instead (db-migrate holds Key Vault Secrets Officer on the vaults in its
-#      manifest) or seeded once by the owner from an allowed IP. See the C3 report.
+#   2. The per-role workload passwords never pass through Terraform (ruling R18). The
+#      db-migrate Job (in the cluster, workload identity, Entra admin of this server)
+#      generates one password per workload role on every deploy, runs ALTER ROLE ... PASSWORD
+#      and writes secret db-password-<role> into that workload's Key Vault. Terraform only
+#      creates the vaults (infra/base) and the RBAC (main.tf, identities.tf): db-migrate gets
+#      Secrets Officer on the vault of each component with a database role, every workload
+#      Secrets User on its own vault. The vaults' data plane is reachable only from the AKS
+#      subnets, which is where db-migrate runs; ci-apply never touches a secret.
 
 locals {
   # Server names are global DNS names (<name>.postgres.database.azure.com): readable prefix
@@ -84,6 +85,15 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "db
 
 # The chart's db-migrate Job connects to `supplier` before init runs, so the database must
 # exist on the server already.
+# Extensions must be allow-listed on Flexible Server before CREATE EXTENSION works.
+# db/sql/05-lease.sql runs CREATE EXTENSION pgcrypto (lease tokens are hashed with it).
+# Docs: learn.microsoft.com/azure/postgresql/extensions/how-to-allow-extensions
+resource "azurerm_postgresql_flexible_server_configuration" "extensions" {
+  name      = "azure.extensions"
+  server_id = azurerm_postgresql_flexible_server.this.id
+  value     = join(",", var.postgres_extensions)
+}
+
 resource "azurerm_postgresql_flexible_server_database" "supplier" {
   name      = "supplier"
   server_id = azurerm_postgresql_flexible_server.this.id
