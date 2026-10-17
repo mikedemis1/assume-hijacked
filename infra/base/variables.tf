@@ -143,21 +143,15 @@ variable "allowed_vm_sizes" {
 }
 
 variable "lab_resource_group_name" {
-  description = "Resource group destroyed after every session; ci-apply gets Contributor here."
+  description = "Empty resource group created here for infra/lab, which references it by data source. A lab destroy removes its contents, never the group."
   type        = string
   default     = "rg-lab"
 }
 
 variable "net_resource_group_name" {
-  description = "Resource group with the VNets and DNS; ci-apply gets Contributor here."
+  description = "Empty resource group created here for infra/net, which references it by data source."
   type        = string
   default     = "rg-net"
-}
-
-variable "grant_ci_apply_on_lab_and_net" {
-  description = "Create ci-apply's role assignments on rg-lab and rg-net. Turn on only after those groups exist; a role assignment cannot point at a missing scope."
-  type        = bool
-  default     = false
 }
 
 variable "gitlab_issuer" {

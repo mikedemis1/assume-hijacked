@@ -33,15 +33,7 @@ output "log_analytics_workspace_id" {
   value       = azurerm_log_analytics_workspace.evidence.id
 }
 
-output "key_vault_ids" {
-  description = "Vault name to resource ID."
-  value       = { for name, kv in azurerm_key_vault.workload : name => kv.id }
-}
 
-output "key_vault_uris" {
-  description = "Vault name to data-plane URI."
-  value       = { for name, kv in azurerm_key_vault.workload : name => kv.vault_uri }
-}
 
 output "key_vault_grants" {
   description = "Roles that infra/lab must assign: identity name, role, vault. Taken from the capability manifests."
@@ -65,4 +57,28 @@ output "ci_client_ids" {
 output "budget_ids" {
   description = "Budget name to resource ID."
   value       = { for k, b in azurerm_consumption_budget_subscription.monthly : k => b.id }
+}
+
+output "key_vaults" {
+  description = "Logical vault name (the scope in the capability manifests) to physical name, ID and URI. infra/lab resolves vaults through this map."
+  value = {
+    for scope, kv in azurerm_key_vault.workload : scope => {
+      name = kv.name
+      id   = kv.id
+      uri  = kv.vault_uri
+    }
+  }
+}
+
+output "key_vault_names" {
+  description = "Logical vault name to physical name."
+  value       = local.key_vault_physical_names
+}
+
+output "resource_group_ids" {
+  description = "IDs of the empty rg-net and rg-lab groups created here."
+  value = {
+    net = azurerm_resource_group.net.id
+    lab = azurerm_resource_group.lab.id
+  }
 }

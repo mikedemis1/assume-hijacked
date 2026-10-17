@@ -131,8 +131,8 @@ resource "azurerm_subscription_policy_assignment" "postgres_no_public_access" {
   })
 }
 
-resource "azurerm_subscription_policy_assignment" "keyvault_no_public_access" {
-  name                 = "keyvault-no-public-access"
+resource "azurerm_subscription_policy_assignment" "keyvault_firewall_or_no_public_access" {
+  name                 = "keyvault-firewall-or-no-public"
   display_name         = "Key Vault: firewall on or public access off"
   subscription_id      = local.subscription_scope
   policy_definition_id = local.builtin_policy_ids.keyvault_firewall

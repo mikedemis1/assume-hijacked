@@ -108,7 +108,7 @@ run "policy_denies_vm_sizes_outside_allowlist" {
   }
 }
 
-run "policy_denies_public_access_for_postgres_and_key_vault" {
+run "policy_denies_postgres_public_access_and_requires_key_vault_firewall" {
   command = plan
 
   assert {
@@ -116,9 +116,16 @@ run "policy_denies_public_access_for_postgres_and_key_vault" {
     error_message = "PostgreSQL public access must be denied."
   }
 
+  # The built-in is "Key Vault should have firewall enabled or public network access
+  # disabled": a vault with a firewall (our pattern) or with public access off passes.
   assert {
-    condition     = jsondecode(azurerm_subscription_policy_assignment.keyvault_no_public_access.parameters).effect.value == "Deny"
-    error_message = "Key Vault public access must be denied."
+    condition     = jsondecode(azurerm_subscription_policy_assignment.keyvault_firewall_or_no_public_access.parameters).effect.value == "Deny"
+    error_message = "A Key Vault with neither firewall nor disabled public access must be denied."
+  }
+
+  assert {
+    condition     = endswith(azurerm_subscription_policy_assignment.keyvault_firewall_or_no_public_access.policy_definition_id, "55615ac9-af46-4a59-874e-391cc3dfb490")
+    error_message = "Wrong built-in definition for the Key Vault rule."
   }
 }
 
@@ -241,14 +248,83 @@ run "no_manifests_means_no_vaults" {
   }
 }
 
-run "vault_name_longer_than_24_characters_is_refused" {
+run "physical_vault_names_are_valid_unique_and_published" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for scope, n in azurerm_key_vault.workload :
+      length(n.name) >= 3 && length(n.name) <= 24 && can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", n.name)) && !strcontains(n.name, "--")
+    ])
+    error_message = "Vault names must be 3-24 characters, lowercase letters/digits/single hyphens, starting with a letter."
+  }
+
+  assert {
+    condition     = startswith(azurerm_key_vault.workload["kv-tool-lookup-account"].name, "kv-tool-lookup-ac-") && length(azurerm_key_vault.workload["kv-tool-lookup-account"].name) == 24
+    error_message = "Name must be the readable prefix (17 characters) plus a 6-character hash."
+  }
+
+  assert {
+    condition     = length(distinct([for scope, n in azurerm_key_vault.workload : n.name])) == length(azurerm_key_vault.workload)
+    error_message = "Two scopes must never share a physical name."
+  }
+
+  assert {
+    condition     = toset(keys(output.key_vaults)) == toset(["kv-tool-gateway", "kv-tool-lookup-account"])
+    error_message = "key_vaults output must be keyed by the logical scope name."
+  }
+
+  assert {
+    condition     = alltrue([for scope, v in output.key_vaults : v.name == output.key_vault_names[scope]])
+    error_message = "The key_vaults output and the name map must agree."
+  }
+}
+
+run "awkward_and_long_scopes_still_give_valid_distinct_names" {
   command = plan
 
   variables {
-    capabilities_dir = "tests/fixtures/capabilities-bad-name"
+    capabilities_dir = "tests/fixtures/capabilities-awkward-names"
   }
 
-  expect_failures = [azurerm_key_vault.workload]
+  assert {
+    condition     = length(azurerm_key_vault.workload) == 4
+    error_message = "Four scopes, four vaults."
+  }
+
+  assert {
+    condition = alltrue([
+      for scope, n in azurerm_key_vault.workload :
+      length(n.name) >= 3 && length(n.name) <= 24 && can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", n.name)) && !strcontains(n.name, "--")
+    ])
+    error_message = "Long scopes, doubled hyphens, underscores, dots and a trailing hyphen must all end as valid names."
+  }
+
+  # The two long scopes share their first 17 characters; only the hash tells them apart.
+  assert {
+    condition     = azurerm_key_vault.workload["kv-this-name-is-far-too-long-for-azure"].name != azurerm_key_vault.workload["kv-this-name-is-far-too-long-for-azure-too"].name
+    error_message = "Scopes with the same prefix must still get different names."
+  }
+
+  assert {
+    condition     = length(distinct([for scope, n in azurerm_key_vault.workload : n.name])) == 4
+    error_message = "All four names must differ."
+  }
+}
+
+run "vault_names_depend_on_the_subscription" {
+  command = plan
+
+  variables {
+    subscription_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  }
+
+  # The same scope gets another name in another subscription (the name is a global
+  # DNS name; two owners of this repository must not collide).
+  assert {
+    condition     = output.key_vault_names["kv-tool-gateway"] != "kv-tool-gateway-${substr(sha256("11111111-2222-3333-4444-555555555555/kv-tool-gateway"), 0, 6)}"
+    error_message = "Another subscription must produce another hash."
+  }
 }
 
 # ---------------------------------------------------------------- CI identities
@@ -296,17 +372,27 @@ run "ci_roles_are_least_privilege" {
   }
 
   assert {
-    condition     = length(azurerm_role_assignment.ci_apply_contributor) == 0
-    error_message = "ci-apply gets no Contributor until rg-lab and rg-net exist."
+    condition     = azurerm_role_assignment.ci_apply_monitoring_base.role_definition_name == "Monitoring Contributor"
+    error_message = "ci-apply needs Monitoring Contributor on rg-base (diagnostic settings on the vaults, alert rules on the workspace)."
   }
 }
 
-run "ci_apply_can_assign_only_listed_roles" {
+run "rg_net_and_rg_lab_exist_as_empty_shells" {
   command = plan
 
-  variables {
-    grant_ci_apply_on_lab_and_net = true
+  assert {
+    condition     = azurerm_resource_group.lab.name == "rg-lab" && azurerm_resource_group.net.name == "rg-net"
+    error_message = "Base must create rg-lab and rg-net so ci-apply's grants survive a lab destroy."
   }
+
+  assert {
+    condition     = azurerm_resource_group.lab.location == "northeurope" && azurerm_resource_group.net.location == "northeurope"
+    error_message = "Both groups belong in North Europe."
+  }
+}
+
+run "ci_apply_gets_contributor_on_lab_and_net_unconditionally" {
+  command = plan
 
   assert {
     condition     = toset(keys(azurerm_role_assignment.ci_apply_contributor)) == toset(["lab", "net"])
@@ -314,39 +400,66 @@ run "ci_apply_can_assign_only_listed_roles" {
   }
 
   assert {
-    condition     = alltrue([for k, r in azurerm_role_assignment.ci_apply_contributor : endswith(r.scope, "/resourceGroups/rg-lab") || endswith(r.scope, "/resourceGroups/rg-net")])
+    condition = (
+      azurerm_role_assignment.ci_apply_contributor["lab"].scope == "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab"
+      && azurerm_role_assignment.ci_apply_contributor["net"].scope == "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net"
+    )
     error_message = "Contributor scopes must be exactly the two resource groups."
   }
 
   assert {
-    condition     = alltrue([for k, r in azurerm_role_assignment.ci_apply_rbac_admin_lab : r.role_definition_name == "Role Based Access Control Administrator" && r.condition_version == "2.0"])
-    error_message = "Role assignment rights must carry a version 2.0 condition."
+    condition     = alltrue([for k, r in azurerm_role_assignment.ci_apply_contributor : r.role_definition_name == "Contributor"])
+    error_message = "The role on rg-lab and rg-net must be Contributor."
+  }
+}
+
+# Every RBAC-administrator grant of ci-apply (rg-lab, rg-net, the registry, each vault)
+# must carry the same version 2.0 condition. Deleting it would hand out unlimited
+# role-assignment rights, so each grant is checked, not just one group of them.
+run "every_ci_apply_rbac_admin_grant_is_conditioned_to_the_short_role_list" {
+  command = plan
+
+  assert {
+    condition     = toset(concat(keys(azurerm_role_assignment.ci_apply_rbac_admin_lab), keys(azurerm_role_assignment.ci_apply_rbac_admin_base))) == toset(["lab", "net", "acr", "kv-tool-gateway", "kv-tool-lookup-account"])
+    error_message = "RBAC administrator is expected on rg-lab, rg-net, the registry and each vault."
   }
 
-  # Allowed: AcrPull and Key Vault Secrets User.
   assert {
     condition = alltrue([
-      for k, r in azurerm_role_assignment.ci_apply_rbac_admin_lab :
+      for k, r in merge(azurerm_role_assignment.ci_apply_rbac_admin_lab, azurerm_role_assignment.ci_apply_rbac_admin_base) :
+      r.role_definition_name == "Role Based Access Control Administrator" && r.condition_version == "2.0" && r.condition != null && r.condition != ""
+    ])
+    error_message = "Every role-assignment grant must carry a version 2.0 condition."
+  }
+
+  # Allowed: AcrPull, Key Vault Secrets User.
+  assert {
+    condition = alltrue([
+      for k, r in merge(azurerm_role_assignment.ci_apply_rbac_admin_lab, azurerm_role_assignment.ci_apply_rbac_admin_base) :
       strcontains(r.condition, "7f951dda-4ed3-4680-a7ca-43fe172d538d") && strcontains(r.condition, "4633458b-17de-408a-b874-0445c86b69e6")
     ])
     error_message = "AcrPull and Key Vault Secrets User must be assignable."
   }
 
+  # Checked on write and on delete.
+  assert {
+    condition = alltrue([
+      for k, r in merge(azurerm_role_assignment.ci_apply_rbac_admin_lab, azurerm_role_assignment.ci_apply_rbac_admin_base) :
+      strcontains(r.condition, "roleAssignments/write") && strcontains(r.condition, "roleAssignments/delete")
+    ])
+    error_message = "The condition must cover role assignment writes and deletes."
+  }
+
   # Not allowed: Owner, Contributor, User Access Administrator, RBAC Administrator itself.
   assert {
     condition = alltrue([
-      for k, r in azurerm_role_assignment.ci_apply_rbac_admin_lab :
+      for k, r in merge(azurerm_role_assignment.ci_apply_rbac_admin_lab, azurerm_role_assignment.ci_apply_rbac_admin_base) :
       !strcontains(r.condition, "8e3af657-a8ff-443c-a75c-2fe8c4bcb635")
       && !strcontains(r.condition, "b24988ac-6180-42a0-ab88-20f7382dd24c")
       && !strcontains(r.condition, "18d7d88d-d35e-4fb5-a5c3-7773c20a72d9")
       && !strcontains(r.condition, "f58310d9-a9f6-439a-9e8d-f62e7b41a168")
     ])
     error_message = "Owner, Contributor, User Access Administrator and RBAC Administrator must not be assignable."
-  }
-
-  assert {
-    condition     = toset(keys(azurerm_role_assignment.ci_apply_rbac_admin_base)) == toset(["acr", "kv-tool-gateway", "kv-tool-lookup-account"])
-    error_message = "Constrained role-assignment rights are also needed on the registry and each vault."
   }
 }
 

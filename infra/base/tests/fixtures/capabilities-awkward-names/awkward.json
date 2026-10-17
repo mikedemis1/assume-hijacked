@@ -1,0 +1,6 @@
+{"component": "awkward",
+ "azure": {"identity": "id-awkward", "roles": [
+   {"role": "Key Vault Secrets User", "scope": "kv-this-name-is-far-too-long-for-azure"},
+   {"role": "Key Vault Secrets User", "scope": "kv-this-name-is-far-too-long-for-azure-too"},
+   {"role": "Key Vault Secrets User", "scope": "kv--Double__hyphen.Name-"},
+   {"role": "Key Vault Secrets User", "scope": "kv-"}]}}

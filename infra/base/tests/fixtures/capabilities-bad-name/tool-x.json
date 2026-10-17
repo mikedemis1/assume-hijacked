@@ -1,2 +1,0 @@
-{"component": "tool-x",
- "azure": {"identity": "id-tool-x", "roles": [{"role": "Key Vault Secrets User", "scope": "kv-this-name-is-far-too-long-for-azure"}]}}

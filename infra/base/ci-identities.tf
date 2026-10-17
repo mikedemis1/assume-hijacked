@@ -4,8 +4,9 @@
 #
 #   ci-plan   any branch   Reader on the subscription, read on the state blob
 #   ci-push   main         AcrPush on the registry
-#   ci-apply  main         Contributor on rg-lab and rg-net, plus a role-assignment
-#                          right that can only hand out a short list of roles
+#   ci-apply  main         Contributor on rg-lab and rg-net, Monitoring Contributor on
+#                          rg-base, plus a role-assignment right that can only hand
+#                          out a short list of roles
 #
 # GitLab subject format: project_path:<group>/<project>:ref_type:<branch|tag>:ref:<name>
 
@@ -46,10 +47,12 @@ locals {
     "OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${local.ci_apply_assignable_guids}}))",
   ])
 
-  lab_scopes = var.grant_ci_apply_on_lab_and_net ? {
+  # Built from the group names (known at plan time); the role assignments below
+  # depend_on the groups so they are created after them.
+  lab_scopes = {
     lab = "${local.subscription_scope}/resourceGroups/${var.lab_resource_group_name}"
     net = "${local.subscription_scope}/resourceGroups/${var.net_resource_group_name}"
-  } : {}
+  }
 
   # Scopes in rg-base where infra/lab must create role assignments (AcrPull for the
   # kubelet, Secrets User for workload identities). Contributor cannot do that.
@@ -169,6 +172,8 @@ resource "azurerm_role_assignment" "ci_apply_contributor" {
   principal_id                     = azuread_service_principal.ci_apply.object_id
   principal_type                   = "ServicePrincipal"
   skip_service_principal_aad_check = true
+
+  depends_on = [azurerm_resource_group.lab, azurerm_resource_group.net]
 }
 
 # Role assignment rights, limited by the condition to the short role list above.
@@ -182,6 +187,8 @@ resource "azurerm_role_assignment" "ci_apply_rbac_admin_lab" {
   skip_service_principal_aad_check = true
   condition_version                = "2.0"
   condition                        = local.ci_apply_rbac_condition
+
+  depends_on = [azurerm_resource_group.lab, azurerm_resource_group.net]
 }
 
 resource "azurerm_role_assignment" "ci_apply_rbac_admin_base" {
@@ -194,4 +201,14 @@ resource "azurerm_role_assignment" "ci_apply_rbac_admin_base" {
   skip_service_principal_aad_check = true
   condition_version                = "2.0"
   condition                        = local.ci_apply_rbac_condition
+}
+
+# Diagnostic settings on the vaults and alert rules against the workspace are created
+# by infra/lab, running as ci-apply; both live in rg-base.
+resource "azurerm_role_assignment" "ci_apply_monitoring_base" {
+  scope                            = azurerm_resource_group.base.id
+  role_definition_name             = "Monitoring Contributor"
+  principal_id                     = azuread_service_principal.ci_apply.object_id
+  principal_type                   = "ServicePrincipal"
+  skip_service_principal_aad_check = true
 }

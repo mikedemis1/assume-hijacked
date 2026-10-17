@@ -1,5 +1,6 @@
 # rg-base: the part of the lab that survives every destroy of rg-lab.
-# Contents: state storage, container registry, Log Analytics (this file);
+# Contents: empty rg-net and rg-lab shells, state storage, container registry,
+# Log Analytics (this file);
 # Key Vaults (keyvaults.tf); budgets (budgets.tf); Azure Policy (policy.tf);
 # CI identities (ci-identities.tf).
 
@@ -9,6 +10,27 @@ locals {
 
 resource "azurerm_resource_group" "base" {
   name     = var.resource_group_name
+  location = var.location
+  tags     = var.tags
+}
+
+# ---------------------------------------------------------------- rg-net and rg-lab (empty shells)
+#
+# The two resource groups of the other stacks are created HERE and stay empty. infra/net
+# and infra/lab must reference them with `data "azurerm_resource_group"`, never create
+# them. Reason: ci-apply's role assignments on these groups live in this state. If the
+# nightly lab destroy deleted rg-lab itself, the assignments would vanish with it and CI
+# could not recreate the lab. A lab destroy removes the group's contents, never the group.
+# Empty resource groups cost nothing.
+
+resource "azurerm_resource_group" "net" {
+  name     = var.net_resource_group_name
+  location = var.location
+  tags     = var.tags
+}
+
+resource "azurerm_resource_group" "lab" {
+  name     = var.lab_resource_group_name
   location = var.location
   tags     = var.tags
 }
