@@ -6,7 +6,9 @@ https://www.postgresql.org/docs/17/catalogs.html, ACLs: https://www.postgresql.o
 
   roles           every role except the built-in pg_* roles and the bootstrap superuser (the
                   role that runs the database scripts, oid 10): LOGIN, SUPERUSER, CREATEDB,
-                  CREATEROLE, REPLICATION, BYPASSRLS, NOINHERIT, CONNECTION LIMIT
+                  CREATEROLE, REPLICATION, BYPASSRLS, NOINHERIT, CONNECTION LIMIT. The
+                  bootstrap superuser gets one fixed line, ATTRIBUTES BOOTSTRAP SUPERUSER, so
+                  the report knows that what it owns runs with every right
   memberships     GRANT <role> TO <role>, with ADMIN / INHERIT FALSE / SET FALSE
   privileges      database, schemas, tables / views / sequences, columns, functions. A NULL
                   ACL means the built-in default (acldefault), which for functions is EXECUTE
@@ -14,9 +16,11 @@ https://www.postgresql.org/docs/17/catalogs.html, ACLs: https://www.postgresql.o
                   (via PUBLIC), so a PUBLIC grant shows as what it is, a grant to everyone.
                   pg_catalog functions are read only when their ACL was changed (the advisory
                   locks); grants an owner holds on its own object are implied, not listed.
-  ownership       objects owned by anyone but the bootstrap superuser or a built-in role, and
-                  every SECURITY DEFINER function with its owner, whoever that is: the function
-                  runs with that owner's rights
+  ownership       the assessed database and objects owned by anyone but the bootstrap
+                  superuser or a built-in role, and every SECURITY DEFINER function with its
+                  owner, whoever that is: the function runs with that owner's rights. A schema
+                  owned by pg_database_owner (PostgreSQL 15 and later: `public`) is owned by
+                  whoever owns the database, so it is listed under that role
   row security    ENABLE / FORCE ROW LEVEL SECURITY per table, and each policy per role it
                   applies to, with its USING and WITH CHECK expressions
   defaults        ALTER DEFAULT PRIVILEGES, as the difference from the built-in defaults
@@ -66,6 +70,9 @@ def _attribute_lines(conn: Any, roles: _Roles) -> list[str]:
             SELECT oid, rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin,
                    rolreplication, rolbypassrls, rolconnlimit
             FROM pg_catalog.pg_roles"""):
+        if oid == BOOTSTRAP_OID:
+            out.append(canon.pg_role(name, canon.BOOTSTRAP_ATTRIBUTES))
+            continue
         if oid not in roles.assessed:
             continue
         out.append(canon.pg_role(name, canon.attributes(
@@ -168,8 +175,14 @@ def _privilege_lines(conn: Any, roles: _Roles) -> list[str]:
 
 def _ownership_lines(conn: Any, roles: _Roles) -> list[str]:
     out = []
+    ((dba,),) = _rows(conn, """
+        SELECT datdba FROM pg_catalog.pg_database WHERE datname = current_database()""")
+    if not roles.builtin(dba):
+        out.append(canon.pg_role(roles.names[dba], "OWNS DATABASE"))
     for name, owner in _rows(conn, f"""
             SELECT n.nspname, n.nspowner FROM pg_catalog.pg_namespace n WHERE {_USER_SCHEMA}"""):
+        if roles.names.get(owner) == "pg_database_owner":
+            owner = dba
         if not roles.builtin(owner):
             out.append(canon.pg_role(roles.names[owner], f"OWNS SCHEMA {name}"))
     for name, kind, owner in _rows(conn, f"""

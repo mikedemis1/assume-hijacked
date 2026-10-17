@@ -20,6 +20,9 @@ from __future__ import annotations
 import re
 
 VIA_PUBLIC = " (via PUBLIC)"
+# The role that runs the database scripts (postgres): a superuser whose exact attributes depend on
+# the server, so it gets this one fixed line instead.
+BOOTSTRAP_ATTRIBUTES = "ATTRIBUTES BOOTSTRAP SUPERUSER"
 GRANT_OPTION = " WITH GRANT OPTION"
 
 # PostgreSQL's own spelling of the common type aliases (format_type output).

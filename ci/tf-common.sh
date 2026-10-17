@@ -99,8 +99,12 @@ need_terraform() {
 
 # plan_stack <apply|destroy> <stack> [extra plan arguments]: plan without a lock (ci-plan can read
 # the state but not write its lease), save the plan file and a readable copy under plans/<kind>/,
-# print it, and record whether it changes anything. The apply and destroy jobs run these files and
-# never plan again, so what a person read in the plan job is what runs.
+# and record whether it changes anything. The apply and destroy jobs run these files and never
+# plan again, so what a person read in the plan job is what runs.
+# The job log of a public project is public, and a plan lists attribute values. So the log gets
+# only the counts ("Plan: X to add, Y to change, Z to destroy."); the plan itself (terraform's
+# output and the readable copy) stays in plans/<kind>/, an artifact for project members with the
+# Developer role or above. Errors still reach the log: terraform writes them to stderr.
 plan_stack() {
     kind=$1
     stack=$2
@@ -113,14 +117,16 @@ plan_stack() {
         set -- "$@" "$arg"
     done
     rc=0
-    terraform -chdir="$stack" plan "$@" || rc=$?
+    terraform -chdir="$stack" plan "$@" >"$dir/$name.plan.log" || rc=$?
     case "$rc" in
         0) changes=no ;;
         2) changes=yes ;;
-        *) die "terraform plan failed for $stack (exit code $rc)" ;;
+        *) die "terraform plan failed for $stack (exit code $rc); its output is in the artifact, $PLANS/$kind/$name.plan.log" ;;
     esac
     terraform -chdir="$stack" show -no-color "$dir/$name.tfplan" >"$dir/$name.txt"
-    cat "$dir/$name.txt"
+    summary=$(grep -E '^(Plan: [0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy\.|No changes\.)' \
+        "$dir/$name.txt" | tail -n 1 || true)
+    echo "$stack: ${summary:-no change summary found; read $PLANS/$kind/$name.txt in the artifact}"
     echo "$changes" >"$dir/$name.changes"
     echo "${CI_COMMIT_SHA:-unknown}" >"$dir/commit"
 }

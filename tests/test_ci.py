@@ -513,8 +513,11 @@ case "$*" in
     for a in "$@"; do
       case "$a" in -out=*) echo "plan file" > "${a#-out=}" ;; esac
     done
+    echo '  + admin_password = "attribute-value-from-plan"'
     exit "${STANDIN_PLAN_RC:-0}" ;;
-  *" show "*) echo "Plan: 1 to add, 0 to change, 0 to destroy." ;;
+  *" show "*)
+    echo '  + admin_password = "attribute-value-from-show"'
+    echo "Plan: 1 to add, 0 to change, 0 to destroy." ;;
   *" apply "*)
     for last in "$@"; do :; done
     [ -f "$last" ] || { echo "Error: Failed to load plan file $last" >&2; exit 1; }
@@ -846,3 +849,49 @@ def test_plan_files_are_not_public_on_the_public_project(job):
     """Saved plans hold resource values; on a public project `access: all` (the default) would
     let anyone download them. https://docs.gitlab.com/ci/yaml/#artifactsaccess"""
     assert _jobs()[job]["artifacts"]["access"] == "developer"
+
+
+@needs_sh
+def test_plan_jobs_log_only_the_change_counts(azure_run):
+    """The job log of the public project is public; the plan text stays in the artifact."""
+    for script, kind, stacks in (("tf-plan.sh", "apply", ("net", "lab")),
+                                 ("tf-destroy-plan.sh", "destroy", ("lab", "net"))):
+        done, _ = azure_run(script)
+        log = done.stdout + done.stderr
+        assert done.returncode == 0, log
+        assert "attribute-value-from" not in log, f"{script} printed plan text"
+        for name in stacks:
+            assert f"infra/{name}: Plan: 1 to add, 0 to change, 0 to destroy." in log
+            folder = azure_run.root / "plans" / kind
+            assert "attribute-value-from-show" in (folder / f"{name}.txt").read_text(encoding="utf-8")
+            assert "attribute-value-from-plan" in (folder / f"{name}.plan.log").read_text(encoding="utf-8")
+
+
+PYTHON_STANDIN = """#!/bin/sh
+echo "python $*" >> "$STANDIN_LOG"
+case "$*" in
+  *"secops.permassess.report"*) exit "${STANDIN_REPORT_RC:-0}" ;;
+  *"secops.permassess --planes"*) exit "${STANDIN_ASSESS_RC:-0}" ;;
+esac
+exit 0
+"""
+
+
+@needs_sh
+@pytest.mark.parametrize("assess_rc, report_rc, want", [(0, 0, 0), (0, 1, 1), (1, 1, 1), (2, 1, 2),
+                                                        (2, 0, 2)])
+def test_permissions_script_assesses_first_and_keeps_the_worst_exit_code(tmp_path, assess_rc,
+                                                                          report_rc, want):
+    """A stale matrix must not stop the job before the assessment has written its reports."""
+    _scratch_repo(tmp_path, {})
+    python = tmp_path / "bin" / "python-standin"
+    python.write_text(PYTHON_STANDIN, encoding="utf-8", newline="\n")
+    log = tmp_path / "standin.log"
+    env = {**os.environ, "GITLAB_CI": "", "PYTHON": str(python), "STANDIN_LOG": str(log),
+           "STANDIN_ASSESS_RC": str(assess_rc), "STANDIN_REPORT_RC": str(report_rc),
+           "DB_HOST": "127.0.0.1", "DB_PORT": "5432", "POSTGRES_PASSWORD": "unused"}
+    done = subprocess.run([SH, "ci/permissions.sh"], cwd=tmp_path, env=env, capture_output=True,
+                          text=True, timeout=60, check=False)
+    assert done.returncode == want, done.stdout + done.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert ["--planes" in calls[0], "secops.permassess.report" in calls[-1]] == [True, True], calls

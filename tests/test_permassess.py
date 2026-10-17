@@ -182,10 +182,28 @@ def test_functions_in_another_schema_and_their_owners_are_reported(tx, expected_
     assert "pg role executor: EXECUTE ON FUNCTION crypto.rand(integer)" in d.extra
 
 
-def test_the_collector_only_reads(tx):
+def test_the_collector_only_reads(tx, db_env):
     before = collect_pg.collect(tx)
     tx.rollback()
     assert collect_pg.collect(tx) == before
+    # The command's own connection is read-only: the server refuses any write it might try.
+    conn = cli._connect_pg(db_env)
+    try:
+        assert conn.execute("SHOW transaction_read_only").fetchone()[0] == "on"
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+            conn.execute("CREATE TABLE public.should_not_exist (id int)")
+    finally:
+        conn.close()
+
+
+def test_database_owner_is_reported(tx, expected_doc):
+    """Whoever owns the database also owns the public schema (pg_database_owner) and can drop
+    or replace anything in it."""
+    tx.execute("ALTER DATABASE supplier_test OWNER TO tool_read_ticket")
+    d = _pg_diff(tx, expected_doc)
+    assert d.extra == ["pg role tool_read_ticket: OWNS DATABASE",
+                       "pg role tool_read_ticket: OWNS SCHEMA public"]
+    assert d.missing == []
 
 
 # --- expected file ---------------------------------------------------------------------------
@@ -221,7 +239,8 @@ def test_generator_expands_public_and_rls_to_every_declared_role(tmp_path):
     assert "pg role api_owner: OWNS FUNCTION public.api_read_ticket(text) SECURITY DEFINER" in pg
     assert "pg role api_owner: SELECT (ticket_id) ON public.leases" in pg
     assert "pg role postgres: DEFAULT PRIVILEGES ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC" in pg
-    assert not any(ln.startswith("pg role postgres: ATTRIBUTES") for ln in pg)
+    assert [ln for ln in pg if ln.startswith("pg role postgres: ATTRIBUTES")] == [
+        "pg role postgres: ATTRIBUTES BOOTSTRAP SUPERUSER"]
     assert "pg role tool_read_ticket: CONNECT ON DATABASE (via PUBLIC)" in pg
     assert "pg role postgres: CONNECT ON DATABASE (via PUBLIC)" not in pg
     assert "pg table public.leases: ROW LEVEL SECURITY, FORCED" in pg
@@ -367,7 +386,7 @@ selfsubjectrulesreviews.authorization.k8s.io    []                  []          
 CAN_I_PLAIN = "\n".join(CAN_I_GATEWAY.splitlines()[:2] + CAN_I_GATEWAY.splitlines()[3:]) + "\n"
 
 
-def _cluster(policies, can_i=None):
+def _cluster(policies, can_i=None, extra_pods=(), extra_accounts=()):
     def ns(name):
         return {"metadata": {"name": name, "labels": {"kubernetes.io/metadata.name": name}}}
 
@@ -391,7 +410,14 @@ def _cluster(policies, can_i=None):
             deploy("tool-lookup-account", "ah-tools", "tool-lookup-account"), cron]},
         ("get", "networkpolicies"): {"items": policies},
         ("get", "ciliumnetworkpolicies"): {"items": []},
+        ("get", "serviceaccounts"): {"items": [
+            {"metadata": {"name": sa, "namespace": namespace}}
+            for namespace, sa in (("ah-gateway", "default"), ("ah-tools", "default"),
+                                  ("ah-core", "default"), ("kube-system", "default"),
+                                  ("ah-gateway", "tool-gateway"), ("ah-tools", "tool-lookup-account"),
+                                  ("ah-core", "register-sync"), *extra_accounts)]},
     }
+    data[("get", "pods")]["items"].extend(extra_pods)
     can_i = can_i or {}
     calls = []
 
@@ -447,6 +473,36 @@ def test_extra_k8s_edge_and_rbac_fail(expected_doc):
     assert ["kubectl", "auth", "can-i", "--list", "--as=system:serviceaccount:ah-gateway:tool-gateway",
             "--as-group=system:serviceaccounts", "--as-group=system:serviceaccounts:ah-gateway",
             "-n", "ah-gateway"] in calls
+
+
+CAN_I_SECRETS = CAN_I_PLAIN + (
+    "secrets                                         []                  []               [get]\n")
+
+
+def test_service_account_without_a_running_pod_is_still_assessed(expected_doc):
+    """The agent's account is used only by the Jobs the dispatcher starts per ticket: at
+    collection time there may be no pod and no template, but its rights still count."""
+    run, calls = _cluster(DEFAULT_DENY, {"agent": CAN_I_SECRETS},
+                          extra_accounts=[("ah-agent", "agent")])
+    d = diff.compare("k8s", expected_doc, collect_k8s.collect(run))
+    assert d.extra == ["k8s serviceaccount agent: get secrets"]
+    assert any(c[4:5] == ["--as=system:serviceaccount:ah-agent:agent"] for c in calls)
+
+
+def test_declared_rbac_of_a_service_account_missing_from_the_cluster_fails(expected_doc):
+    doc = copy.deepcopy(expected_doc)
+    doc["k8s"] = ["k8s serviceaccount dispatcher: create jobs.batch"]
+    run, _ = _cluster(DEFAULT_DENY)
+    d = diff.compare("k8s", doc, collect_k8s.collect(run))
+    assert d.missing == ["k8s serviceaccount dispatcher: create jobs.batch"]
+
+
+def test_unlabelled_pod_in_an_assessed_namespace_is_a_line_not_skipped(expected_doc):
+    stray = {"kind": "Pod", "metadata": {"name": "debug", "namespace": "ah-core", "labels": {}},
+             "spec": {"serviceAccountName": "default"}}
+    run, _ = _cluster(DEFAULT_DENY, extra_pods=[stray])
+    d = diff.compare("k8s", expected_doc, collect_k8s.collect(run))
+    assert d.extra == ["k8s unlabelled Pod ah-core/debug"]
 
 
 def test_can_i_table_drops_only_the_default_discovery_rules():
@@ -513,6 +569,59 @@ def test_report_lists_blast_radius_per_component(expected_doc):
     assert "```mermaid" in md
 
 
+def _section(md: str, component: str) -> str:
+    return md.split(f"### {component}\n")[1].split("\n### ")[0]
+
+
+def _row(section: str, name: str) -> str:
+    return next(line for line in section.splitlines() if line.startswith(f"| {name} |"))
+
+
+def _render_with(expected_doc, *lines) -> str:
+    doc = copy.deepcopy(expected_doc)
+    doc["pg"] = sorted(doc["pg"] + list(lines))
+    return report.render_expected(doc, "security/expected-permissions.json")
+
+
+def test_report_follows_public_execute_into_security_definer_functions(expected_doc):
+    md = _render_with(expected_doc, *(
+        f"pg role {r}: EXECUTE ON FUNCTION public.set_temp_protection(integer) (via PUBLIC)"
+        for r in ("tool_read_ticket", "executor")))
+    section = _section(md, "tool-read-ticket")
+    assert "set_temp_protection(integer) (via PUBLIC), runs as flags_writer" in _row(section, "Executes")
+    assert "writes INSERT flags" in _row(section, "Through functions owned by flags_writer")
+
+
+def test_report_counts_inherited_privileges(expected_doc):
+    md = _render_with(expected_doc, "pg role tool_read_ticket: MEMBER OF executor",
+                      "pg role executor: MEMBER OF pg_read_all_data",
+                      "pg role tool_lookup_account: MEMBER OF executor WITH INHERIT FALSE")
+    section = _section(md, "tool-read-ticket")
+    assert "flags" in _row(section, "Reads") and "INSERT credits" in _row(section, "Writes")
+    assert "every table, view and sequence (pg_read_all_data)" in _row(section, "Reads")
+    assert "inherits from executor, pg_read_all_data" in _row(section, "Member of")
+    # WITH INHERIT FALSE: only SET ROLE reaches executor's rights, so they are not counted.
+    assert "flags" not in _row(_section(md, "tool-lookup-account"), "Reads")
+
+
+def test_report_counts_owned_tables_as_read_and_written(expected_doc):
+    md = _render_with(expected_doc, "pg role tool_read_ticket: OWNS TABLE public.customers")
+    section = _section(md, "tool-read-ticket")
+    assert "customers" in _row(section, "Reads")
+    assert "customers (owner: every privilege)" in _row(section, "Writes")
+    summary = next(ln for ln in md.splitlines() if ln.startswith("| tool-read-ticket |"))
+    assert "customers" in summary
+
+
+def test_report_definer_function_owned_by_a_superuser_reaches_everything(expected_doc):
+    md = _render_with(expected_doc,
+                      "pg role postgres: OWNS FUNCTION public.as_superuser() SECURITY DEFINER",
+                      "pg role tool_read_ticket: EXECUTE ON FUNCTION public.as_superuser()")
+    section = _section(md, "tool-read-ticket")
+    assert _row(section, "Through functions owned by postgres") == \
+        "| Through functions owned by postgres | everything (superuser) |"
+
+
 def test_permission_matrix_doc_is_up_to_date():
     assert report.main(["--expected", "security/expected-permissions.json",
                         "--out", str(MATRIX_DOC), "--check"]) == 0
@@ -572,9 +681,63 @@ def test_cli_skips_azure_when_not_logged_in_and_still_passes(tmp_path, db_env, c
         raise CollectorError("az account show failed: Please run 'az login'")
 
     out = tmp_path / "out"
-    code = cli.main(["--planes", "azure", "--out", str(out)], env=db_env, run=run)
+    code = cli.main(["--planes", "compose,azure", "--compose-json", str(COMPOSE_JSON),
+                     "--out", str(out)], env=db_env, run=run)
     assert code == 0
     assert "azure: skipped" in capsys.readouterr().out
+
+
+def test_cli_exits_2_when_every_plane_is_skipped(tmp_path, db_env, capsys):
+    """Nothing assessed is not "equal"."""
+    def run(args):
+        raise CollectorError("az account show failed: Please run 'az login'")
+
+    out = tmp_path / "out"
+    code = cli.main(["--planes", "azure", "--out", str(out)], env=db_env, run=run)
+    assert code == 2
+    assert "nothing was assessed" in capsys.readouterr().out
+    assert json.loads((out / "diff.json").read_text(encoding="utf-8"))["exit_code"] == 2
+
+
+class _BrokenCursor:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql):
+        raise psycopg.OperationalError("server closed the connection unexpectedly\nmore detail")
+
+
+class _BrokenConnection:
+    def cursor(self, row_factory=None):
+        return _BrokenCursor()
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("connect, what", [
+    (lambda env: _BrokenConnection(), "OperationalError: server closed the connection unexpectedly"),
+    (cli._connect_pg, "ValueError: invalid literal for int()"),
+])
+def test_cli_exits_2_with_reports_when_a_collector_raises_anything(tmp_path, db_env, connect, what):
+    env = {**db_env, "DB_PORT": "not-a-port"}
+    code, result = _run_cli(tmp_path, env, connect=connect)
+    assert code == 2
+    assert result["errors"]["pg"].startswith(what)
+    assert "more detail" not in result["errors"]["pg"], "first line of the message only"
+    assert result["planes"]["compose"]["extra"] == [], "the other plane is still assessed"
+    for name in ("actual.json", "diff.json", "summary.txt", "matrix.md"):
+        assert (tmp_path / "out" / name).exists(), name
+
+
+def test_cli_exits_2_on_a_malformed_tool_calls_log(tmp_path, db_env):
+    calls = tmp_path / "tool_calls.json"
+    calls.write_text("[1, 2]", encoding="utf-8")
+    code, result = _run_cli(tmp_path, db_env, "--tool-calls", str(calls))
+    assert code == 2 and "AttributeError" in result["errors"]["tool_calls"]
 
 
 def test_unused_grant_warns_but_does_not_fail(tmp_path, db_env):

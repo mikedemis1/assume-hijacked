@@ -20,7 +20,8 @@
   },
   "db": {
    "db_roles": [
-    "flags_writer"
+    "flags_writer",
+    "postgres"
    ],
    "service_account": null,
    "azure_identity": null,
@@ -191,6 +192,7 @@
   "pg role flags_writer: USAGE ON SCHEMA public",
   "pg role flags_writer: USAGE ON SCHEMA public (via PUBLIC)",
   "pg role flags_writer: USAGE ON public.events_id_seq",
+  "pg role postgres: ATTRIBUTES BOOTSTRAP SUPERUSER",
   "pg role tool_issue_bill_credit: ATTRIBUTES LOGIN, CONNECTION LIMIT 5",
   "pg role tool_issue_bill_credit: CONNECT ON DATABASE (via PUBLIC)",
   "pg role tool_issue_bill_credit: EXECUTE ON FUNCTION public.check_action_request() (via PUBLIC)",

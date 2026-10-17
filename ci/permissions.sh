@@ -34,15 +34,24 @@ python=$(python_bin)
 out=reports/permissions
 mkdir -p "$out"
 
-"$python" -m secops.permassess.report --expected security/expected-permissions.json \
-    --out docs/permission-matrix.md --check
-
+# The assessment first, so its reports exist whatever happens next; the matrix check last.
+assessment=0
 if in_ci; then
     "$python" -c 'import json, sys, yaml
 with open("compose.yaml", encoding="utf-8") as f:
     json.dump(yaml.safe_load(f), sys.stdout)' >"$out/compose-config.json"
     "$python" -m secops.permassess --planes pg,compose --compose-json "$out/compose-config.json" \
-        --out "$out"
+        --out "$out" || assessment=$?
 else
-    "$python" -m secops.permassess --planes pg,compose --out "$out"
+    "$python" -m secops.permassess --planes pg,compose --out "$out" || assessment=$?
 fi
+
+matrix=0
+"$python" -m secops.permassess.report --expected security/expected-permissions.json \
+    --out docs/permission-matrix.md --check || matrix=$?
+
+# The assessment's code (1 different, 2 error) wins; else the matrix check's.
+if [ "$assessment" -ne 0 ]; then
+    exit "$assessment"
+fi
+exit "$matrix"

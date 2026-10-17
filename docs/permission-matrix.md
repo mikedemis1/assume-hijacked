@@ -12,7 +12,7 @@ This is the intended state. `python -m secops.permassess` compares it with what 
 |---|---|---|---|---|---|
 | agent | none | none | none | none | db; executor; tool-issue-bill-credit; tool-lookup-account; tool-read-ticket; tool-request-disconnection; tool-set-temp-protection |
 | console | approver | action_requests | approvals; events | none | db |
-| db | flags_writer | accounts; flags; tickets | events; flags | pg_catalog.pg_advisory_lock; pg_catalog.pg_advisory_lock_shared; pg_catalog.pg_advisory_xact_lock; pg_catalog.pg_advisory_xact_lock_shared; pg_catalog.pg_try_advisory_lock; pg_catalog.pg_try_advisory_lock_shared; pg_catalog.pg_try_advisory_xact_lock; pg_catalog.pg_try_advisory_xact_lock_shared | internet |
+| db | flags_writer; postgres | everything (superuser) | everything (superuser) | pg_catalog.pg_advisory_lock; pg_catalog.pg_advisory_lock_shared; pg_catalog.pg_advisory_xact_lock; pg_catalog.pg_advisory_xact_lock_shared; pg_catalog.pg_try_advisory_lock; pg_catalog.pg_try_advisory_lock_shared; pg_catalog.pg_try_advisory_xact_lock; pg_catalog.pg_try_advisory_xact_lock_shared; set_temp_protection | internet |
 | executor | executor | accounts; action_requests; approvals; charges; credits; disconnection_orders; events; flags; occupier_notices; register_sync; supply_points | action_requests; credits; disconnection_orders; events; occupier_notices | pg_catalog.pg_advisory_lock; pg_catalog.pg_advisory_lock_shared; pg_catalog.pg_advisory_xact_lock; pg_catalog.pg_advisory_xact_lock_shared; pg_catalog.pg_try_advisory_lock; pg_catalog.pg_try_advisory_lock_shared; pg_catalog.pg_try_advisory_xact_lock; pg_catalog.pg_try_advisory_xact_lock_shared | db; tool-issue-bill-credit; tool-lookup-account; tool-read-ticket; tool-request-disconnection; tool-set-temp-protection |
 | tool-issue-bill-credit | tool_issue_bill_credit | accounts; tickets | action_requests; events | none | db; tool-lookup-account; tool-read-ticket; tool-request-disconnection; tool-set-temp-protection |
 | tool-lookup-account | tool_lookup_account | accounts; customers; supply_points; tickets | events | none | db; tool-issue-bill-credit; tool-read-ticket; tool-request-disconnection; tool-set-temp-protection |
@@ -103,9 +103,13 @@ flowchart LR
 | Database role | `flags_writer` (NOLOGIN) |
 | Reads | accounts (customer_id, supply_point_id); flags; tickets (customer_id, id) |
 | Writes | INSERT events (actor, detail, kind); INSERT flags |
-| Executes | pg_catalog.pg_advisory_lock(bigint); pg_catalog.pg_advisory_lock(integer, integer); pg_catalog.pg_advisory_lock_shared(bigint); pg_catalog.pg_advisory_lock_shared(integer, integer); pg_catalog.pg_advisory_xact_lock(bigint); pg_catalog.pg_advisory_xact_lock(integer, integer); pg_catalog.pg_advisory_xact_lock_shared(bigint); pg_catalog.pg_advisory_xact_lock_shared(integer, integer); pg_catalog.pg_try_advisory_lock(bigint); pg_catalog.pg_try_advisory_lock(integer, integer); pg_catalog.pg_try_advisory_lock_shared(bigint); pg_catalog.pg_try_advisory_lock_shared(integer, integer); pg_catalog.pg_try_advisory_xact_lock(bigint); pg_catalog.pg_try_advisory_xact_lock(integer, integer); pg_catalog.pg_try_advisory_xact_lock_shared(bigint); pg_catalog.pg_try_advisory_xact_lock_shared(integer, integer) |
+| Executes | pg_catalog.pg_advisory_lock(bigint); pg_catalog.pg_advisory_lock(integer, integer); pg_catalog.pg_advisory_lock_shared(bigint); pg_catalog.pg_advisory_lock_shared(integer, integer); pg_catalog.pg_advisory_xact_lock(bigint); pg_catalog.pg_advisory_xact_lock(integer, integer); pg_catalog.pg_advisory_xact_lock_shared(bigint); pg_catalog.pg_advisory_xact_lock_shared(integer, integer); pg_catalog.pg_try_advisory_lock(bigint); pg_catalog.pg_try_advisory_lock(integer, integer); pg_catalog.pg_try_advisory_lock_shared(bigint); pg_catalog.pg_try_advisory_lock_shared(integer, integer); pg_catalog.pg_try_advisory_xact_lock(bigint); pg_catalog.pg_try_advisory_xact_lock(integer, integer); pg_catalog.pg_try_advisory_xact_lock_shared(bigint); pg_catalog.pg_try_advisory_xact_lock_shared(integer, integer); set_temp_protection(integer), runs as flags_writer |
 | Owns | function set_temp_protection(integer) SECURITY DEFINER |
 | Other | USAGE on SCHEMA public; USAGE on events_id_seq |
+| Database role | `postgres` (BOOTSTRAP SUPERUSER) |
+| Reads | everything (superuser) |
+| Writes | everything (superuser) |
+| Executes | none |
 | Connects to | internet |
 | Accepts connections from | agent; console; executor; tool-issue-bill-credit; tool-lookup-account; tool-read-ticket; tool-request-disconnection; tool-set-temp-protection |
 | Kubernetes API | no service account |

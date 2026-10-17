@@ -1,6 +1,7 @@
 """Kubernetes: what each workload's service account may do, and which pods may reach which.
 
-RBAC. For every service account a workload in the assessed namespaces runs as:
+RBAC. For every ServiceAccount in the assessed namespaces, whether a pod runs as it right now
+or not (the agent's account is used only by the Jobs the dispatcher starts on demand):
     kubectl auth can-i --list --as=system:serviceaccount:<ns>:<sa>
         --as-group=system:serviceaccounts --as-group=system:serviceaccounts:<ns> -n <ns>
 The two groups are the ones the API server gives every service account token, so a binding to
@@ -16,8 +17,11 @@ open in that direction; otherwise a connection needs an egress rule on the calle
 ingress rule on the callee's side. Ports are not looked at: an edge means "some port".
 https://kubernetes.io/docs/concepts/services-networking/network-policies/
 The pods are the running ones plus the pod templates of Deployments, StatefulSets, DaemonSets,
-Jobs and CronJobs, so a component scaled to zero still counts. ipBlock rules and Cilium
-policies (DNS names, FQDNs, entities) are listed for the report, not evaluated.
+Jobs and CronJobs, so a component scaled to zero still counts. A pod or template in an assessed
+namespace without the name label cannot be placed in any edge, so it becomes a line of its own
+(`k8s unlabelled <kind> <namespace>/<name>`), which no manifest declares: the run fails until it
+is labelled. ipBlock rules and Cilium policies (DNS names, FQDNs, entities) are listed for the
+report, not evaluated.
 """
 from __future__ import annotations
 
@@ -81,7 +85,10 @@ def _pod_template(obj: dict) -> dict | None:
     return spec.get("template")
 
 
-def endpoints(pods: dict, workloads: dict, in_scope) -> list[Endpoint]:
+def endpoints(pods: dict, workloads: dict, in_scope,
+              unlabelled: list[str] | None = None) -> list[Endpoint]:
+    """The labelled pods and pod templates of the assessed namespaces. The others are appended
+    to `unlabelled` as lines, never dropped."""
     found: set[Endpoint] = set()
     for obj in (pods.get("items") or []) + (workloads.get("items") or []):
         ns = obj["metadata"].get("namespace", "default")
@@ -96,6 +103,9 @@ def endpoints(pods: dict, workloads: dict, in_scope) -> list[Endpoint]:
             meta, spec = template.get("metadata") or {}, template.get("spec") or {}
         labels = meta.get("labels") or {}
         if NAME_LABEL not in labels:
+            if unlabelled is not None:
+                unlabelled.append(f"k8s unlabelled {obj.get('kind', 'Pod')} "
+                                  f"{ns}/{obj['metadata'].get('name', '?')}")
             continue
         found.add(Endpoint(ns, labels[NAME_LABEL], tuple(sorted(labels.items())),
                            spec.get("serviceAccountName") or "default"))
@@ -210,10 +220,15 @@ def collect(run: Runner = run_command, namespace_prefix: str = "ah-") -> PlaneRe
     pods = _json(run, ["get", "pods", "-A"])
     workloads = _json(run, ["get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-A"])
     policies = _json(run, ["get", "networkpolicies", "-A"]).get("items") or []
-    eps = endpoints(pods, workloads, in_scope)
+    service_accounts = _json(run, ["get", "serviceaccounts", "-A"]).get("items") or []
+    unlabelled: list[str] = []
+    eps = endpoints(pods, workloads, in_scope, unlabelled)
 
-    lines = edge_lines(eps, policies, ns_labels)
-    accounts = sorted({(e.namespace, e.service_account) for e in eps})
+    lines = edge_lines(eps, policies, ns_labels) + unlabelled
+    accounts = sorted({(e.namespace, e.service_account) for e in eps}
+                      | {(sa["metadata"].get("namespace", "default"), sa["metadata"]["name"])
+                         for sa in service_accounts
+                         if in_scope(sa["metadata"].get("namespace", "default"))})
     for ns, sa in accounts:
         table = run(["kubectl", "auth", "can-i", "--list", f"--as=system:serviceaccount:{ns}:{sa}",
                      "--as-group=system:serviceaccounts", f"--as-group=system:serviceaccounts:{ns}",

@@ -5,8 +5,17 @@ connect. Its blast radius, if it were hijacked.
         --out docs/permission-matrix.md [--check]
 
 The same renderer writes reports/permissions/matrix.md from what the collectors found.
-A SECURITY DEFINER function runs with its owner's rights, so the report follows it: a role that
-may execute one also reaches whatever the owner can read and write.
+It counts what a role really reaches, not only what is granted to it by name:
+
+  - a SECURITY DEFINER function runs with its owner's rights, so a role that may execute one,
+    by name or through PUBLIC, also reaches whatever the owner can read and write; an owner
+    that is a superuser reaches everything
+  - a role inherits the privileges of the roles it is a member of (unless the membership is
+    WITH INHERIT FALSE), and of their memberships in turn; pg_read_all_data and
+    pg_write_all_data read or write every table
+  - the owner of a table, view or sequence holds every privilege on it, and may execute the
+    functions it owns
+  - a superuser reaches everything
 """
 from __future__ import annotations
 
@@ -23,6 +32,12 @@ _LINE = re.compile(r"^pg role (?P<role>\S+): (?P<what>.*?)(?P<public> \(via PUBL
 _GRANT = re.compile(r"^(?P<priv>[A-Z]+)(?: \((?P<col>[^)]+)\))? ON (?P<target>.+?)"
                     r"(?P<opt> WITH GRANT OPTION)?$")
 _WRITES = ("INSERT", "UPDATE", "DELETE", "TRUNCATE")
+_OWNED_DATA = ("TABLE ", "VIEW ", "MATERIALIZED VIEW ", "FOREIGN TABLE ", "SEQUENCE ")
+OWNER = "OWNER"  # the privilege key for an owned relation: every privilege
+EVERYTHING = "everything (superuser)"
+# Built-in roles whose membership reads or writes every table.
+_PREDEFINED_READS = {"pg_read_all_data": "every table, view and sequence (pg_read_all_data)"}
+_PREDEFINED_WRITES = {"pg_write_all_data": "every table, view and sequence (pg_write_all_data)"}
 
 
 @dataclass
@@ -31,12 +46,31 @@ class RoleView:
     reads: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     writes: dict[tuple[str, str], set[str]] = field(default_factory=lambda: defaultdict(set))
     executes: set[str] = field(default_factory=set)
+    public_executes: set[str] = field(default_factory=set)
     public: list[str] = field(default_factory=list)
     other: list[str] = field(default_factory=list)
     member_of: list[str] = field(default_factory=list)
+    inherits: list[str] = field(default_factory=list)
     owns: list[str] = field(default_factory=list)
     policies: list[str] = field(default_factory=list)
     defaults: list[str] = field(default_factory=list)
+
+    @property
+    def superuser(self) -> bool:
+        return "SUPERUSER" in self.attributes.replace("BOOTSTRAP ", "").split(", ")
+
+
+@dataclass
+class Reach:
+    """What a role reaches with its own grants and the ones it inherits."""
+    superuser: bool
+    reads: list[str]
+    writes: list[str]
+    tables_read: set[str]
+    tables_written: set[str]
+    executes: set[str]
+    public_executes: set[str]
+    inherited_from: list[str]
 
 
 def _short(name: str) -> str:
@@ -64,17 +98,21 @@ def parse_pg(lines: list[str]) -> tuple[dict[str, RoleView], dict[str, str], lis
         if what.startswith("ATTRIBUTES "):
             view.attributes = what[len("ATTRIBUTES "):]
         elif what.startswith("MEMBER OF "):
-            view.member_of.append(what[len("MEMBER OF "):])
+            membership = what[len("MEMBER OF "):]
+            view.member_of.append(membership)
+            if "WITH INHERIT FALSE" not in membership:
+                view.inherits.append(membership.split(" ", 1)[0])
         elif what.startswith("OWNS "):
-            view.owns.append(_short_owned(what[len("OWNS "):]))
-            if what.endswith(" SECURITY DEFINER") and what.startswith("OWNS FUNCTION "):
-                definers[what[len("OWNS FUNCTION "):-len(" SECURITY DEFINER")]] = role
+            _owned(view, role, what[len("OWNS "):], definers)
         elif what.startswith("POLICY "):
             (view.public if via_public else view.policies).append(what)
         elif what.startswith("DEFAULT PRIVILEGES "):
             view.defaults.append(what[len("DEFAULT PRIVILEGES "):])
         elif via_public:
             view.public.append(what)
+            g = _GRANT.match(what)
+            if g and g["priv"] == "EXECUTE" and g["target"].startswith("FUNCTION "):
+                view.public_executes.add(g["target"][len("FUNCTION "):])
         elif g := _GRANT.match(what):
             priv, target, col = g["priv"], g["target"], g["col"] or "*"
             if target.startswith("FUNCTION "):
@@ -92,17 +130,72 @@ def parse_pg(lines: list[str]) -> tuple[dict[str, RoleView], dict[str, str], lis
     return roles, definers, tables
 
 
+def _owned(view: RoleView, role: str, owned: str, definers: dict[str, str]) -> None:
+    """An owner holds every privilege on what it owns and may run the functions it owns."""
+    view.owns.append(_short_owned(owned))
+    if owned.startswith("FUNCTION "):
+        fn = owned[len("FUNCTION "):].removesuffix(" SECURITY DEFINER")
+        view.executes.add(fn)
+        if owned.endswith(" SECURITY DEFINER"):
+            definers[fn] = role
+        return
+    for kind in _OWNED_DATA:
+        if owned.startswith(kind):
+            target = owned[len(kind):]
+            view.reads[target].add("*")
+            view.writes[(target, OWNER)].add("*")
+            return
+
+
 def _short_owned(text: str) -> str:
+    for kind in ("MATERIALIZED VIEW ", "FOREIGN TABLE "):
+        if text.startswith(kind):
+            return f"{kind.lower()}{_short(text[len(kind):])}"
     kind, _, rest = text.partition(" ")
-    return f"{kind.lower()} {_short(rest)}"
+    return f"{kind.lower()} {_short(rest)}".rstrip()
 
 
-def _reads(view: RoleView) -> list[str]:
-    return [f"{_short(t)}{_cols(c)}" for t, c in sorted(view.reads.items())]
+def _closure(role: str, roles: dict[str, RoleView]) -> list[str]:
+    """The role and every role it inherits from, directly or through other memberships."""
+    seen, todo = [role], [role]
+    while todo:
+        view = roles.get(todo.pop(), RoleView())
+        for parent in view.inherits:
+            if parent not in seen:
+                seen.append(parent)
+                todo.append(parent)
+    return seen
 
 
-def _writes(view: RoleView) -> list[str]:
-    return [f"{p} {_short(t)}{_cols(c)}" for (t, p), c in sorted(view.writes.items())]
+def reach(role: str, roles: dict[str, RoleView]) -> Reach:
+    own = roles.get(role, RoleView())
+    chain = _closure(role, roles)
+    reads: dict[str, set[str]] = defaultdict(set)
+    writes: dict[tuple[str, str], set[str]] = defaultdict(set)
+    executes: set[str] = set()
+    public_executes: set[str] = set()
+    extra_reads, extra_writes = [], []
+    for name in chain:
+        view = roles.get(name, RoleView())
+        for t, cols in view.reads.items():
+            reads[t] |= cols
+        for key, cols in view.writes.items():
+            writes[key] |= cols
+        executes |= view.executes
+        public_executes |= view.public_executes
+        if name in _PREDEFINED_READS:
+            extra_reads.append(_PREDEFINED_READS[name])
+        if name in _PREDEFINED_WRITES:
+            extra_writes.append(_PREDEFINED_WRITES[name])
+    read_lines = extra_reads + [f"{_short(t)}{_cols(c)}" for t, c in sorted(reads.items())]
+    write_lines = extra_writes + [
+        f"{_short(t)} (owner: every privilege)" if p == OWNER else f"{p} {_short(t)}{_cols(c)}"
+        for (t, p), c in sorted(writes.items())]
+    return Reach(superuser=own.superuser, reads=read_lines, writes=write_lines,
+                 tables_read={_short(t) for t in reads} | set(extra_reads),
+                 tables_written={_short(t) for t, _ in writes} | set(extra_writes),
+                 executes=executes, public_executes=public_executes,
+                 inherited_from=chain[1:])
 
 
 def _cell(items: list[str]) -> str:
@@ -110,22 +203,42 @@ def _cell(items: list[str]) -> str:
     return text.replace("|", "\\|")
 
 
+def _callable(r: Reach, definers: dict[str, str]) -> dict[str, bool]:
+    """Functions a role may run -> True when only through PUBLIC. Of the PUBLIC ones only the
+    SECURITY DEFINER functions count here: the others run with the caller's own rights."""
+    found = {fn: False for fn in r.executes}
+    for fn in r.public_executes:
+        if fn in definers and fn not in found:
+            found[fn] = True
+    return found
+
+
 def _role_rows(role: str, roles: dict[str, RoleView], definers: dict[str, str]) -> list[tuple[str, str]]:
     view = roles.get(role, RoleView())
+    r = reach(role, roles)
     rows = [("Database role", f"`{role}`" + (f" ({view.attributes})" if view.attributes else "")),
-            ("Reads", _cell(_reads(view))),
-            ("Writes", _cell(_writes(view)))]
+            ("Reads", EVERYTHING if r.superuser else _cell(r.reads)),
+            ("Writes", EVERYTHING if r.superuser else _cell(r.writes))]
+    callable_ = _callable(r, definers)
     execs = []
-    for fn in sorted(view.executes):
+    for fn in sorted(callable_):
         owner = definers.get(fn)
-        execs.append(f"{_short(fn)}" + (f", runs as {owner}" if owner else ""))
+        execs.append(f"{_short(fn)}" + (" (via PUBLIC)" if callable_[fn] else "")
+                     + (f", runs as {owner}" if owner else ""))
     rows.append(("Executes", _cell(execs)))
-    for owner in sorted({definers[f] for f in view.executes if f in definers}):
-        reach = roles.get(owner, RoleView())
+    for owner in sorted({definers[f] for f in callable_ if f in definers} - {role}):
+        if roles.get(owner, RoleView()).superuser:
+            rows.append((f"Through functions owned by {owner}", EVERYTHING))
+            continue
+        o = reach(owner, roles)
         rows.append((f"Through functions owned by {owner}",
-                     _cell([f"reads {r}" for r in _reads(reach)] + [f"writes {w}" for w in _writes(reach)])))
+                     _cell([f"reads {x}" for x in o.reads] + [f"writes {x}" for x in o.writes])))
     if view.member_of:
-        rows.append(("Member of", _cell(sorted(view.member_of))))
+        member = sorted(view.member_of)
+        if r.inherited_from:
+            member.append("reads, writes and executes above include what it inherits from "
+                          + ", ".join(r.inherited_from))
+        rows.append(("Member of", _cell(member)))
     if view.owns:
         rows.append(("Owns", _cell(sorted(view.owns))))
     if view.policies:
@@ -165,9 +278,14 @@ def render(doc: dict, title: str, note: str) -> str:
            "|---|---|---|---|---|---|"]
     for name, comp in components.items():
         rs = comp.get("db_roles") or []
-        reads = sorted({_short(t) for r in rs for t in roles.get(r, RoleView()).reads})
-        writes = sorted({_short(t) for r in rs for (t, _) in roles.get(r, RoleView()).writes})
-        execs = sorted({_short(f).split("(")[0] for r in rs for f in roles.get(r, RoleView()).executes})
+        reaches = [reach(r, roles) for r in rs]
+        if any(x.superuser for x in reaches):
+            reads = writes = [EVERYTHING]
+        else:
+            reads = sorted(set().union(*(x.tables_read for x in reaches)))
+            writes = sorted(set().union(*(x.tables_written for x in reaches)))
+        execs = sorted({_short(f).split("(")[0] + (" (via PUBLIC)" if public else "")
+                        for x in reaches for f, public in _callable(x, definers).items()})
         md.append(f"| {name} | {_cell(rs)} | {_cell(reads)} | {_cell(writes)} | {_cell(execs)} | "
                   f"{_cell(sorted(out_edges.get(name, set())))} |")
 

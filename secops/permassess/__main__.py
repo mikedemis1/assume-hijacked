@@ -1,11 +1,15 @@
 """python -m secops.permassess --planes pg,compose[,k8s][,azure] --out reports/permissions
 
 Exit codes: 0 every assessed plane matches the expected file, 1 at least one extra or missing
-line, 2 a plane could not be read or the expected file is not usable (stale, unreadable).
-A skipped plane (Azure while not logged in) is reported and does not change the exit code.
+line, 2 a plane could not be read (any exception in a collector), the expected file is not usable
+(stale, unreadable), or every requested plane was skipped, so nothing was assessed.
+A skipped plane (Azure while not logged in) is reported; next to an assessed plane it does not
+change the exit code. The report files are written in every case except a bad command line or
+an unusable expected file.
 
 PostgreSQL connection: DB_HOST (127.0.0.1), DB_PORT (5432), DB_NAME (supplier),
-PERMASSESS_DB_USER (postgres) and POSTGRES_PASSWORD. Only catalog SELECTs are run.
+PERMASSESS_DB_USER (postgres) and POSTGRES_PASSWORD. Only catalog SELECTs are run, in a
+read-only session.
 
 Writes to --out: actual.json (what was found), diff.json and summary.txt (the differences),
 matrix.md (the blast radius of what was found).
@@ -30,13 +34,21 @@ def _connect_pg(env: dict[str, str]):
     import psycopg
 
     try:
-        return psycopg.connect(
+        conn = psycopg.connect(
             host=env.get("DB_HOST", "127.0.0.1"), port=int(env.get("DB_PORT", "5432")),
             dbname=env.get("DB_NAME", "supplier"), user=env.get("PERMASSESS_DB_USER", "postgres"),
             password=env.get("POSTGRES_PASSWORD", ""), connect_timeout=10)
     except psycopg.Error as exc:
         # The first line only: libpq messages name host and port, never the password.
-        raise CollectorError(f"cannot connect to PostgreSQL: {str(exc).splitlines()[0]}") from exc
+        raise CollectorError(f"cannot connect to PostgreSQL: {_first_line(exc)}") from exc
+    # It logs in as a superuser to read every catalog; the server refuses any write it might try.
+    conn.read_only = True
+    return conn
+
+
+def _first_line(exc: BaseException) -> str:
+    lines = str(exc).strip().splitlines()
+    return lines[0] if lines else "(no message)"
 
 
 def collect_plane(plane: str, args: argparse.Namespace, env: dict[str, str], run: Runner,
@@ -85,7 +97,7 @@ def _actual_doc(expected_doc: dict, results: dict[str, PlaneResult]) -> dict:
         else:
             edges.add(body)
     for line in results.get("k8s", PlaneResult()).lines:
-        if not line.startswith("k8s serviceaccount "):
+        if " -> " in line and not line.startswith("k8s serviceaccount "):
             edges.add(line[len("k8s "):])
     return {
         "source": "collected",
@@ -141,14 +153,18 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None,
         except CollectorError as exc:
             errors[plane] = str(exc)
             continue
+        except Exception as exc:  # noqa: BLE001 - any failure must end as exit 2 with reports
+            errors[plane] = f"{type(exc).__name__}: {_first_line(exc)}"
+            continue
         diffs[plane] = diff.compare(plane, doc, results[plane])
 
     warnings = []
     if args.tool_calls:
         try:
             warnings = diff.unused_warnings(doc, diff.load_tool_calls(args.tool_calls))
-        except (OSError, json.JSONDecodeError) as exc:
-            errors["tool_calls"] = f"cannot read {args.tool_calls}: {exc}"
+        except Exception as exc:  # noqa: BLE001 - unreadable or malformed log: exit 2
+            errors["tool_calls"] = (f"cannot read {args.tool_calls}: "
+                                    f"{type(exc).__name__}: {_first_line(exc)}")
 
     summary = []
     for plane in planes:
@@ -168,9 +184,13 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None,
     if "tool_calls" in errors:
         summary.append(f"tool_calls: ERROR {errors['tool_calls']}")
     summary += warnings
+    assessed = [p for p, d in diffs.items() if not d.skipped]
+    if not errors and not assessed:
+        errors["planes"] = "every requested plane was skipped: nothing was assessed"
+        summary.append(f"planes: ERROR {errors['planes']}")
     code = 2 if errors else (1 if any(not d.equal for d in diffs.values()) else 0)
     summary.append({0: "result: equal", 1: "result: DIFFERENT (+ extra, - missing)",
-                    2: "result: ERROR (a plane could not be read)"}[code])
+                    2: "result: ERROR (a plane could not be read, or none was assessed)"}[code])
 
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "actual.json").write_text(json.dumps(

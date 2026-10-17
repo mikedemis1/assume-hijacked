@@ -1,8 +1,8 @@
 #!/bin/sh
 # What tf-destroy would remove: `terraform plan -destroy` for infra/lab, then infra/net, as
 # ci-plan, saved under plans/destroy/ as a job artifact (plan file, readable .txt) for tf-destroy
-# of the same pipeline to run. Read the .txt (it is also in the job log) before you start
-# tf-destroy. Never infra/base, and never the resource groups: base creates rg-net and rg-lab
+# of the same pipeline to run. Read the .txt in the artifact (the job log has only the counts)
+# before you start tf-destroy. Never infra/base, and never the resource groups: base creates rg-net and rg-lab
 # empty and the two stacks only read them, so a state that manages a group stops the job.
 . ci/tf-common.sh
 

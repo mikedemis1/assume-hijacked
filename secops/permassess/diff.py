@@ -6,8 +6,10 @@ compose  the expected network edges become undirected pairs (`compose a <-> b`) 
          are Compose services, and `compose a -> internet` when a declares egress to internet.
          An edge to a name that is not a service here (a cloud endpoint, a component this
          Compose file does not run) is listed as not deployed, not as missing.
-k8s      directed edges between the components found in the cluster, and the RBAC lines of
-         the service accounts found; the rest is not deployed.
+k8s      directed edges between the components found in the cluster; the rest is not
+         deployed. Every RBAC line of the manifests is compared, found or not: a declared
+         service account that is missing, or that has a pod at no time (the agent's), is
+         still checked.
 azure    the lines of the identities found in the subscription.
 """
 from __future__ import annotations
@@ -50,13 +52,10 @@ def expected_lines(plane: str, expected: dict, result: PlaneResult) -> tuple[lis
                 elsewhere.add(e)
     elif plane == "k8s":
         comps = result.scope.get("components", set())
-        accounts = result.scope.get("service_accounts", set())
         for e in expected["edges"]:
             a, b = canon.split_edge(e)
             (lines if a in comps and b in comps else elsewhere).add(f"k8s {a} -> {b}")
-        for line in expected["k8s"]:
-            sa = line.split(" ", 3)[2].rstrip(":")
-            (lines if sa in accounts else elsewhere).add(line)
+        lines.update(expected["k8s"])
     elif plane == "azure":
         identities = result.scope.get("identities", set())
         for line in expected["azure"]:

@@ -18,7 +18,8 @@
                   "pg_catalog.pg_advisory_xact_lock_shared(bigint)", "pg_catalog.pg_advisory_xact_lock_shared(int, int)",
                   "pg_catalog.pg_try_advisory_xact_lock(bigint)", "pg_catalog.pg_try_advisory_xact_lock(int, int)",
                   "pg_catalog.pg_try_advisory_xact_lock_shared(bigint)", "pg_catalog.pg_try_advisory_xact_lock_shared(int, int)"],
-      "owns": ["FUNCTION set_temp_protection(int) SECURITY DEFINER"]}
+      "owns": ["FUNCTION set_temp_protection(int) SECURITY DEFINER"]},
+     {"role": "postgres", "bootstrap_superuser": true}
    ],
    "public": {
      "database": ["CONNECT"],

@@ -28,8 +28,9 @@ A role spec:
     login                default true
     connection_limit     default -1 (none)
     attributes           any of SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS NOINHERIT
-    bootstrap_superuser  true for the role that runs the database scripts (postgres): its
-                         attributes and PUBLIC lines are not checked, only what is listed
+    bootstrap_superuser  true for the role that runs the database scripts (postgres): it gets
+                         the line ATTRIBUTES BOOTSTRAP SUPERUSER instead of its attributes, and
+                         no PUBLIC lines; the rest is checked as listed
     member_of            ["<role>", "<role> WITH ADMIN OPTION"]
     database             ["CONNECT", "TEMPORARY", "CREATE"] on the assessed database
     schemas              {"<schema>": ["USAGE", "CREATE"]}
@@ -172,7 +173,7 @@ def _spec_lines(where: str, spec: dict) -> tuple[str | None, list[str], bool]:
             raise ManifestError(f"{where}: privileges listed but role is null")
         return None, [], False
     bootstrap = bool(spec.get("bootstrap_superuser"))
-    lines = []
+    lines = [canon.pg_role(role, canon.BOOTSTRAP_ATTRIBUTES)] if bootstrap else []
     if not bootstrap:
         extra = [canon.squash(a).upper() for a in _list(f"{where}.attributes", spec.get("attributes"))]
         unknown = sorted(set(extra) - _ATTRIBUTES)
