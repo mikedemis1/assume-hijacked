@@ -1,1 +1,2 @@
-"""The risk engine: pure rules (rules.py) and, later, the service around them."""
+"""The risk engine: pure rules (rules.py), the service around them (service.py) and its
+process (main.py)."""

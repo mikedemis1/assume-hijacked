@@ -9,10 +9,12 @@ argument values, health data or tokens (the rule in app/agent/events.py).
 from __future__ import annotations
 
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 _NAME = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
 _LABEL_NAME = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
@@ -89,10 +91,11 @@ class Heartbeat:
 class OpsServer(threading.Thread):
     """The thread that serves the ops endpoints. `port` is the bound port (useful with port 0)."""
 
-    def __init__(self, httpd: ThreadingHTTPServer) -> None:
+    def __init__(self, httpd: ThreadingHTTPServer, request_timeout_s: float) -> None:
         super().__init__(name="ops-server", daemon=True)
         self._httpd = httpd
         self.port = httpd.server_address[1]
+        self.request_timeout_s = request_timeout_s
 
     def run(self) -> None:
         self._httpd.serve_forever()
@@ -102,20 +105,36 @@ class OpsServer(threading.Thread):
         self._httpd.server_close()
 
 
+class _QuietServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        # A client that timed out or hung up is not worth a traceback on stderr; a bug still is.
+        if not isinstance(sys.exc_info()[1], (TimeoutError, ConnectionError)):
+            super().handle_error(request, client_address)
+
+
 def start_ops_server(
-    port: int, metrics: Metrics, heartbeat: Heartbeat, host: str = "0.0.0.0"  # nosec B104 - see below
+    port: int,
+    metrics: Metrics,
+    heartbeat: Heartbeat,
+    host: str = "0.0.0.0",  # nosec B104 - see below
+    request_timeout_s: float = 10,
 ) -> OpsServer:
     # All interfaces of the container, like app/tools/serve.py: Prometheus reaches /metrics from
     # another container or pod. The network is the wall (internal edge networks in compose.yaml,
     # NetworkPolicy in Kubernetes), and both endpoints carry no content beyond counts and names.
     class Handler(BaseHTTPRequestHandler):
+        # A socket timeout per connection: a client that sends half a request and waits would
+        # otherwise hold a server thread for good, and enough of them would starve the probes.
+        timeout = request_timeout_s
+
         def do_GET(self) -> None:  # noqa: N802 (name fixed by http.server)
-            if self.path == "/healthz":
+            path = urlsplit(self.path).path  # /metrics?x=1 is /metrics
+            if path == "/healthz":
                 if heartbeat.alive(heartbeat.clock()):
                     self._send(200, "ok\n")
                 else:
                     self._send(503, "stale\n")
-            elif self.path == "/metrics":
+            elif path == "/metrics":
                 self._send(200, metrics.render())
             else:
                 self._send(404, "not found\n")
@@ -131,6 +150,6 @@ def start_ops_server(
         def log_message(self, format: str, *args) -> None:  # noqa: A002
             pass  # one line per probe would drown the service's own security log
 
-    server = OpsServer(ThreadingHTTPServer((host, port), Handler))
+    server = OpsServer(_QuietServer((host, port), Handler), request_timeout_s)
     server.start()
     return server

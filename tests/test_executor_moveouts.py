@@ -466,3 +466,52 @@ def test_trigger_takes_the_home_lock(admin, as_role):  # gap I4
     assert orders(admin) == 0
     insert_order(ex, rid, "SP-1001")  # control: without the lock held the same insert works
     assert orders(admin) == 1
+
+
+# --- risk tiers (task A5). A move-out's approvals count only after the occupier notice (the
+# order rule), so the executor waits for the tier's approvals at the order step: T1 one person,
+# T2 two, HOLD two SeniorApprovers. HUMAN_ONLY ends at manual_only without a notice.
+
+def test_t2_move_out_needs_two_approvals_after_the_notice(admin, as_role, settings, now):
+    from tests.conftest import approve_as
+
+    ex, staff = as_role("executor"), as_role("approver")
+    rid = add_moveout(admin, tier="T2")
+    notice_73_hours_ago(admin, rid)
+    approve_as(staff, rid, "staff.anna")
+    process_moveouts(ex, settings, now)
+    # Waiting for the second person, quietly: the trigger was never asked.
+    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
+    approve_as(staff, rid, "staff.petros")
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "executed" and orders(admin) == 1
+
+
+def test_hold_move_out_needs_two_senior_approvals(admin, as_role, settings, now):
+    from tests.conftest import approve_as
+
+    ex, staff = as_role("executor"), as_role("approver")
+    rid = add_moveout(admin, tier="HOLD")
+    notice_73_hours_ago(admin, rid)
+    approve_as(staff, rid, "staff.anna", "SeniorApprover")
+    approve_as(staff, rid, "staff.petros", "Approver")
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
+    approve_as(staff, rid, "staff.ioanna", "SeniorApprover")
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "executed" and orders(admin) == 1
+
+
+def test_human_only_move_out_gets_no_notice_even_at_an_unprotected_home(admin, as_role, settings, now):
+    rid = add_moveout(admin, tier="HUMAN_ONLY")  # SP-1001: the executor's own check would say NO
+    process_moveouts(as_role("executor"), settings, now)
+    assert status(admin, rid) == "manual_only"
+    assert admin.execute("SELECT count(*) AS n FROM occupier_notices").fetchone()["n"] == 0
+    reason = admin.execute("SELECT decision_reason FROM action_requests WHERE id = %s", (rid,)).fetchone()
+    assert reason["decision_reason"] == "risk: tier HUMAN_ONLY"
+
+
+def test_rejected_move_out_is_rejected(admin, as_role, settings, now):
+    rid = add_moveout(admin, tier="REJECT")
+    process_moveouts(as_role("executor"), settings, now)
+    assert status(admin, rid) == "rejected" and orders(admin) == 0

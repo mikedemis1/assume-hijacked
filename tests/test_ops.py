@@ -1,4 +1,6 @@
+import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -85,8 +87,21 @@ def test_metrics_refuse_bad_label_names():
         Metrics().inc("x_total", {"bad-label": "v"})
 
 
+class YieldingSamples(dict):
+    """A sample dict whose read gives the GIL away. inc() reads a sample, adds, writes it back: with
+    the lock, other threads wait; without it, they read the same old value in that gap and their
+    updates are lost. Without the injected yield the race is real but rarely hit, and the test
+    could pass with the lock removed."""
+
+    def get(self, key, default=None):
+        value = super().get(key, default)
+        time.sleep(0)  # let another thread run between the read and the write
+        return value
+
+
 def test_metrics_are_safe_to_increment_from_many_threads():
     metrics = Metrics()
+    metrics._samples["hits_total"] = YieldingSamples()  # see the class above
 
     def work():
         for _ in range(500):
@@ -149,3 +164,35 @@ def test_ops_server_does_not_log_requests_to_stderr(serve, capsys):
     server = serve(Metrics(), Heartbeat())
     get(server, "/healthz")
     assert capsys.readouterr().err == ""
+
+
+def test_paths_are_matched_without_the_query_string(serve):
+    metrics = Metrics()
+    metrics.inc("seen_total")
+    server = serve(metrics, Heartbeat())
+    assert get(server, "/healthz?probe=1") == (200, "ok\n")
+    status, body = get(server, "/metrics?x=1")
+    assert status == 200 and "seen_total 1" in body.splitlines()
+    assert get(server, "/metricsx?x=1")[0] == 404
+
+
+def test_a_client_that_never_finishes_its_request_is_cut_off(capsys):
+    # Without a socket timeout, a client that opens a connection and sends half a request holds a
+    # server thread forever; enough of them and the ops port stops answering the real probes.
+    server = start_ops_server(0, Metrics(), Heartbeat(), host="127.0.0.1", request_timeout_s=0.5)
+    try:
+        for half in (b"GET /hea", b"GET /healthz HTTP/1.1\r\nHost: x\r\n"):  # line, then headers
+            with socket.create_connection(("127.0.0.1", server.port), timeout=5) as slow:
+                slow.sendall(half)  # and never the rest
+                started = time.monotonic()
+                assert slow.recv(1024) == b""  # the server closed the connection
+                assert time.monotonic() - started < 4
+    finally:
+        server.shutdown()
+    assert capsys.readouterr().err == ""  # a dropped probe is not worth a traceback
+
+
+def test_ops_server_has_a_request_timeout_by_default(serve):
+    # Control for the test above, and the default every service gets.
+    server = serve(Metrics(), Heartbeat())
+    assert server.request_timeout_s == 10

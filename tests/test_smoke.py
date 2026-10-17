@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 import psycopg
@@ -103,7 +104,7 @@ with ThreadPoolExecutor(8) as pool:
 """
 
 # Every service on an internal network except the db (which is also on hostaccess on purpose).
-WALLED_SERVICES = [*TOOL_HOSTS, "executor", "agent"]
+WALLED_SERVICES = [*TOOL_HOSTS, "executor", "risk-engine", "agent"]
 
 DB_PORT = 5432  # inside the stack; the published host port is DB_HOST_PORT
 DB_HOST_PORT = int(os.environ.get("DB_PORT", "5432"))
@@ -272,7 +273,7 @@ def assert_blocked(source, targets):
 
 
 def test_agent_cannot_reach_db_on_any_ip():
-    # The db is on seven networks, so seven IPs. The agent shares none of them.
+    # The db is on eight networks, so eight IPs. The agent shares none of them.
     targets = [*service_targets("db", DB_PORT), ("host.docker.internal", DB_HOST_PORT)]
     assert len(targets) > 3, targets
     assert_blocked("agent", targets)
@@ -291,12 +292,19 @@ def test_executor_cannot_reach_tools(tool):
     assert_blocked("executor", service_targets(tool, TOOL_PORT))
 
 
+@pytest.mark.parametrize("tool", TOOL_HOSTS)
+def test_risk_engine_cannot_reach_tools(tool):
+    # Its only edge today is the db (edge_risk_db); the gateway edge comes with task A8.
+    assert_blocked("risk-engine", service_targets(tool, TOOL_PORT))
+
+
 # The controls: the same ports on the edges that ARE allowed. Without these, "blocked" above could
 # just mean the service was down or the probe was broken.
 ALLOWED_EDGES = {
     "agent": [(tool, TOOL_PORT) for tool in TOOL_HOSTS],
     **{tool: [("db", DB_PORT)] for tool in TOOL_HOSTS},
     "executor": [("db", DB_PORT)],
+    "risk-engine": [("db", DB_PORT)],
 }
 
 
@@ -311,3 +319,62 @@ def test_ip_probe_reaches_the_allowed_db_address_and_no_other():
     # That shows the probe works by IP, so the agent result above is not a probe that never connects.
     reached = try_tcp("executor", [(ip, DB_PORT) for ip in container_ips("db")])
     assert sum(reached.values()) == 1, reached
+
+
+# --- The risk engine in the stack (task A5) ---
+
+def stack_db():
+    return psycopg.connect(
+        host=os.environ.get("DB_HOST", "127.0.0.1"),
+        port=DB_HOST_PORT,
+        dbname="supplier",
+        user="postgres",
+        password=os.environ["POSTGRES_PASSWORD"],
+        autocommit=True,
+    )
+
+
+def test_pending_credit_is_assessed_by_the_risk_engine_and_credited_by_the_executor():
+    # A duplicate charge of one cent, new each run (the stack database keeps earlier runs' credits,
+    # and one cent keeps the monthly limit far away). Filed as the tool function would file it.
+    with stack_db() as conn:
+        first = conn.execute("SELECT coalesce(max(id), 0) + 1 FROM charges").fetchone()[0]
+        conn.execute(
+            "INSERT INTO charges VALUES (%s, 2, 'smoke', 0.01), (%s, 2, 'smoke', 0.01)", (first, first + 1)
+        )
+        rid = conn.execute(
+            "INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref) "
+            "VALUES ('credit', 2, 2, 0.01, 'duplicate_charge', %s) RETURNING id",
+            (first + 1,),
+        ).fetchone()[0]
+        deadline = time.monotonic() + 60  # the engine polls every 2 s, the executor every 5 s
+        row = None
+        while time.monotonic() < deadline:
+            row = conn.execute(
+                "SELECT r.status, a.tier, a.actor FROM action_requests r "
+                "LEFT JOIN risk_assessments a ON a.request_id = r.id WHERE r.id = %s",
+                (rid,),
+            ).fetchone()
+            if row[0] != "pending":
+                break
+            time.sleep(1)
+    assert row == ("executed", "T0", "risk_engine"), row
+
+
+DECIDE_FROM_INSIDE = """
+import json, urllib.request, urllib.error
+body = json.dumps({"lease": "0" * 64, "tool": "read_ticket"}).encode()
+request = urllib.request.Request("http://127.0.0.1:8082/decide", data=body,
+                                 headers={"Content-Type": "application/json"})
+print(urllib.request.urlopen(request, timeout=5).read().decode())
+print(urllib.request.urlopen("http://127.0.0.1:9000/healthz", timeout=5).status)
+"""
+
+
+def test_risk_engine_serves_decide_and_healthz():
+    # Nothing can reach it yet (the gateway edge is task A8), so the probe runs inside its container.
+    done = compose("exec", "-T", "risk-engine", "python", "-c", DECIDE_FROM_INSIDE, timeout=60)
+    assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
+    answer, health = done.stdout.strip().splitlines()
+    assert json.loads(answer) == {"decision": "deny", "reasons": ["lease"]}
+    assert health == "200"

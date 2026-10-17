@@ -141,10 +141,13 @@ def test_non_positive_amount_is_rejected(as_role, settings, amount, now):
 
 
 def test_missing_amount_is_rejected(admin, as_role, settings, now):
+    # api_request_credit refuses a NULL amount; this is the executor's own guard behind it, so the
+    # request is assessed T0 here (the risk engine would say REJECT, tested below).
     admin.execute(
         "INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref) "
         "VALUES ('credit', 1, 1, NULL, 'duplicate_charge', 2)"
     )
+    assess(admin, 1, "T0")
     process_credits(as_role("executor"), settings, now)
     assert statuses(admin) == ["rejected"]
     assert admin.execute("SELECT count(*) AS n FROM events WHERE kind = 'executor_error'").fetchone()["n"] == 0
@@ -301,3 +304,113 @@ def test_database_accepts_less_than_the_charge(admin, as_role):
     # Control for "more than the charge": part of a duplicate may be credited.
     insert_credit(as_role("executor"), *_matching(admin, 20, 2))
     assert credits_count(admin) == 1
+
+
+# --- risk tiers (task A5): the executor acts only on assessed requests, and waits for the
+# approvals the tier asks for. The database floor (tests/test_risk_floor.py) is the wall behind it.
+
+def risk_why(admin, request_id):
+    return admin.execute(
+        "SELECT status, decision_reason FROM action_requests WHERE id = %s", (request_id,)
+    ).fetchone()
+
+
+def test_executor_skips_requests_without_assessment(admin, as_role, settings, now):
+    from app.common.ops import Metrics
+    from app.executor.moveouts import process_moveouts
+    from tests.test_executor_moveouts import add_moveout
+
+    credit = add_credit(admin, 49, 2, tier=None)
+    move_out = add_moveout(admin, tier=None)
+    ex, metrics = as_role("executor"), Metrics()
+    process_credits(ex, settings, now, metrics)
+    process_moveouts(ex, settings, now, metrics)
+    # Not refused by the trigger (no executor_error): never even tried.
+    assert statuses(admin) == ["pending", "pending"]
+    assert admin.execute("SELECT count(*) AS n FROM events").fetchone()["n"] == 0
+    assert admin.execute("SELECT count(*) AS n FROM occupier_notices").fetchone()["n"] == 0
+    assert credits_count(admin) == 0
+    assert "executor_requests_total" not in metrics.render()
+    # Control: once assessed, the same requests move on.
+    assess(admin, credit, "T0")
+    assess(admin, move_out, "T1")
+    process_credits(ex, settings, now, metrics)
+    process_moveouts(ex, settings, now, metrics)
+    assert statuses(admin) == ["executed", "notice_sent"]
+
+
+def test_t1_credit_executes_after_one_approval(admin, as_role, settings, now):
+    from tests.conftest import approve_as
+
+    rid = add_credit(admin, 49, 2, tier="T1")
+    ex = as_role("executor")
+    process_credits(ex, settings, now)
+    # Waits, quietly: still pending, nothing written, no trigger refusal.
+    assert statuses(admin) == ["pending"] and credits_count(admin) == 0
+    assert admin.execute("SELECT count(*) AS n FROM events").fetchone()["n"] == 0
+    approve_as(as_role("approver"), rid, "staff.anna")
+    process_credits(ex, settings, now)
+    assert statuses(admin) == ["executed"] and credits_count(admin) == 1
+
+
+def test_approval_given_before_the_assessment_does_not_release_a_credit(admin, as_role, settings, now):
+    from tests.conftest import approve_as
+
+    rid = add_credit(admin, 49, 2, tier=None)
+    staff = as_role("approver")
+    approve_as(staff, rid, "staff.anna")  # approved before anyone knew how risky it was
+    assess(admin, rid, "T1")
+    ex = as_role("executor")
+    process_credits(ex, settings, now)
+    assert statuses(admin) == ["pending"]
+    assert admin.execute("SELECT count(*) AS n FROM events WHERE kind = 'executor_error'").fetchone()["n"] == 0
+    approve_as(staff, rid, "staff.petros")  # control: an approval after the assessment
+    process_credits(ex, settings, now)
+    assert statuses(admin) == ["executed"]
+
+
+def test_t2_credit_needs_two_people(admin, as_role, settings, now):
+    from tests.conftest import approve_as
+
+    rid = add_credit(admin, 49, 2, tier="T2")
+    staff, ex = as_role("approver"), as_role("executor")
+    approve_as(staff, rid, "staff.anna")
+    approve_as(staff, rid, " Staff.Anna ")  # the same person, spelled differently
+    process_credits(ex, settings, now)
+    # Still waiting, and the executor knew it: it did not try and get refused by the floor.
+    assert statuses(admin) == ["pending"]
+    assert admin.execute("SELECT count(*) AS n FROM events WHERE kind = 'executor_error'").fetchone()["n"] == 0
+    approve_as(staff, rid, "staff.petros")
+    process_credits(ex, settings, now)
+    assert statuses(admin) == ["executed"]
+
+
+def test_staff_approval_lifts_the_automatic_limits_but_not_the_evidence(admin, as_role, settings, now):
+    from tests.conftest import approve_as
+
+    admin.execute("INSERT INTO charges VALUES (8, 1, '2026-10', 80.00), (9, 1, '2026-10', 80.00)")
+    above_limit = add_credit(admin, 80, 9, tier="T1")  # T0 would send this to staff
+    no_evidence = add_credit(admin, 30, 999, tier="T1")  # no such charge
+    staff = as_role("approver")
+    approve_as(staff, above_limit, "staff.anna")
+    approve_as(staff, no_evidence, "staff.anna")
+    process_credits(as_role("executor"), settings, now)
+    assert risk_why(admin, above_limit) == {"status": "executed", "decision_reason": "approved by staff, evidence confirmed"}
+    # The database would refuse a credit no charge backs, approval or not; the executor sends it on.
+    assert risk_why(admin, no_evidence)["status"] == "needs_staff"
+    assert credits_count(admin) == 1
+
+
+@pytest.mark.parametrize(
+    "tier, status, reason",
+    [("REJECT", "rejected", "risk: invalid_amount"), ("HUMAN_ONLY", "manual_only", "risk: protected_or_unknown_home")],
+)
+def test_tiers_no_approval_allows_end_the_credit(admin, as_role, settings, now, tier, status, reason):
+    from tests.conftest import approve_as
+
+    rid = add_credit(admin, 49, 2, tier=None)
+    assess(admin, rid, tier, 100, (reason.removeprefix("risk: "),))
+    approve_as(as_role("approver"), rid, "staff.anna")
+    process_credits(as_role("executor"), settings, now)
+    assert risk_why(admin, rid) == {"status": status, "decision_reason": reason}
+    assert credits_count(admin) == 0

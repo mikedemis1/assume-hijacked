@@ -48,7 +48,7 @@ def test_a_request_that_fails_is_counted_as_error(admin, as_role, settings, now,
     assert 'executor_requests_total{kind="credit",status="error"} 1' in lines(metrics)
 
 
-def test_poll_beats_and_records_the_time(as_role, settings, now):
+def test_poll_beats_and_records_the_time(admin, as_role, settings, now):
     metrics = Metrics()
     clock = [100.0]
     heartbeat = Heartbeat(max_age_s=60, clock=lambda: clock[0])
@@ -57,3 +57,8 @@ def test_poll_beats_and_records_the_time(as_role, settings, now):
     executor_main.poll(as_role("executor"), settings, now, metrics, heartbeat)
     assert heartbeat.alive(clock[0])
     assert f"executor_last_poll_timestamp_seconds {now.timestamp()!r}" in lines(metrics)
+    # And in the database, where monitoring sees it without reaching the executor (db/sql/06-risk.sql).
+    beat = admin.execute(
+        "SELECT last_beat > now() - interval '1 minute' AS fresh FROM heartbeats WHERE component = 'executor'"
+    ).fetchone()
+    assert beat == {"fresh": True}

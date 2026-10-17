@@ -72,13 +72,12 @@ def test_credit_refused_without_assessment(admin, as_role, ex, settings, now):
     rid, write = _credit(admin, tier=None)
     with pytest.raises(psycopg.errors.RaiseException, match="no risk assessment"):
         write(ex)
-    # The executor code does not look at assessments yet (task A5); the trigger stops it anyway.
+    # The executor leaves an unassessed request alone (task A5), so the trigger is not even asked.
     process_credits(ex, settings, now)
     assert credits_count(admin) == 0
     status = admin.execute("SELECT status FROM action_requests WHERE id = %s", (rid,)).fetchone()["status"]
     assert status == "pending"
-    errors = [r["detail"] for r in admin.execute("SELECT detail FROM events WHERE kind = 'executor_error'")]
-    assert errors == [f"credit request={rid}: RaiseException"]
+    assert admin.execute("SELECT count(*) AS n FROM events WHERE kind = 'executor_error'").fetchone()["n"] == 0
     # Control: the same request, once assessed T0, is credited.
     assess(admin, rid, "T0")
     write(ex)
@@ -91,7 +90,11 @@ def test_order_refused_without_assessment(admin, as_role, ex):
     with pytest.raises(psycopg.errors.RaiseException, match="no risk assessment"):
         write(ex)
     assert orders(admin) == 0
-    assess(admin, rid, "T1")  # control
+    assess(admin, rid, "T1")
+    # The approval was given before the assessment, so it does not count (ruling a, A5).
+    with pytest.raises(psycopg.errors.RaiseException, match="needs 1 distinct approval"):
+        write(ex)
+    approve_as(as_role("approver"), rid, PETROS)  # control: an approval after the assessment
     write(ex)
     assert orders(admin) == 1
 
@@ -155,6 +158,73 @@ def test_order_approvals_count_only_after_the_notice(admin, as_role, ex):
     approve_as(staff, rid, "staff.ioanna")  # control: a second approval after the notice
     write(ex)
     assert orders(admin) == 1
+
+
+@pytest.mark.parametrize("kind", EFFECTS)
+def test_approvals_count_only_after_the_assessment(admin, as_role, ex, kind):
+    # An approval given before the request had a tier was given without knowing the risk. A console
+    # that let staff approve early (or a hijacked one that approves everything in advance) must not
+    # pre-pay the floor.
+    rid, write = EFFECTS[kind](admin, None)
+    staff = as_role("approver")
+    approve_as(staff, rid, ANNA)
+    approve_as(staff, rid, PETROS)
+    assess(admin, rid, "T2")
+    with pytest.raises(psycopg.errors.RaiseException, match="needs 2 distinct approvals"):
+        write(ex)
+    assert written(admin) == 0
+    approve_as(staff, rid, "staff.ioanna")
+    with pytest.raises(psycopg.errors.RaiseException, match="has 1"):
+        write(ex)
+    approve_as(staff, rid, "staff.giorgos")  # control: two people after the assessment
+    write(ex)
+    assert written(admin) == 1
+
+
+EFFECT_UPDATES = {
+    # An UPDATE never runs the insert-time checks, so it could move an approved effect to another
+    # request, account, amount or home. Nobody has an UPDATE grant; the trigger is the wall behind it.
+    "credits": ["UPDATE credits SET amount_eur = 500", "UPDATE credits SET request_id = request_id"],
+    "disconnection_orders": ["UPDATE disconnection_orders SET supply_point_id = 'SP-1003'",
+                             "UPDATE disconnection_orders SET request_id = request_id"],
+}
+
+
+def _one_effect_each(admin, as_role, ex):
+    rid, write = _credit(admin, "T0")
+    write(ex)
+    rid, write = _order(admin, "T1")
+    approve_as(as_role("approver"), rid, ANNA)
+    write(ex)
+    assert written(admin) == 2
+
+
+@pytest.mark.parametrize("table", EFFECT_UPDATES)
+def test_effect_rows_cannot_be_updated(admin, as_role, ex, table):
+    _one_effect_each(admin, as_role, ex)
+    allowed = []
+    for role in _login_roles(admin):
+        conn = ex if role == "executor" else as_role(role)  # executor: CONNECTION LIMIT 3
+        for statement in EFFECT_UPDATES[table]:
+            try:
+                conn.execute(statement)
+            except psycopg.errors.InsufficientPrivilege:
+                continue
+            allowed.append(f"{role}: {statement}")
+    assert allowed == []
+    for statement in EFFECT_UPDATES[table]:
+        # A grant added by mistake, and the superuser: still refused.
+        with admin.transaction(force_rollback=True):
+            admin.execute(f"GRANT UPDATE ON {table} TO executor")
+            admin.execute("SET SESSION AUTHORIZATION executor")
+            with pytest.raises(psycopg.errors.RaiseException, match="cannot be changed"):
+                with admin.transaction():
+                    admin.execute(statement)
+            admin.execute("RESET SESSION AUTHORIZATION")
+        with pytest.raises(psycopg.errors.RaiseException, match="cannot be changed"):
+            admin.execute(statement)
+    rows = admin.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]
+    assert rows == 1
 
 
 def test_order_refused_for_human_only_even_with_two_seniors(admin, as_role, ex):

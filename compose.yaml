@@ -40,11 +40,12 @@ secrets:
 #                                                  until the tool gateway exists (task A8)
 #   edge_<tool>_db x5      tool -> db              matrix row 12
 #   edge_executor_db       executor -> db          matrix row 14
+#   edge_risk_db           risk-engine -> db
 # Later tasks add their services and their edges (edge_agent_gateway, edge_gateway_<tool>,
-# edge_gateway_risk, edge_gateway_db, edge_risk_db, edge_dispatcher_db, edge_agent_dispatcher,
+# edge_gateway_risk, edge_gateway_db, edge_dispatcher_db, edge_agent_dispatcher,
 # edge_agent_llmgw, edge_executor_fakes, edge_register_db, edge_register_fakes, edge_console_db).
 # Which edges are NOT here is tested: tests/test_smoke.py (agent -> db, tool -> tool,
-# executor -> tools).
+# executor -> tools, risk-engine -> tools).
 #
 # Docker does not publish a host port for a container that is only on an internal network
 # (checked on Docker Desktop for Windows: `docker port` shows nothing and 127.0.0.1:<port> refuses).
@@ -62,6 +63,7 @@ networks:
   edge_issue_bill_credit_db: {internal: true}
   edge_set_temp_protection_db: {internal: true}
   edge_executor_db: {internal: true}
+  edge_risk_db: {internal: true}
   hostaccess: {}
 
 services:
@@ -76,6 +78,7 @@ services:
       - edge_issue_bill_credit_db
       - edge_set_temp_protection_db
       - edge_executor_db
+      - edge_risk_db
       - hostaccess
     environment:
       POSTGRES_DB: supplier
@@ -165,6 +168,19 @@ services:
     networks:
       - edge_executor_db
     command: ["python", "-m", "app.executor.main"]
+
+  # Judges every tool call (POST /decide on 8082) and gives every pending effect request a risk
+  # tier, which the executor waits on. Port 9000 serves /healthz and /metrics. Only the db edge
+  # today: the gateway that will call /decide, and its edge_gateway_risk, come with task A8.
+  risk-engine:
+    <<: *app
+    environment:
+      <<: *db-common
+      DB_PASSWORD_RISK_ENGINE: ${DB_PASSWORD_RISK_ENGINE:?set DB_PASSWORD_RISK_ENGINE in .env}
+    restart: unless-stopped
+    networks:
+      - edge_risk_db
+    command: ["python", "-m", "app.risk.main"]
 
   # No database password here: the agent only talks to the tools.
   agent:

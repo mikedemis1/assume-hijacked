@@ -20,9 +20,11 @@ def run_once(conn, settings, now: datetime, metrics: Metrics | None = None) -> N
 
 
 def poll(conn, settings, now: datetime, metrics: Metrics, heartbeat: Heartbeat) -> None:
-    """One trip round the loop. The heartbeat is written only after the work finished, so a hung
-    database call turns /healthz into 503 instead of looking healthy."""
+    """One trip round the loop. Both heartbeats are written only after the work finished, so a hung
+    database call turns /healthz into 503 and leaves the database heartbeat (heartbeats table,
+    db/sql/06-risk.sql) to age, instead of looking healthy."""
     run_once(conn, settings, now, metrics)
+    conn.execute("SELECT beat('executor')")
     metrics.set("executor_last_poll_timestamp_seconds", now.timestamp())
     heartbeat.beat()
 

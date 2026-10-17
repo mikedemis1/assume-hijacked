@@ -13,12 +13,14 @@
 -- The risk tables (06-risk.sql) are here too. They hold security decisions: a verdict a tool
 -- could read would tell a hijacked agent which requests pass unseen, and one it could write would
 -- skip the humans. No tool role has a grant on them; this keeps it so if one is added by mistake.
+-- Heartbeats (06-risk.sql) too: a row a tool could write would keep a stopped component looking
+-- alive.
 DO $$
 DECLARE
     t text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['tickets', 'customers', 'accounts', 'supply_points', 'action_requests', 'leases',
-                            'risk_assessments', 'call_assessments', 'agent_control']
+                            'risk_assessments', 'call_assessments', 'agent_control', 'heartbeats']
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
