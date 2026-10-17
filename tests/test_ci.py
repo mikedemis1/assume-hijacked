@@ -816,3 +816,33 @@ def test_checkov_step_fails_when_deploy_is_required_but_missing(iac_run):
 def test_checkov_step_fails_on_findings_nothing_scanned_and_parse_errors(iac_run, output, rc, why):
     done = iac_run(STANDIN_CHECKOV_OUTPUT=output, STANDIN_CHECKOV_RC=str(rc))
     assert done.returncode == 1, why
+
+
+# --- permission assessment and the visibility of plan files -------------------------------
+
+def test_permissions_job_assesses_the_database_db_sql_builds():
+    job = _jobs()["permissions"]
+    assert job["stage"] == "test" and "rules" not in job, "it runs on every push"
+    assert job["script"] == ["sh ci/permissions.sh"]
+    assert [_image(s) for s in job["services"]] == [_compose_db_image()]
+    assert job["variables"]["TEST_DB_SERVICE_HOST"] in [s["alias"] for s in job["services"]]
+    assert job["artifacts"]["paths"] == ["reports/permissions/"]
+    assert job["artifacts"]["when"] == "always", "keep the differences when the job fails"
+    script = _text("ci/permissions.sh")
+    for needed in (". ci/db-setup.sh", "-m secops.permassess --planes pg,compose",
+                   "--compose-json", "secops.permassess.report", "--check"):
+        assert needed in script, needed
+
+
+def test_mutmut_does_not_run_the_permission_assessment_tests():
+    """They import secops/ and read security/ and compose.yaml, which the mutants/ copy lacks;
+    one test file that fails to collect stops the whole mutation job."""
+    scope = tomllib.loads(_text("pyproject.toml"))["tool"]["mutmut"]
+    assert "--ignore=tests/test_permassess.py" in scope["pytest_add_cli_args_test_selection"]
+
+
+@pytest.mark.parametrize("job", ["tf-plan", "tf-destroy-plan"])
+def test_plan_files_are_not_public_on_the_public_project(job):
+    """Saved plans hold resource values; on a public project `access: all` (the default) would
+    let anyone download them. https://docs.gitlab.com/ci/yaml/#artifactsaccess"""
+    assert _jobs()[job]["artifacts"]["access"] == "developer"

@@ -20,7 +20,7 @@ The tests read `.env` for the passwords and DB_PORT. Each test truncates the tab
 | Job | Tool | Fails on | On a PC |
 |-----|------|----------|---------|
 | `secrets` | gitleaks, whole git history (`GIT_DEPTH: 0`, all branches) | any secret | gitleaks image |
-| `sast` | bandit on `app/` | medium or high severity at medium or high confidence | virtualenv |
+| `sast` | bandit on `app/` and `secops/` | medium or high severity at medium or high confidence | virtualenv |
 | `deps` | pip-audit on `requirements.lock` and `requirements-dev.lock` | any known vulnerability | virtualenv (set `REQUESTS_CA_BUNDLE` if your network intercepts HTTPS) |
 | `lock-check` | pip-compile again, compared with both locks | a difference (non-blocking) | Python image, needs plain PyPI access (the `docker run` is in the header of `ci/lock-check.sh`) |
 | `lint-container-hadolint` | hadolint on both Dockerfiles | warning or error | hadolint image |
@@ -30,6 +30,7 @@ The tests read `.env` for the passwords and DB_PORT. Each test truncates the tab
 | `iac-checkov` | checkov on `infra/`, and on the Helm chart in `deploy/` rendered for kind and Azure | a failed check, a scan that found nothing, a file it could not parse | checkov image |
 | `chart-tests` | `tests/k8s/test_chart.py` (helm lint and template, no cluster) on a pinned helm image | a failed test, and also a skipped one | your virtualenv and `helm`, else the pinned image |
 | `test` | pytest against a PostgreSQL service, JUnit report | a failed test | your Compose db |
+| `permissions` | `python -m secops.permassess` on the database `db/sql` builds and the networks of `compose.yaml`, compared with `security/expected-permissions.json`; reports in `reports/permissions/` | any extra or missing permission line, a plane it cannot read, an out-of-date `docs/permission-matrix.md` | your Compose db and `docker compose config` |
 | `build-scan` | `docker build`, then trivy on the image: a full report (artifact) and the gate | HIGH or CRITICAL with a fixed version | Docker Desktop |
 | `smoke` | the whole Compose stack, `pytest -m smoke` | a failed or skipped wall test | your running stack |
 | `mutation` | mutmut on the walls | score below the baseline | Python image and a throwaway PostgreSQL, as in CI |
@@ -68,7 +69,7 @@ Five jobs are defined and switched off, in the stage `azure`: `tf-plan`, `tf-app
 | `tf-destroy` | `ci-apply` | main | needs `tf-destroy-plan` of the same pipeline and applies its plans, lab then net. Checks both states again first; a managed resource group, or a state it cannot read, stops it |
 | `leftover-check` | `ci-plan` | any branch | lists everything in rg-lab and every billable resource type in the subscription; fails if any is left |
 
-The order is: run `tf-plan`, read its log (or the `.txt` files in the artifact), then run `tf-apply`. Apply fails if the plan files are missing, were made for another commit, or no longer match the state (terraform refuses a stale plan). `infra/lab` reads the net state, and its plan was made before net changed: if net had changes, `tf-apply` applies net and then stops with an error before lab. Run `tf-plan` again (it now sees the new net state), read it, and run `tf-apply`. Destroy works the same way with `tf-destroy-plan` and `tf-destroy`. The plan files can hold resource values, so the artifacts expire after one day.
+The order is: run `tf-plan`, read its log (or the `.txt` files in the artifact), then run `tf-apply`. Apply fails if the plan files are missing, were made for another commit, or no longer match the state (terraform refuses a stale plan). `infra/lab` reads the net state, and its plan was made before net changed: if net had changes, `tf-apply` applies net and then stops with an error before lab. Run `tf-plan` again (it now sees the new net state), read it, and run `tf-apply`. Destroy works the same way with `tf-destroy-plan` and `tf-destroy`. The plan files can hold resource values, so the artifacts expire after one day, and `artifacts:access: developer` keeps them away from visitors of the public project: only members with the Developer role or above can download them.
 
 `infra/base` is not planned or applied in CI, on purpose. It holds the CI identities and the role assignments they may hand out, so a job that could apply it could widen its own rights. It needs Microsoft Graph rights for the Entra applications, which neither CI identity has, so even a plan would fail. The owner applies it from a PC; every push still runs fmt, validate, `terraform test`, tflint and checkov on it. `destroy` removes the contents of rg-net and rg-lab, never the groups and never base, because `infra/net` and `infra/lab` only read the groups, which `infra/base` creates empty.
 
