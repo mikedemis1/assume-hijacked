@@ -536,7 +536,7 @@ def test_dns_rule_allows_cluster_names_only(env):
     dns = {p["metadata"]["namespace"]: p["spec"] for p in cilium_policies(env)
            if p["metadata"]["name"] == "edge-22-dns-cluster-names-only"}
     assert set(dns) == chart_namespaces(env)
-    for spec in dns.values():
+    for namespace, spec in dns.items():
         assert spec["endpointSelector"] == {}
         [rule] = spec["egress"]
         assert rule["toEndpoints"] == [{"matchLabels": {"k8s:io.kubernetes.pod.namespace": "kube-system",
@@ -544,7 +544,9 @@ def test_dns_rule_allows_cluster_names_only(env):
         [to_ports] = rule["toPorts"]
         assert to_ports["ports"] == [{"port": "53", "protocol": "ANY"}]
         patterns = [r["matchPattern"] for r in to_ports["rules"]["dns"]]
-        assert patterns == CLUSTER_DNS_PATTERNS
+        # Plus the first search form of a short name <service>.<namespace> (search list of a pod
+        # in this namespace).
+        assert patterns == [*CLUSTER_DNS_PATTERNS, f"*.*.{namespace}.svc.cluster.local."]
         # `*` matches one label only (Cilium docs), so every allowed name ends in cluster.local.
         assert all(p.endswith(".cluster.local.") for p in patterns)
 

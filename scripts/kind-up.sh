@@ -3,7 +3,8 @@
 # RuntimeClass. Run from the repository root with Git Bash: `sh scripts/kind-up.sh`.
 #
 #   - No cluster yet: creates it (deploy/kind/cluster.yaml), installs Cilium, applies the
-#     RuntimeClass and waits until everything is ready.
+#     RuntimeClass, starts the local registry (scripts/kind-registry.sh) and waits until
+#     everything is ready.
 #   - Cluster exists but its containers are stopped: starts them and waits.
 #   - Cluster is running: checks readiness and applies the RuntimeClass again (idempotent).
 #
@@ -110,5 +111,7 @@ k --namespace kube-system rollout status deployment/cilium-operator --timeout=30
 k --namespace kube-system rollout status deployment/hubble-relay --timeout=300s
 k --namespace kube-system rollout status deployment/hubble-ui --timeout=300s
 k apply -f deploy/kind/runtimeclass.yaml
+# The local registry the nodes pull pinned images from (R14).
+sh scripts/kind-registry.sh
 
 echo "cluster $CLUSTER is ready (kubectl context $CONTEXT)"

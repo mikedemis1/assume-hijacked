@@ -57,6 +57,16 @@
       "type": "object",
       "properties": {"databaseCidr": {"type": "string"}}
     },
+    "attackSuite": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "replay": {"type": "boolean"},
+        "image": {"anyOf": [{"$ref": "#/definitions/empty"}, {"$ref": "#/definitions/pinnedImage"}]}
+      },
+      "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+      "then": {"required": ["image"], "properties": {"image": {"$ref": "#/definitions/pinnedImage"}}}
+    },
     "secrets": {
       "type": "object",
       "properties": {

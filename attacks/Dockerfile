@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+# The attack-suite image: the probe pods of tests/k8s/test_walls.py and the chart's attack-suite
+# test pods run `python -m attacks.run`. Standard library only, no app code, so it builds without
+# a package index and before lane A's app is deployed.
+# Build from the repository root: docker build -f attacks/Dockerfile .  (scripts/kind-attack-image.sh)
+
+# Same base as the app image (Dockerfile), pinned by digest.
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /srv
+COPY attacks ./attacks
+# The app's non-root user (Pod Security "restricted", the chart's securityContext).
+USER 10001
+# Short-lived probe processes, not a service: nothing to health-check.
+#checkov:skip=CKV_DOCKER_2: one-shot probe and test processes, no long-running service to check
+ENTRYPOINT ["python", "-m", "attacks.run"]

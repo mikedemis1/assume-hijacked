@@ -78,6 +78,15 @@ azure:
   clientIds: {}              # component -> client ID of its user-assigned managed identity
   keyVaults: {}              # component -> physical Key Vault name (infra/base key_vaults output)
 
+# The attack suite (attacks/, image built from attacks/Dockerfile and pushed to the registry):
+# `helm test` runs one probe pod per component that tries every forbidden edge and the allowed
+# ones (templates/attack-suite-job.yaml). replay adds the attack ticket replay, which needs the
+# app deployed. Off by default.
+attackSuite:
+  enabled: false
+  image: ""
+  replay: false
+
 # Where the components that are not sandboxed run. The sandboxed ones (agent, tools) are placed
 # by their RuntimeClass.
 placement:

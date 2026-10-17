@@ -1,6 +1,8 @@
 """The local cluster has the shape the walls expect: Cilium and Hubble running, a sandbox node
 that only sandbox pods can use, and the stand-in RuntimeClass that sends pods there."""
 
+import subprocess
+
 import pytest
 
 pytestmark = pytest.mark.k8s
@@ -56,3 +58,15 @@ def test_sandbox_node_tainted(get):
 
     # Control: the system node takes ordinary pods, so the taint is what keeps them off the sandbox.
     assert pools["system"]["spec"].get("taints", []) == []
+
+
+def test_nodes_pull_from_the_local_registry(get):
+    """Ruling R14: images by digest come from kind-registry (scripts/kind-registry.sh). Each node
+    maps localhost:5001 to the registry container; the ConfigMap tells tools where it is."""
+    hosting = get("--namespace", "kube-public", "get", "configmap", "local-registry-hosting")
+    assert 'host: "localhost:5001"' in hosting["data"]["localRegistryHosting.v1"]
+    for node in get("get", "nodes")["items"]:
+        name = node["metadata"]["name"]
+        result = subprocess.run(["docker", "exec", name, "cat", "/etc/containerd/certs.d/localhost:5001/hosts.toml"],
+                                capture_output=True, text=True, timeout=30, check=False)
+        assert result.stdout.strip() == '[host."http://kind-registry:5000"]', (name, result.stderr)

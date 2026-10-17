@@ -1,5 +1,9 @@
 """The network and admission walls on the live kind cluster `ah` (`sh scripts/kind-up.sh`).
 
+The network walls are proved at runtime by the probe matrix (attacks/probes.py, bottom of this
+file): probe pods with each component's labels try every forbidden edge and the allowed ones;
+the observed matrix is written to reports/k8s-probe-matrix.json.
+
 Admission is checked with server-side dry runs: the API server runs every admission step (Pod
 Security, the ValidatingAdmissionPolicies, RBAC for `--as`) and stores nothing, and no image is
 pulled. If the chart is not installed (no Helm release owns the namespaces), the session
@@ -8,14 +12,19 @@ fixture applies the chart's namespaces, ServiceAccounts, dispatcher RBAC and pol
 """
 
 import json
+import os
+import shlex
+import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import yaml
 
-from tests.k8s.conftest import CONTEXT, kubectl_json
-from tests.k8s.test_chart import (HELM, NAMESPACES, SANDBOX_RUNTIME, agent_job, helm)
+from attacks import probes
+from tests.k8s.conftest import kubectl_json, run_kubectl
+from tests.k8s.test_chart import (HELM, NAMESPACES, ROOT, SANDBOX_RUNTIME, agent_job, helm)
 
 pytestmark = [pytest.mark.k8s, pytest.mark.skipif(HELM is None, reason="helm is not installed")]
 
@@ -26,8 +35,7 @@ PINNED = "localhost:5001/assume-hijacked@sha256:" + "0" * 64
 
 
 def kubectl(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["kubectl", "--context", CONTEXT, *args], input=stdin, capture_output=True,
-                          text=True, encoding="utf-8", timeout=120, check=False)
+    return run_kubectl(list(args), stdin=stdin)
 
 
 def admit(obj: dict, as_user: str | None = None) -> tuple[bool, str]:
@@ -285,6 +293,14 @@ JOB_CHANGES = {
     "writable root filesystem": edit(f"{AGENT}.securityContext.readOnlyRootFilesystem", False),
     "retries": edit("spec.backoffLimit", 3),
     "no deadline": edit("spec.activeDeadlineSeconds", delete=True),
+    # B4: the remaining pod-spec escapes, each tried once live.
+    "an init container": lambda j: (j["spec"]["template"]["spec"].update(initContainers=[
+        {**j["spec"]["template"]["spec"]["containers"][0], "name": "init", "command": ["sh", "-c", "env"]}]) or j),
+    "host aliases (point a service name elsewhere)": edit(f"{POD}.hostAliases", [
+        {"ip": "10.0.0.66", "hostnames": ["tool-gateway.ah-gateway.svc.cluster.local"]}]),
+    "a custom DNS config": edit(f"{POD}.dnsConfig", {"nameservers": ["1.1.1.1"]}),
+    "DNS policy None": lambda j: (j["spec"]["template"]["spec"].update(
+        dnsPolicy="None", dnsConfig={"nameservers": ["1.1.1.1"]}) or j),
 }
 
 
@@ -299,3 +315,315 @@ def test_admission_rejects_agent_job_off_template(change):
     admitted, error = admit(job, as_user=DISPATCHER)
     assert not admitted, change
     assert "ah-agent-job-template" in error, error
+
+
+# --- runtime proof of the network walls: the probe matrix (attacks/probes.py) -------------------
+#
+# One probe pod per identity of the matrix, from the attack-suite image (attacks/Dockerfile, in
+# the local registry): in its component's namespace, with its app.kubernetes.io/name label, so
+# the policies select it exactly as they select the component. Each listens on its component's
+# ports (a stand-in for a component that is not deployed) and runs the probes whose source it is.
+# A probe aims at the target pod's IP, so it needs no Service and no app.
+#
+# Mutation proofs: AH_WALLS_MUTATION="<kubectl args>" runs one kubectl command once the probe pods
+# are up (e.g. "delete networkpolicy default-deny --namespace ah-fakes"); the named edges must go
+# red. The walls fixture deletes every wall at the end, so the next run starts from the chart.
+
+PROBE_LABEL = "ah/probe"
+EXTRA_NAMESPACES = {"ah-monitoring", probes.OUTSIDE_NAMESPACE}
+MATRIX = probes.matrix()
+REPORT = ROOT / "reports" / "k8s-probe-matrix.json"
+
+
+def attack_image() -> str:
+    image = os.environ.get("AH_ATTACK_IMAGE")
+    if image:
+        return image
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.fail("set AH_ATTACK_IMAGE, or put sh on PATH to run scripts/kind-attack-image.sh")
+    result = subprocess.run([sh, "scripts/kind-attack-image.sh"], cwd=ROOT, capture_output=True, text=True,
+                            timeout=600, check=False)
+    if result.returncode != 0:
+        pytest.fail(f"building the attack-suite image failed: {result.stderr}")
+    return result.stdout.strip().splitlines()[-1]
+
+
+def identities() -> list[str]:
+    """Every probe source and every component a probe aims at."""
+    targets = [p.target for p in MATRIX if p.kind == "tcp" and p.target not in probes.SPECIAL_TARGETS]
+    return list(dict.fromkeys([*probes.sources(MATRIX), *targets]))
+
+
+def probe_pod(name: str, image: str) -> dict:
+    namespace, label, ports = probes.placement(name)
+    doc = pod(namespace, "default", container={
+        "name": "probe", "image": image, "args": ["serve", ",".join(map(str, ports))],
+        "resources": {"requests": {"cpu": "5m", "memory": "24Mi"}, "limits": {"cpu": "200m", "memory": "64Mi"}},
+    })
+    del doc["spec"]["containers"][0]["command"]  # the image's entrypoint: python -m attacks.run
+    if namespace not in ("ah-agent", "ah-tools"):
+        doc["spec"].pop("runtimeClassName", None)
+    doc["metadata"] = {"name": f"probe-{name}", "namespace": namespace,
+                       "labels": {"app.kubernetes.io/name": label, PROBE_LABEL: name}}
+    return doc
+
+
+def namespace_doc(name: str) -> dict:
+    labels = {f"pod-security.kubernetes.io/{m}": "restricted" for m in ("enforce", "warn", "audit")}
+    return {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": name, "labels": labels}}
+
+
+def exec_probe(namespace: str, pod_name: str, plan: list, addresses: dict) -> list[dict]:
+    """Run probes in a probe pod. kubectl exec through the loopback API can drop now and then
+    (antivirus on this PC), so a failed exec is retried."""
+    request = json.dumps({"probes": [p.to_json() for p in plan], "addresses": addresses})
+    for _ in range(3):
+        result = kubectl("--namespace", namespace, "exec", "-i", pod_name, "--",
+                         "python", "-m", "attacks.run", "probe", stdin=request)
+        try:
+            return json.loads(result.stdout)["results"]
+        except ValueError:
+            time.sleep(2)
+    raise AssertionError(f"probe exec in {namespace}/{pod_name} failed: {result.stderr}")
+
+
+def run_matrix(plan: list, pods: dict, addresses: dict) -> list[dict]:
+    """Every source's probes at once, one exec per source pod."""
+    by_source: dict[str, list] = {}
+    for p in plan:
+        by_source.setdefault(p.source, []).append(p)
+    with ThreadPoolExecutor(max_workers=len(by_source)) as pool:
+        futures = [pool.submit(exec_probe, pods[s]["namespace"], pods[s]["name"], ps, addresses)
+                   for s, ps in by_source.items()]
+        return [r for f in futures for r in f.result()]
+
+
+@pytest.fixture(scope="session")
+def probe_pods(walls):
+    image = attack_image()
+    created_ns = [n for n in sorted(EXTRA_NAMESPACES) if kubectl("get", "namespace", n).returncode != 0]
+    docs = [namespace_doc(n) for n in created_ns] + [probe_pod(n, image) for n in identities()]
+    try:
+        result = kubectl("apply", "-f", "-", stdin=json.dumps({"apiVersion": "v1", "kind": "List", "items": docs}))
+        assert result.returncode == 0, result.stderr
+        result = kubectl("wait", "pods", "--all-namespaces", "-l", PROBE_LABEL, "--for=condition=Ready",
+                         "--timeout=240s")
+        assert result.returncode == 0, result.stderr
+        listed = kubectl_json("get", "pods", "--all-namespaces", "-l", PROBE_LABEL)["items"]
+        pods = {p["metadata"]["labels"][PROBE_LABEL]: {
+            "name": p["metadata"]["name"], "namespace": p["metadata"]["namespace"],
+            "ip": p["status"]["podIP"], "node": p["spec"]["nodeName"]} for p in listed}
+        mutation = os.environ.get("AH_WALLS_MUTATION")
+        if mutation:
+            result = kubectl(*shlex.split(mutation))
+            assert result.returncode == 0, f"mutation {mutation!r} failed: {result.stderr}"
+            time.sleep(5)
+        yield pods
+    finally:
+        kubectl("delete", "pods", "--all-namespaces", "-l", PROBE_LABEL, "--wait=true", "--timeout=120s")
+        for n in created_ns:
+            kubectl("delete", "namespace", n, "--wait=false")
+
+
+def api_service_ip() -> str:
+    return kubectl_json("--namespace", "default", "get", "service", "kubernetes")["spec"]["clusterIP"]
+
+
+@pytest.fixture(scope="session")
+def addresses(probe_pods) -> dict[str, str]:
+    found = {name: pod["ip"] for name, pod in probe_pods.items()}
+    found[probes.KUBE_API] = api_service_ip()
+    return found
+
+
+@pytest.fixture(scope="session")
+def probe_results(probe_pods, addresses) -> dict[str, dict]:
+    results = run_matrix(MATRIX, probe_pods, addresses)
+    # A new pod's identity reaches every node's policy maps within a second or two: an allowed
+    # edge that timed out right after start-up is tried again. A denied edge is never retried:
+    # one connection through is a hole.
+    for _ in range(2):
+        late = {r["edge"] for r in results if r["expected"] == probes.ALLOW and r["observed"] == probes.DENY}
+        if not late:
+            break
+        time.sleep(3)
+        again = {r["edge"]: r for r in run_matrix([p for p in MATRIX if p.edge in late], probe_pods, addresses)}
+        results = [again.get(r["edge"], r) for r in results]
+    REPORT.parent.mkdir(exist_ok=True)
+    REPORT.write_text(json.dumps(results, indent=1), encoding="utf-8")
+    return {r["edge"]: r for r in results}
+
+
+@pytest.mark.parametrize("edge", [p.edge for p in MATRIX])
+def test_probe_edge(probe_results, edge):
+    r = probe_results[edge]
+    assert r["observed"] == r["expected"], (
+        f"{edge}: expected {r['expected']}, observed {r['observed']} ({r['detail']}); wall: {r['why']}")
+
+
+def hubble(probe_pods: dict, source: str, *filters: str) -> list[dict]:
+    """Flows Hubble recorded from a probe pod, read on the node it runs on (egress policy is
+    enforced there)."""
+    pod_ = probe_pods[source]
+    agents = kubectl_json("--namespace", "kube-system", "get", "pods", "-l", "k8s-app=cilium",
+                          "--field-selector", f"spec.nodeName={pod_['node']}")["items"]
+    result = kubectl("--namespace", "kube-system", "exec", agents[0]["metadata"]["name"], "-c", "cilium-agent", "--",
+                     "hubble", "observe", "--last", "4000", "--from-pod", f"{pod_['namespace']}/{pod_['name']}",
+                     *filters, "-o", "json")
+    assert result.returncode == 0, result.stderr
+    return [json.loads(line)["flow"] for line in result.stdout.splitlines() if line.strip()]
+
+
+def tcp_verdicts(flows: list[dict], ip: str, port: int) -> set[tuple[str, str]]:
+    return {(f["verdict"], f.get("drop_reason_desc", "")) for f in flows
+            if f.get("IP", {}).get("destination") == ip
+            and f.get("l4", {}).get("TCP", {}).get("destination_port") == port}
+
+
+def test_hubble_shows_policy_drops_for_denied_edges_and_forwards_the_allowed(probe_results, probe_pods, addresses):
+    """Evidence for the Walls board: the denied connections are dropped by policy (not lost on
+    the way), the allowed one is forwarded."""
+    flows = hubble(probe_pods, "agent", "--protocol", "tcp")
+    for target, port in (("postgres", 5432), ("tool-read-ticket", 8000), ("risk-engine", 8082)):
+        assert tcp_verdicts(flows, addresses[target], port) == {("DROPPED", "POLICY_DENIED")}, target
+    assert ("FORWARDED", "") in tcp_verdicts(flows, addresses["tool-gateway"], 8080)
+
+
+def test_dns_exfiltration_is_answered_by_the_proxy_and_never_forwarded(probe_results, probe_pods):
+    """The exfiltration name dies in Cilium's DNS proxy: Hubble shows the query refused there and
+    never forwarded to CoreDNS, so no server outside the cluster ever sees it. Control: a cluster
+    name from the same pod is forwarded."""
+    exfil = probe_results[f"agent dns {probes.EXFIL_NAME}"]["detail"].rsplit("(", 1)[1].rstrip(")")
+    assert exfil.endswith(".exfil.example.") and "{" not in exfil
+    flows = hubble(probe_pods, "agent", "--protocol", "dns")
+    by_query: dict[str, set] = {}
+    for f in flows:
+        query = f.get("l7", {}).get("dns", {}).get("query")
+        if query:
+            by_query.setdefault(query, set()).add(f["verdict"])
+    assert by_query.get(exfil) and "FORWARDED" not in by_query[exfil], by_query.get(exfil)
+    assert "FORWARDED" in by_query.get("kubernetes.default.svc.cluster.local.", set())
+
+
+def test_probe_pod_search_list_is_the_cluster_suffixes_only(probe_pods):
+    """The resolver's search list decides which names a lookup sends (B3 deviation: names outside
+    the cluster are allowed with their search forms). On kind it holds the cluster suffixes only;
+    on AKS a node search domain would be added (Phase Z check)."""
+    agent = probe_pods["agent"]
+    result = kubectl("--namespace", agent["namespace"], "exec", agent["name"], "--", "cat", "/etc/resolv.conf")
+    assert result.returncode == 0, result.stderr
+    lines = [line.split() for line in result.stdout.splitlines() if line.strip()]
+    search = next(line[1:] for line in lines if line[0] == "search")
+    assert search == ["ah-agent.svc.cluster.local", "svc.cluster.local", "cluster.local"]
+    assert ["options", "ndots:5"] in lines
+    (REPORT.parent / "k8s-probe-resolv-conf.txt").write_text(result.stdout, encoding="utf-8")
+
+
+ALLOW_ALL = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+             "metadata": {"name": "probe-allow-all-egress", "namespace": "ah-fakes"},
+             "spec": {"podSelector": {"matchLabels": {PROBE_LABEL: "fake-sms"}}, "policyTypes": ["Egress"],
+                      "egress": [{}]}}
+
+
+def test_metadata_endpoint_denied_even_with_an_allow_all_policy(probe_pods, addresses):
+    """IMDS (managed identity tokens on Azure) stays shut when someone adds an allow-all egress
+    policy next to the walls: the Cilium deny wins over every allow. Control: the same allow-all
+    opens the internet, so it is in force."""
+    assert kubectl("apply", "-f", "-", stdin=json.dumps(ALLOW_ALL)).returncode == 0
+    try:
+        plan = [probes.tcp("fake-sms", probes.INTERNET, probes.ALLOW, "control: allow-all is in force"),
+                probes.tcp("fake-sms", probes.IMDS, probes.DENY, "deny-instance-metadata beats allow-all")]
+        results = {}
+        for _ in range(5):  # the new policy takes a moment
+            results = {r["edge"]: r for r in run_matrix(plan, probe_pods, addresses)}
+            if results["fake-sms -> internet:443"]["observed"] == probes.ALLOW:
+                break
+            time.sleep(2)
+        assert results["fake-sms -> internet:443"]["observed"] == probes.ALLOW, results
+        assert results["fake-sms -> imds:80"]["observed"] == probes.DENY, results
+        # On kind nothing answers at 169.254.169.254, so a timeout alone proves little: Hubble
+        # must show the policy dropped it, and POLICY_DENY (an explicit deny rule) rather than
+        # POLICY_DENIED (no allow): the egressDeny did it, not a missing allow.
+        verdicts = tcp_verdicts(hubble(probe_pods, "fake-sms", "--to-ip", "169.254.169.254"), "169.254.169.254", 80)
+        assert verdicts == {("DROPPED", "POLICY_DENY")}, verdicts
+    finally:
+        kubectl("delete", "-f", "-", "--ignore-not-found", stdin=json.dumps(ALLOW_ALL))
+
+
+ANTHROPIC = "api.anthropic.com"
+
+
+def test_only_the_llm_gateway_reaches_its_llm_api(probe_pods, addresses, probe_results):
+    """With llm.backend=anthropic: the LLM gateway resolves and reaches api.anthropic.com on 443,
+    nothing else outside, no other port; every other pod is refused the name."""
+    result = helm("template", "kind", "--set", "llm.backend=anthropic", "--set", "secrets.anthropicApiKey=test-only")
+    assert result.returncode == 0, result.stderr
+    [policy] = [o for o in yaml.safe_load_all(result.stdout)
+                if o and o["kind"] == "CiliumNetworkPolicy"
+                and o["metadata"]["name"] == "edge-19-20-llm-gateway-to-external-names"]
+    if kubectl("--namespace", "ah-agent", "get", "ciliumnetworkpolicy", policy["metadata"]["name"]).returncode == 0:
+        pytest.skip("the installed chart already has an LLM backend with external names")
+    assert kubectl("apply", "-f", "-", stdin=json.dumps(policy)).returncode == 0
+    try:
+        lg, a = "llm-gateway", "agent"
+        plan = [
+            probes.resolve(lg, ANTHROPIC, probes.ALLOW, "edge-19: its API name, through the search walk"),
+            probes.tcp(lg, ANTHROPIC, probes.ALLOW, "edge-20: toFQDNs api.anthropic.com:443", 443),
+            probes.tcp(lg, ANTHROPIC, probes.DENY, "edge-20: 443 only", 80),
+            probes.dns(lg, "api.openai.com.", probes.DENY, "edge-19: no other name"),
+            probes.tcp(lg, probes.INTERNET, probes.DENY, "edge-20: no other address"),
+            probes.dns(a, f"{ANTHROPIC}.", probes.DENY, "edge-19: the agent never gets the name"),
+            probes.resolve(a, ANTHROPIC, probes.DENY, "edge-19: the agent never gets the name"),
+        ]
+        results = {}
+        for _ in range(10):  # Cilium validates and applies the new policy within a few seconds
+            results = {r["edge"]: r for r in run_matrix(plan, probe_pods, addresses)}
+            if results[f"{lg} resolve {ANTHROPIC}"]["observed"] == probes.ALLOW:
+                break
+            time.sleep(2)
+        bad = {e: (r["expected"], r["observed"], r["detail"]) for e, r in results.items()
+               if r["observed"] != r["expected"]}
+        assert not bad
+    finally:
+        kubectl("delete", "-f", "-", "--ignore-not-found", stdin=json.dumps(policy))
+
+
+# --- admission on running pods: ephemeral containers and pod updates ----------------------------
+
+def ephemeral(probe_pods: dict, image: str, **security) -> tuple[bool, str]:
+    """Server-side dry run of adding an ephemeral (debug) container to the running fake-sms probe."""
+    target = probe_pods["fake-sms"]
+    live = kubectl_json("--namespace", target["namespace"], "get", "pod", target["name"])
+    sc = {**pod("ah-fakes", "x")["spec"]["containers"][0]["securityContext"], **security}
+    live["spec"]["ephemeralContainers"] = [{"name": "debug", "image": image, "command": ["sh"],
+                                            "securityContext": sc}]
+    url = f"/api/v1/namespaces/{target['namespace']}/pods/{target['name']}/ephemeralcontainers?dryRun=All"
+    result = kubectl("replace", "--raw", url, "-f", "-", stdin=json.dumps(live))
+    return result.returncode == 0, result.stderr + result.stdout
+
+
+def test_admission_rejects_ephemeral_container_off_the_rules(probe_pods):
+    admitted, error = ephemeral(probe_pods, "busybox:1.37")
+    assert not admitted and "ah-images-pinned" in error, error
+    admitted, error = ephemeral(probe_pods, PINNED, privileged=True, allowPrivilegeEscalation=True)
+    assert not admitted, error
+    # Control: a pinned, restricted debug container is admitted (RBAC decides who may add one).
+    admitted, error = ephemeral(probe_pods, PINNED)
+    assert admitted, error
+
+
+def test_admission_rejects_image_swap_on_a_running_pod(probe_pods):
+    """kubectl set image on a running pod is a pod UPDATE: the image policy checks it too."""
+    target = probe_pods["fake-sms"]
+
+    def set_image(image: str) -> subprocess.CompletedProcess:
+        return kubectl("--namespace", target["namespace"], "set", "image", f"pod/{target['name']}",
+                       f"probe={image}", "--dry-run=server")
+
+    result = set_image("busybox:1.37")
+    assert result.returncode != 0 and "ah-images-pinned" in result.stderr, result.stderr
+    result = set_image("docker.io/library/busybox@sha256:" + "a" * 64)
+    assert result.returncode != 0 and "ah-images-pinned" in result.stderr, result.stderr
+    # Control: another image from the registry, by digest, passes admission.
+    assert set_image(PINNED).returncode == 0

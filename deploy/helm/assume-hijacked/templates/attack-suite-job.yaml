@@ -1,0 +1,132 @@
+{{- /*
+The attack suite in the cluster (attacks/, image from attacks/Dockerfile), run with `helm test`
+after a deploy: any open wall fails the test, and so the pipeline.
+
+One probe pod per component, in that component's namespace and with its app.kubernetes.io/name
+label, so every NetworkPolicy and CiliumNetworkPolicy selects it exactly as it selects the
+component. It runs `python -m attacks.run suite <component>`: the probes of attacks/probes.py
+whose source is that component, against the real Services. It prints one JSON line per probe
+({"edge", "expected", "observed", ...}) and exits 1 on a mismatch.
+
+They are bare Pods with the helm.sh/hook "test" annotation, not Jobs: a Job in ah-agent must be
+the agent Job exactly (policy ah-agent-job-template), and a probe pod is not. Each runs as its own
+ServiceAccount attack-suite, which has no rights and no token.
+
+attackSuite.replay adds the ticket replay (attacks/tickets.py): a pod that plays a fully
+hijacked agent process (ah-agent, agent label and ServiceAccount, the agent's three tokens and
+URLs) and runs attack tickets 1-11 through POST /claim, the tool gateway and POST /reply. It needs
+the app deployed, and a dispatcher that hands this pod the attack tickets (in k8s mode a claim is
+bound to the pod of an agent Job), so it is off until then.
+
+Off by default: attackSuite.enabled and a pinned attackSuite.image from the registry.
+*/ -}}
+{{- if .Values.attackSuite.enabled }}
+{{- $root := . -}}
+{{- $v := .Values -}}
+{{- $image := required "attackSuite.image is required with attackSuite.enabled" $v.attackSuite.image -}}
+{{- if not (hasPrefix $v.registry $image) -}}
+{{- fail (printf "attackSuite.image must come from the registry %s, got %s" $v.registry $image) -}}
+{{- end -}}
+{{- $uid := include "ah.appUid" . | int -}}
+{{- $sandboxed := list "ah-agent" "ah-tools" -}}
+{{- /* The chart components a probe runs as (attacks/probes.py COMPONENTS, one tool for all
+five). postgres only on kind, where the database is a pod of this chart. */ -}}
+{{- $sources := list
+  (list "agent" "ah-agent") (list "llm-gateway" "ah-agent") (list "dispatcher" "ah-intake")
+  (list "tool-gateway" "ah-gateway") (list "tool-lookup-account" "ah-tools")
+  (list "risk-engine" "ah-core") (list "executor" "ah-core") (list "register-sync" "ah-core")
+  (list "console" "ah-staff") (list "fake-sms" "ah-fakes") -}}
+{{- if eq $v.env "kind" }}{{ $sources = append $sources (list "postgres" "ah-data") }}{{ end -}}
+{{- $namespaces := list -}}
+{{- range $sources }}{{ $namespaces = append $namespaces (index . 1) }}{{ end -}}
+{{- range $ns := $namespaces | uniq }}
+---
+{{ include "ah.serviceAccount" (dict "root" $root "name" "attack-suite" "namespace" $ns "workloadIdentity" false) }}
+{{- end }}
+{{- range $s := $sources }}
+{{- $name := index $s 0 }}
+{{- $ns := index $s 1 }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: attack-suite-{{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: assume-hijacked
+    app.kubernetes.io/component: attack-suite
+    helm.sh/chart: {{ printf "%s-%s" $root.Chart.Name $root.Chart.Version }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  serviceAccountName: attack-suite
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 120
+  {{- if has $ns $sandboxed }}
+  runtimeClassName: {{ $v.sandbox.runtimeClass }}
+  {{- else }}
+  {{- with include "ah.systemPlacement" $root }}{{ . | nindent 2 }}{{ end }}
+  {{- end }}
+  securityContext:
+    {{- include "ah.podSecurityContext" $uid | nindent 4 }}
+  containers:
+    - name: probe
+      image: {{ $image }}
+      imagePullPolicy: IfNotPresent
+      args: ["suite", {{ $name | quote }}]
+      env:
+        # Where the database is: the postgres Service on kind, the private endpoint on Azure.
+        - {name: AH_DB_HOST, value: {{ $v.db.host | quote }}}
+      securityContext:
+        {{- include "ah.containerSecurityContext" $uid | nindent 8 }}
+      resources:
+        {{- toYaml $v.resources.job | nindent 8 }}
+{{- end }}
+{{- if $v.attackSuite.replay }}
+{{- $job := include "ah.agentJob" . | fromYaml -}}
+{{- $agent := index $job.spec.template.spec.containers 0 }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: attack-suite-replay
+  namespace: ah-agent
+  labels:
+    app.kubernetes.io/name: agent
+    app.kubernetes.io/part-of: assume-hijacked
+    app.kubernetes.io/component: attack-suite
+    helm.sh/chart: {{ printf "%s-%s" $root.Chart.Name $root.Chart.Version }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  {{- /* The agent's identity, tokens and URLs, from the same template as the agent Job. */}}
+  serviceAccountName: agent
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  activeDeadlineSeconds: 280
+  runtimeClassName: {{ $v.sandbox.runtimeClass }}
+  securityContext:
+    {{- include "ah.podSecurityContext" $uid | nindent 4 }}
+  containers:
+    - name: replay
+      image: {{ $image }}
+      imagePullPolicy: IfNotPresent
+      args: ["replay"]
+      env:
+        {{- toYaml $agent.env | nindent 8 }}
+      volumeMounts:
+        {{- toYaml $agent.volumeMounts | nindent 8 }}
+      securityContext:
+        {{- include "ah.containerSecurityContext" $uid | nindent 8 }}
+      resources:
+        {{- toYaml $v.resources.job | nindent 8 }}
+  volumes:
+    {{- toYaml $job.spec.template.spec.volumes | nindent 4 }}
+{{- end }}
+{{- end }}

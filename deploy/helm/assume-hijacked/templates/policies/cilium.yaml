@@ -12,7 +12,10 @@ https://docs.cilium.io/en/v1.20/security/policy/deny/ (egressDeny).
    forward those names. `*` matches one label only, and names the resolver builds from the
    search list must be allowed whole (the Kubernetes note on the page above); with ndots:5 a
    service name a.b.svc.cluster.local is first tried with each search suffix, and glibc stops
-   at the first REFUSED, so the patterns list those forms too. All of them end in cluster.local.
+   at the first REFUSED, so the patterns list those forms too. A short name a.b (service.
+   namespace) is first tried as a.b.<own namespace>.svc.cluster.local: the last pattern (the
+   attack suite found that form refused, so `kubernetes.default` did not resolve). All of them
+   end in cluster.local.
 2. Names outside the cluster (rows 19, 20): only the components in helper ah.externalNames, only
    their own names (an extra DNS rule plus toFQDNs), only on 443. On Azure the database callers
    (helper ah.dbCallers) may also resolve db.host, DNS only: the connection is the ipBlock edge.
@@ -48,6 +51,7 @@ spec:
               - matchPattern: "*.*.svc.cluster.local.*.svc.cluster.local."
               - matchPattern: "*.*.svc.cluster.local.svc.cluster.local."
               - matchPattern: "*.*.svc.cluster.local.cluster.local."
+              - matchPattern: "*.*.{{ $ns }}.svc.cluster.local."
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
