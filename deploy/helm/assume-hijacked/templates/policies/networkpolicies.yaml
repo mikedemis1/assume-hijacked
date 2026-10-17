@@ -1,0 +1,96 @@
+{{- /*
+Network walls, part 1: Kubernetes NetworkPolicy.
+
+Every namespace starts with default-deny (no ingress, no egress for any pod). Each allowed edge
+of the communication matrix (helper ah.edges) then gets exactly two policies: the egress half in
+the caller's namespace and the ingress half in the callee's namespace, both selecting pods by
+app.kubernetes.io/name and the peer namespace by its kubernetes.io/metadata.name label (set by
+the API server, so a namespace cannot pose as another). Nothing else is allowed.
+
+DNS, the Kubernetes API and the few names outside the cluster are in cilium.yaml. DNS on
+purpose is not allowed here: an L4-only allow on port 53 next to Cilium's DNS rule would switch
+that rule off ("the layer 7 portions of the latter rule will have no effect",
+https://docs.cilium.io/en/v1.20/security/policy/layer7/).
+*/ -}}
+{{- $root := . -}}
+{{- range $ns := include "ah.namespaces" . | fromJsonArray }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ $ns }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+{{- end }}
+{{- range $e := include "ah.edges" . | fromJsonArray }}
+{{- if not $e.from.external }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $e.id }}-out
+  namespace: {{ $e.from.ns }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: {{ toJson $e.from.pods }}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- if $e.to.cidr }}
+        - ipBlock:
+            cidr: {{ $e.to.cidr }}
+        {{- else }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $e.to.ns }}
+          {{- if $e.to.pods }}
+          podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: {{ toJson $e.to.pods }}}
+          {{- end }}
+        {{- end }}
+      ports:
+        {{- range $e.to.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+{{- end }}
+{{- if not $e.to.cidr }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $e.id }}-in
+  namespace: {{ $e.to.ns }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  podSelector:
+    {{- if $e.to.pods }}
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: {{ toJson $e.to.pods }}}
+    {{- else }} {}
+    {{- end }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $e.from.ns }}
+          {{- if $e.from.pods }}
+          podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: {{ toJson $e.from.pods }}}
+          {{- end }}
+      ports:
+        {{- range $e.to.ports }}
+        - {protocol: TCP, port: {{ . }}}
+        {{- end }}
+{{- end }}
+{{- end }}

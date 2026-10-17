@@ -4,6 +4,9 @@
 # secrets.* with env=azure; every secret comes from the component's Key Vault.
 env: azure
 
+# The ACR login server (infra/base output). Admission accepts images only from here.
+registry: acrplaceholder.azurecr.io/
+
 images:
   # Placeholders. Upstream images are imported into ACR, which keeps their digest.
   app: acrplaceholder.azurecr.io/assume-hijacked@sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -16,6 +19,10 @@ console:
 db:
   # The flexible server's private endpoint name (infra/lab output).
   host: ""
+
+network:
+  # snet-pe in infra/net: cidrsubnet(spoke 10.20.0.0/16, 10, 8). Change both together.
+  databaseCidr: 10.20.2.0/26
 
 # AKS has only the system pool (tainted CriticalAddonsOnly) and the Kata sandbox pool, so the
 # components that are not sandboxed run on the system pool and tolerate its taint.

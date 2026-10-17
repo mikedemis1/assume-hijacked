@@ -48,7 +48,8 @@ COMPONENTS = {
 DB_ROLES = sorted({role for _, role in COMPONENTS.values() if role})
 # Components that call the Kubernetes API (TokenReview; the dispatcher also creates Jobs).
 API_CALLERS = {"tool-gateway", "llm-gateway", "dispatcher"}
-CLUSTER_SCOPED = {"Namespace", "ClusterRole", "ClusterRoleBinding"}
+CLUSTER_SCOPED = {"Namespace", "ClusterRole", "ClusterRoleBinding", "ValidatingAdmissionPolicy",
+                  "ValidatingAdmissionPolicyBinding"}
 NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff", "ah-fakes",
               "ah-data"}
 PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\ntest-only\n-----END PUBLIC KEY-----\n"
@@ -196,8 +197,10 @@ def test_values_schema_rejects_an_image_without_digest(env, image):
     result = helm("template", env, "--set", f"images.{image}=registry.example/thing:1.0")
     assert result.returncode != 0
     assert image in result.stderr
-    # Control: the same image with a digest renders.
-    pinned = "registry.example/thing:1.0@sha256:" + "a" * 64
+    # Control: the same image with a digest renders (on Azure from ACR: images outside the
+    # registry are refused there, test_azure_refuses_images_outside_the_registry).
+    registry = "acrplaceholder.azurecr.io/" if env == "azure" else "registry.example/"
+    pinned = f"{registry}thing:1.0@sha256:" + "a" * 64
     assert helm("template", env, "--set", f"images.{image}={pinned}").returncode == 0
 
 
@@ -400,3 +403,307 @@ def test_db_setup_job_gets_init_sh_and_every_sql_file(env):
     assert set(sql) == {p.name for p in (ROOT / "db" / "sql").glob("*.sql")}
     init = find(env, "ConfigMap", "db-init")["data"]["init.sh"]
     assert init == (ROOT / "db" / "init" / "init.sh").read_text(encoding="utf-8")
+
+
+# --- network walls (B3) -------------------------------------------------------------------------
+# The communication matrix (final architecture, section 4), rows that run inside the cluster:
+# (caller namespace, caller pods, callee namespace or DB, callee pods, ports). DB is Postgres in
+# ah-data on kind and the private endpoint subnet on Azure.
+DB = "db"
+AZURE_DB_CIDR = "10.20.2.0/26"
+TOOL_PODS = tuple(sorted(TOOL_COMPONENTS))
+MATRIX = {
+    ("ah-intake", ("dispatcher",), DB, (), (5432,)),                                   # 4
+    ("ah-agent", ("agent",), "ah-gateway", ("tool-gateway",), (8080,)),                # 5
+    ("ah-agent", ("agent",), "ah-agent", ("llm-gateway",), (8083,)),                   # 6
+    ("ah-agent", ("agent",), "ah-intake", ("dispatcher",), (8081,)),                   # 7
+    ("ah-gateway", ("tool-gateway",), "ah-core", ("risk-engine",), (8082,)),           # 8
+    ("ah-gateway", ("tool-gateway",), "ah-tools", TOOL_PODS, (8000,)),                 # 9
+    ("ah-gateway", ("tool-gateway",), DB, (), (5432,)),                                # 11
+    ("ah-tools", TOOL_PODS, DB, (), (5432,)),                                          # 12
+    ("ah-core", ("risk-engine",), DB, (), (5432,)),                                    # 13
+    ("ah-core", ("executor",), DB, (), (5432,)),                                       # 14
+    ("ah-core", ("executor",), "ah-fakes", ("fake-dso",), (8091,)),                    # 15
+    ("ah-core", ("executor",), "ah-fakes", ("fake-sms",), (8092,)),                    # 15
+    ("ah-core", ("register-sync",), "ah-fakes", ("fake-register",), (8090,)),          # 16
+    ("ah-core", ("register-sync",), DB, (), (5432,)),                                  # 16
+    ("ah-staff", ("console",), DB, (), (5432,)),                                       # 18
+}
+DB_SETUP = {"kind": ("ah-data", ("postgres-init",)), "azure": ("ah-core", ("db-migrate",))}
+OPS_NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff"}
+CLUSTER_DNS_PATTERNS = ["*.*.svc.cluster.local.", "*.*.svc.cluster.local.*.svc.cluster.local.",
+                        "*.*.svc.cluster.local.svc.cluster.local.", "*.*.svc.cluster.local.cluster.local."]
+ENTRA = "login.microsoftonline.com"
+POLICIES = {"ah-images-pinned", "ah-no-host-access", "ah-sandbox-runtime", "ah-agent-job-template"}
+
+
+def chart_namespaces(env: str) -> set[str]:
+    return NAMESPACES if env == "kind" else NAMESPACES - {"ah-data"}
+
+
+def name_values(selector: dict) -> tuple:
+    """app.kubernetes.io/name values a pod selector picks; () for every pod."""
+    if not selector:
+        return ()
+    [expr] = selector["matchExpressions"]
+    assert expr["key"] == "app.kubernetes.io/name" and expr["operator"] == "In"
+    return tuple(sorted(expr["values"]))
+
+
+def expected_edges(env: str) -> set:
+    edges = set(MATRIX) | {(*DB_SETUP[env], DB, (), (5432,))}
+    target = {"kind": ("ah-data", ("postgres",)), "azure": (AZURE_DB_CIDR, ())}[env]
+    return {(a, b, *(target if c == DB else (c, d)), e) for a, b, c, d, e in edges}
+
+
+def network_policies(env: str, *sets: str) -> list[dict]:
+    return [o for o in rendered(env, *sets) if o["kind"] == "NetworkPolicy"]
+
+
+def cilium_policies(env: str, *sets: str) -> list[dict]:
+    return [o for o in rendered(env, *sets) if o["kind"] == "CiliumNetworkPolicy"]
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_every_namespace_renders_default_deny(env):
+    deny = {p["metadata"]["namespace"]: p["spec"] for p in network_policies(env)
+            if p["metadata"]["name"] == "default-deny"}
+    assert set(deny) == chart_namespaces(env)
+    for spec in deny.values():
+        assert spec == {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]}
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_network_edges_are_exactly_the_matrix(env):
+    """Every egress half is a matrix edge, every matrix edge has both halves, nothing else."""
+    egress, ingress = set(), set()
+    for p in network_policies(env):
+        name, ns, spec = p["metadata"]["name"], p["metadata"]["namespace"], p["spec"]
+        if name == "default-deny":
+            continue
+        pods = name_values(spec["podSelector"])
+        if name.endswith("-out"):
+            assert spec["policyTypes"] == ["Egress"] and "ingress" not in spec, name
+            [rule] = spec["egress"]
+            [peer] = rule["to"]
+            assert all(x["protocol"] == "TCP" for x in rule["ports"]), name
+            ports = tuple(sorted(x["port"] for x in rule["ports"]))
+            if "ipBlock" in peer:
+                assert env == "azure" and peer == {"ipBlock": {"cidr": AZURE_DB_CIDR}}, name
+                egress.add((ns, pods, AZURE_DB_CIDR, (), ports))
+            else:
+                callee_ns = peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"]
+                egress.add((ns, pods, callee_ns, name_values(peer.get("podSelector", {})), ports))
+        else:
+            assert name.endswith("-in"), name
+            assert spec["policyTypes"] == ["Ingress"] and "egress" not in spec, name
+            [rule] = spec["ingress"]
+            [peer] = rule["from"]
+            caller_ns = peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"]
+            ports = tuple(sorted(x["port"] for x in rule["ports"]))
+            ingress.add((caller_ns, name_values(peer.get("podSelector", {})), ns, pods, ports))
+    expected = expected_edges(env)
+    assert egress == expected
+    # Ingress halves: the same edges where the callee is in the cluster, plus Prometheus
+    # (ah-monitoring, its own chart) to the ops port of every namespace with ops endpoints.
+    metrics = {("ah-monitoring", (), ns, (), (9000,)) for ns in OPS_NAMESPACES}
+    assert ingress == {e for e in expected if e[2] != AZURE_DB_CIDR} | metrics
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_the_agent_reaches_only_its_three_services(env):
+    """The blocking view of the same walls: no edge from the agent to a tool, the database, the
+    risk engine or a fake, and the tools reach nothing but the database."""
+    edges = expected_edges(env)
+    assert {(c, d) for a, b, c, d, _ in edges if b == ("agent",)} == {
+        ("ah-gateway", ("tool-gateway",)), ("ah-agent", ("llm-gateway",)), ("ah-intake", ("dispatcher",))}
+    db = {"kind": "ah-data", "azure": AZURE_DB_CIDR}[env]
+    assert {c for a, _, c, _, _ in edges if a == "ah-tools"} == {db}
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_no_networkpolicy_allows_dns_or_open_egress(env):
+    """DNS goes only through Cilium's DNS rule: an L4 allow on port 53 would switch it off."""
+    for p in network_policies(env):
+        for rule in p["spec"].get("egress", []):
+            assert rule.get("to"), p["metadata"]["name"]
+            assert rule.get("ports"), p["metadata"]["name"]
+            assert all(x["port"] not in (53, "53") for x in rule["ports"]), p["metadata"]["name"]
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_dns_rule_allows_cluster_names_only(env):
+    dns = {p["metadata"]["namespace"]: p["spec"] for p in cilium_policies(env)
+           if p["metadata"]["name"] == "edge-22-dns-cluster-names-only"}
+    assert set(dns) == chart_namespaces(env)
+    for spec in dns.values():
+        assert spec["endpointSelector"] == {}
+        [rule] = spec["egress"]
+        assert rule["toEndpoints"] == [{"matchLabels": {"k8s:io.kubernetes.pod.namespace": "kube-system",
+                                                        "k8s:k8s-app": "kube-dns"}}]
+        [to_ports] = rule["toPorts"]
+        assert to_ports["ports"] == [{"port": "53", "protocol": "ANY"}]
+        patterns = [r["matchPattern"] for r in to_ports["rules"]["dns"]]
+        assert patterns == CLUSTER_DNS_PATTERNS
+        # `*` matches one label only (Cilium docs), so every allowed name ends in cluster.local.
+        assert all(p.endswith(".cluster.local.") for p in patterns)
+
+
+def external_names(env: str, *sets: str) -> dict:
+    """component -> (names it may resolve besides cluster.local, names it may reach on 443)."""
+    out = {}
+    for p in cilium_policies(env, *sets):
+        spec = p["spec"]
+        names = [r["matchName"] for e in spec.get("egress", []) for r in e.get("toFQDNs", [])]
+        if not names:
+            continue
+        component = spec["endpointSelector"]["matchLabels"]["app.kubernetes.io/name"]
+        [dns_rule, fqdn_rule] = spec["egress"]
+        resolvable = [r["matchName"] for r in dns_rule["toPorts"][0]["rules"]["dns"]]
+        assert fqdn_rule["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
+        out[component] = (resolvable, names)
+    return out
+
+
+def test_only_named_components_reach_names_outside_the_cluster():
+    # kind defaults (scripted backend, dev console): nothing outside the cluster at all.
+    assert external_names("kind") == {}
+    assert external_names("kind", "llm.backend=anthropic", "secrets.anthropicApiKey=test-only") == {
+        "llm-gateway": (["api.anthropic.com"], ["api.anthropic.com"])}
+    assert external_names("azure") == {"console": ([ENTRA], [ENTRA]), "db-migrate": ([ENTRA], [ENTRA])}
+    foundry = external_names("azure", "llm.backend=foundry",
+                             "llm.foundryEndpoint=https://ai-ah.openai.azure.com/")
+    assert foundry["llm-gateway"] == (["ai-ah.openai.azure.com", ENTRA], ["ai-ah.openai.azure.com", ENTRA])
+    # No other Cilium egress to the world: no CIDR allow, no entity but the API server.
+    for env in ENVS:
+        for p in cilium_policies(env):
+            for rule in p["spec"].get("egress", []):
+                assert "toCIDR" not in rule and "toCIDRSet" not in rule, p["metadata"]["name"]
+                assert set(rule.get("toEntities", [])) <= {"kube-apiserver"}, p["metadata"]["name"]
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_instance_metadata_denied_in_every_namespace(env):
+    deny = {p["metadata"]["namespace"]: p["spec"] for p in cilium_policies(env)
+            if p["metadata"]["name"] == "deny-instance-metadata"}
+    assert set(deny) == chart_namespaces(env)
+    for spec in deny.values():
+        assert spec == {"endpointSelector": {}, "egressDeny": [{"toCIDR": ["169.254.169.254/32"]}]}
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_only_api_callers_reach_kube_apiserver(env):
+    callers = set()
+    for p in cilium_policies(env):
+        for rule in p["spec"].get("egress", []):
+            if "kube-apiserver" in rule.get("toEntities", []):
+                callers.add((p["metadata"]["namespace"],
+                             p["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/name"]))
+    assert callers == {("ah-intake", "dispatcher"), ("ah-gateway", "tool-gateway"), ("ah-agent", "llm-gateway")}
+    assert {name for _, name in callers} == API_CALLERS
+
+
+# --- admission walls (B3) -----------------------------------------------------------------------
+
+@pytest.mark.parametrize("env", ENVS)
+def test_namespaces_enforce_restricted_pod_security(env):
+    namespaces = objects(env, "Namespace")
+    assert {n["metadata"]["name"] for n in namespaces} == chart_namespaces(env)
+    for ns in namespaces:
+        labels = ns["metadata"]["labels"]
+        for mode in ("enforce", "warn", "audit"):
+            assert labels[f"pod-security.kubernetes.io/{mode}"] == "restricted", ns["metadata"]["name"]
+
+
+def admission_policies(env: str, *sets: str) -> dict:
+    return {o["metadata"]["name"]: o for o in rendered(env, *sets) if o["kind"] == "ValidatingAdmissionPolicy"}
+
+
+def policy_text(env: str, name: str, *sets: str) -> str:
+    """All CEL expressions of a policy, one per line."""
+    spec = admission_policies(env, *sets)[name]["spec"]
+    return "\n".join([v["expression"] for v in spec.get("variables", [])]
+                     + [v["expression"] for v in spec["validations"]])
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_admission_policies_are_bound_and_deny(env):
+    policies = admission_policies(env)
+    assert set(policies) == POLICIES
+    bindings = {o["metadata"]["name"]: o["spec"] for o in objects(env, "ValidatingAdmissionPolicyBinding")}
+    assert bindings == {n: {"policyName": n, "validationActions": ["Deny"]} for n in POLICIES}
+    scope = {}
+    for name, p in policies.items():
+        assert p["apiVersion"] == "admissionregistration.k8s.io/v1"
+        assert p["spec"]["failurePolicy"] == "Fail"
+        [expr] = p["spec"]["matchConstraints"]["namespaceSelector"]["matchExpressions"]
+        assert expr["key"] == "kubernetes.io/metadata.name" and expr["operator"] == "In"
+        scope[name] = set(expr["values"])
+    assert scope == {"ah-images-pinned": chart_namespaces(env), "ah-no-host-access": chart_namespaces(env),
+                     "ah-sandbox-runtime": {"ah-agent", "ah-tools"}, "ah-agent-job-template": {"ah-agent"}}
+
+
+def test_image_policy_allows_only_the_registry_and_pinned_upstream_images():
+    kind = policy_text("kind", "ah-images-pinned")
+    assert "i.startsWith('localhost:5001/')" in kind
+    # The Postgres image keeps its public digest on kind (R14): allowed exactly as written.
+    postgres = find("kind", "StatefulSet", "postgres")["spec"]["template"]["spec"]["containers"][0]["image"]
+    assert f'!(i in ["{postgres}"])' in kind
+    azure = policy_text("azure", "ah-images-pinned")
+    assert "i.startsWith('acrplaceholder.azurecr.io/')" in azure
+    assert "!(i in [])" in azure
+
+
+def test_azure_refuses_images_outside_the_registry():
+    upstream = "docker.io/library/postgres@sha256:" + "b" * 64
+    result = helm("template", "azure", "--set", f"images.postgres={upstream}")
+    assert result.returncode != 0
+    assert "must come from the registry" in result.stderr
+    # Control: the same image imported into ACR renders.
+    acr = "acrplaceholder.azurecr.io/postgres@sha256:" + "b" * 64
+    assert helm("template", "azure", "--set", f"images.postgres={acr}").returncode == 0
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_agent_job_policy_pins_the_template(env):
+    """The Job policy takes image, command and env from the template the dispatcher uses."""
+    registry = {"kind": "localhost:5001/", "azure": "acrplaceholder.azurecr.io/"}[env]
+    app = f"{registry}assume-hijacked@sha256:" + "c" * 64
+    text = policy_text(env, "ah-agent-job-template", f"images.app={app}")
+    [o] = [o for o in rendered(env, f"images.app={app}")
+           if o["kind"] == "ConfigMap" and o["metadata"]["name"] == "agent-job-template"]
+    [container] = json.loads(o["data"]["job.json"])["spec"]["template"]["spec"]["containers"]
+    assert container["image"] == app
+    assert f"variables.c.image == '{app}'" in text
+    assert 'variables.c.command == ["python","-m","app.agent.main"]' in text
+    env_list = [f"{e['name']}={e['value']}" for e in container["env"]]
+    assert "== " + json.dumps(env_list, separators=(",", ":")) in text
+    assert "variables.pod.serviceAccountName == 'agent'" in text
+    assert f"variables.pod.runtimeClassName == '{SANDBOX_RUNTIME}'" in text
+    for audience in AGENT_AUDIENCES:
+        assert f"{audience} 600 {audience}/token" in text
+
+
+def test_values_schema_pins_sandbox_runtime_in_azure():
+    result = helm("template", "azure", "--set", "sandbox.runtimeClass=runc")
+    assert result.returncode != 0
+    assert "runtimeClass" in result.stderr
+    # Control: the AKS Kata class renders.
+    assert helm("template", "azure", "--set", f"sandbox.runtimeClass={SANDBOX_RUNTIME}").returncode == 0
+
+
+@pytest.mark.parametrize(("env", "registry"), [("kind", "docker.io/"), ("azure", "localhost:5001/"),
+                                               ("azure", "evil.example/")])
+def test_values_schema_rejects_another_registry(env, registry):
+    result = helm("template", env, "--set", f"registry={registry}")
+    assert result.returncode != 0
+    assert "registry" in result.stderr
+
+
+def test_console_template_refuses_dev_auth_in_azure_without_the_schema():
+    """helm --skip-schema-validation skips values.schema.json; the template still refuses."""
+    result = helm("template", "azure", "--skip-schema-validation", "--set", "console.authMode=dev")
+    assert result.returncode != 0
+    assert "console.authMode must be entra with env=azure" in result.stderr
+    # Control: entra renders without the schema too.
+    assert helm("template", "azure", "--skip-schema-validation").returncode == 0

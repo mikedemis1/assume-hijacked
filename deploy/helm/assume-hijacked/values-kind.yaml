@@ -1,6 +1,11 @@
 # Local cluster "ah" (deploy/kind, scripts/kind-up.sh).
 env: kind
 
+# The local registry container kind-registry (127.0.0.1:5001 on the host, localhost:5001 on the
+# nodes). Admission accepts images from here; the pinned upstream images in `images` (Postgres)
+# are accepted exactly as written.
+registry: localhost:5001/
+
 images:
   # Placeholder digest. scripts/kind-deploy.sh builds the image, pushes it to the local registry
   # (127.0.0.1:5001, seen by the nodes as localhost:5001) and overrides this with

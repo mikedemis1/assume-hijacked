@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "assume-hijacked chart values",
   "type": "object",
-  "required": ["env", "images", "sandbox", "console", "llm", "db"],
+  "required": ["env", "registry", "images", "sandbox", "console", "llm", "db"],
   "definitions": {
     "pinnedImage": {
       "description": "An image by digest: name[:tag]@sha256:<64 hex>. A tag alone can be moved to other content.",
@@ -13,6 +13,11 @@
   },
   "properties": {
     "env": {"enum": ["kind", "azure"]},
+    "registry": {
+      "description": "Registry prefix the admission policy accepts images from (ruling R14), ending in '/'.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9.:-]*/$"
+    },
     "images": {
       "type": "object",
       "required": ["app", "postgres"],
@@ -48,6 +53,10 @@
         "demoVulnerable": {"type": "boolean"}
       }
     },
+    "network": {
+      "type": "object",
+      "properties": {"databaseCidr": {"type": "string"}}
+    },
     "secrets": {
       "type": "object",
       "properties": {
@@ -81,6 +90,34 @@
       "description": "Azure: db-migrate needs the Azure CLI image for its Entra token.",
       "if": {"properties": {"env": {"const": "azure"}}, "required": ["env"]},
       "then": {"properties": {"images": {"required": ["azureCli"]}}}
+    },
+    {
+      "description": "kind: images come from the local registry container (ruling R14).",
+      "if": {"properties": {"env": {"const": "kind"}}, "required": ["env"]},
+      "then": {"properties": {"registry": {"const": "localhost:5001/"}}}
+    },
+    {
+      "description": "Azure: images come from the ACR login server only.",
+      "if": {"properties": {"env": {"const": "azure"}}, "required": ["env"]},
+      "then": {"properties": {"registry": {"pattern": "^[a-z0-9]{5,50}\\.azurecr\\.io/$"}}}
+    },
+    {
+      "description": "Azure: sandboxed pods run under the AKS Pod Sandboxing (Kata) class and nothing else (https://learn.microsoft.com/en-us/azure/aks/use-pod-sandboxing).",
+      "if": {"properties": {"env": {"const": "azure"}}, "required": ["env"]},
+      "then": {"properties": {"sandbox": {"properties": {"runtimeClass": {"const": "kata-vm-isolation"}}}}}
+    },
+    {
+      "description": "Azure: the database is outside the cluster, so its NetworkPolicy edges need the private endpoint subnet.",
+      "if": {"properties": {"env": {"const": "azure"}}, "required": ["env"]},
+      "then": {
+        "required": ["network"],
+        "properties": {
+          "network": {
+            "required": ["databaseCidr"],
+            "properties": {"databaseCidr": {"pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"}}
+          }
+        }
+      }
     }
   ]
 }

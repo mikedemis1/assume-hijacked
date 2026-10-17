@@ -418,3 +418,96 @@ one per login role, from the Secret named <secret>. Call with (dict "root" $ "se
 - {name: db-sql, mountPath: /db/sql, readOnly: true}
 - {name: tmp, mountPath: /tmp}
 {{- end }}
+
+{{/*
+The namespaces of the chart, as a JSON list (one per trust zone; ah-data only on kind, where the
+chart runs PostgreSQL itself). ah-monitoring belongs to the monitoring stack (B5), not here.
+*/}}
+{{- define "ah.namespaces" -}}
+{{- $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" "ah-fakes" -}}
+{{- if eq .Values.env "kind" }}{{ $ns = append $ns "ah-data" }}{{ end -}}
+{{- toJson $ns -}}
+{{- end }}
+
+{{/* Component names of the five tools (tool-read-ticket, ...), as a JSON list. */}}
+{{- define "ah.toolComponents" -}}
+{{- $names := list -}}
+{{- range include "ah.tools" . | fromJsonArray }}{{ $names = append $names (printf "tool-%s" (replace "_" "-" .)) }}{{ end -}}
+{{- toJson $names -}}
+{{- end }}
+
+{{/*
+The allowed network edges inside the cluster, as a JSON list. Each one is a row of the
+communication matrix (context: final architecture section 4) and becomes two NetworkPolicies:
+the egress half in the caller's namespace and the ingress half in the callee's namespace.
+Everything else is denied by the default-deny policy of every namespace.
+  from  {ns, pods}            pods: app.kubernetes.io/name values; external: no egress half
+                              (the caller's namespace is not part of this chart)
+  to    {ns, pods, ports}     or {cidr, ports} for the database outside the cluster (Azure)
+The Kubernetes API, DNS and the few names outside the cluster are Cilium policies
+(templates/policies/cilium.yaml): plain NetworkPolicy cannot express them.
+*/}}
+{{- define "ah.edges" -}}
+{{- $v := .Values -}}
+{{- $tools := include "ah.toolComponents" . | fromJsonArray -}}
+{{- $pg := list 5432 -}}
+{{- $db := dict "ns" "ah-data" "pods" (list "postgres") "ports" $pg -}}
+{{- if eq $v.env "azure" -}}
+{{- $db = dict "cidr" (required "network.databaseCidr is required with env=azure" $v.network.databaseCidr) "ports" $pg -}}
+{{- end -}}
+{{- $edges := list
+  (dict "id" "edge-04-dispatcher-to-db"         "from" (dict "ns" "ah-intake"  "pods" (list "dispatcher"))    "to" $db)
+  (dict "id" "edge-05-agent-to-tool-gateway"    "from" (dict "ns" "ah-agent"   "pods" (list "agent"))         "to" (dict "ns" "ah-gateway" "pods" (list "tool-gateway") "ports" (list 8080)))
+  (dict "id" "edge-06-agent-to-llm-gateway"     "from" (dict "ns" "ah-agent"   "pods" (list "agent"))         "to" (dict "ns" "ah-agent"   "pods" (list "llm-gateway")  "ports" (list 8083)))
+  (dict "id" "edge-07-agent-to-dispatcher"      "from" (dict "ns" "ah-agent"   "pods" (list "agent"))         "to" (dict "ns" "ah-intake"  "pods" (list "dispatcher")   "ports" (list 8081)))
+  (dict "id" "edge-08-tool-gateway-to-risk-engine" "from" (dict "ns" "ah-gateway" "pods" (list "tool-gateway")) "to" (dict "ns" "ah-core" "pods" (list "risk-engine") "ports" (list 8082)))
+  (dict "id" "edge-09-tool-gateway-to-tools"    "from" (dict "ns" "ah-gateway" "pods" (list "tool-gateway"))  "to" (dict "ns" "ah-tools"   "pods" $tools                "ports" (list 8000)))
+  (dict "id" "edge-11-tool-gateway-to-db"       "from" (dict "ns" "ah-gateway" "pods" (list "tool-gateway"))  "to" $db)
+  (dict "id" "edge-12-tools-to-db"              "from" (dict "ns" "ah-tools"   "pods" $tools)                 "to" $db)
+  (dict "id" "edge-13-risk-engine-to-db"        "from" (dict "ns" "ah-core"    "pods" (list "risk-engine"))   "to" $db)
+  (dict "id" "edge-14-executor-to-db"           "from" (dict "ns" "ah-core"    "pods" (list "executor"))      "to" $db)
+  (dict "id" "edge-15-executor-to-fake-dso"     "from" (dict "ns" "ah-core"    "pods" (list "executor"))      "to" (dict "ns" "ah-fakes"   "pods" (list "fake-dso")     "ports" (list 8091)))
+  (dict "id" "edge-15-executor-to-fake-sms"     "from" (dict "ns" "ah-core"    "pods" (list "executor"))      "to" (dict "ns" "ah-fakes"   "pods" (list "fake-sms")     "ports" (list 8092)))
+  (dict "id" "edge-16-register-sync-to-fake-register" "from" (dict "ns" "ah-core" "pods" (list "register-sync")) "to" (dict "ns" "ah-fakes" "pods" (list "fake-register") "ports" (list 8090)))
+  (dict "id" "edge-16-register-sync-to-db"      "from" (dict "ns" "ah-core"    "pods" (list "register-sync")) "to" $db)
+  (dict "id" "edge-18-console-to-db"            "from" (dict "ns" "ah-staff"   "pods" (list "console"))       "to" $db)
+-}}
+{{- /* The database setup job: postgres-init on kind, db-migrate on Azure. */ -}}
+{{- if eq $v.env "kind" -}}
+{{- $edges = append $edges (dict "id" "edge-db-setup-to-db" "from" (dict "ns" "ah-data" "pods" (list "postgres-init")) "to" $db) -}}
+{{- else -}}
+{{- $edges = append $edges (dict "id" "edge-db-setup-to-db" "from" (dict "ns" "ah-core" "pods" (list "db-migrate")) "to" $db) -}}
+{{- end -}}
+{{- /* Row 21: Prometheus (namespace ah-monitoring, B5) scrapes the ops port, and only that. */ -}}
+{{- range $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" -}}
+{{- $edges = append $edges (dict "id" "edge-21-monitoring-to-metrics" "from" (dict "ns" "ah-monitoring" "pods" (list) "external" true) "to" (dict "ns" $ns "pods" (list) "ports" (list 9000))) -}}
+{{- end -}}
+{{- toJson $edges -}}
+{{- end }}
+
+{{/*
+Names outside the cluster that a component may resolve and reach on 443 (matrix rows 19, 20),
+as a JSON list of {name, ns, hosts}. Nothing else in the chart resolves a name outside
+cluster.local.
+  llm-gateway  anthropic: the API host; foundry: the endpoint host + Entra (workload identity)
+  console      Entra sign-in keys, when authMode=entra
+  db-migrate   Entra (Azure only: it trades its workload identity token for a database token)
+*/}}
+{{- define "ah.externalNames" -}}
+{{- $v := .Values -}}
+{{- $entra := "login.microsoftonline.com" -}}
+{{- $out := list -}}
+{{- if eq $v.llm.backend "anthropic" -}}
+{{- $out = append $out (dict "name" "llm-gateway" "ns" "ah-agent" "hosts" (list "api.anthropic.com")) -}}
+{{- else if eq $v.llm.backend "foundry" -}}
+{{- $host := (urlParse (required "llm.foundryEndpoint is required with llm.backend=foundry" $v.llm.foundryEndpoint)).host -}}
+{{- $out = append $out (dict "name" "llm-gateway" "ns" "ah-agent" "hosts" (list $host $entra)) -}}
+{{- end -}}
+{{- if eq $v.console.authMode "entra" -}}
+{{- $out = append $out (dict "name" "console" "ns" "ah-staff" "hosts" (list $entra)) -}}
+{{- end -}}
+{{- if eq $v.env "azure" -}}
+{{- $out = append $out (dict "name" "db-migrate" "ns" "ah-core" "hosts" (list $entra)) -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end }}

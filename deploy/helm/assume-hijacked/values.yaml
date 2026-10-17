@@ -15,6 +15,10 @@ images:
   # Tag postgres:17-alpine, the same digest as compose.yaml.
   postgres: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
 
+# Registry the admission policy accepts images from, by digest (ruling R14). Set per
+# environment: kind the local registry, azure the ACR login server.
+registry: ""
+
 # RuntimeClass of the pods that run untrusted input: the agent Jobs and the five tools.
 # kind: the stand-in class from deploy/kind/runtimeclass.yaml (handler runc, sandbox node);
 # AKS: the Kata class the platform provides.
@@ -42,6 +46,11 @@ db:
   name: supplier
   # Applies db/sql/90-vulnerable-demo.sql at init (DEMO_VULNERABLE=1). Demo only.
   demoVulnerable: false
+
+network:
+  # azure only: the private endpoint subnet of PostgreSQL (infra/net snet-pe). The database is
+  # outside the cluster there, so its NetworkPolicy edges end at this CIDR.
+  databaseCidr: ""
 
 # Public half of the gateway's ES256 signing key (PEM). Not a secret; the tools verify with it.
 gateway:
