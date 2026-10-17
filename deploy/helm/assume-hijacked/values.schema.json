@@ -61,7 +61,7 @@
       "type": "object",
       "properties": {
         "enabled": {"type": "boolean"},
-        "replay": {"type": "boolean"},
+        "databaseAddress": {"type": "string", "pattern": "^$|^[0-9]{1,3}(\\.[0-9]{1,3}){3}$"},
         "image": {"anyOf": [{"$ref": "#/definitions/empty"}, {"$ref": "#/definitions/pinnedImage"}]}
       },
       "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},

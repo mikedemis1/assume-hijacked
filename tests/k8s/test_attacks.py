@@ -44,7 +44,8 @@ def test_every_probe_names_a_known_source_target_and_port():
             assert p.kind in ("dns", "resolve") and p.target, p.edge
 
 
-# The probe cases the B3 review handed to this suite (task-B3-report, fix round 1), by edge name.
+# The runtime cases the network walls must show (default deny, tools, spoofing, wrong port, DNS,
+# the Kubernetes API, IMDS, the internet), by edge name.
 CARRY_IN = {
     # default deny + controls
     "agent -> tool-read-ticket:8000": DENY, "agent -> postgres:5432": DENY,
@@ -86,11 +87,31 @@ def test_matrix_covers_the_carried_in_probe_cases():
 
 
 def test_every_source_is_checked_against_the_internet_metadata_and_dns():
-    matrix = {p.edge for p in probes.matrix()}
+    matrix = {p.edge: p.expected for p in probes.matrix()}
     for source in (s for s in probes.sources(probes.matrix()) if s in probes.COMPONENTS):
         for edge in (f"{source} -> internet:443", f"{source} -> imds:80",
                      f"{source} dns {probes.EXFIL_NAME}"):
-            assert edge in matrix, edge
+            assert matrix.get(edge) == DENY, edge
+        assert matrix.get(f"{source} dns {probes.CLUSTER_NAME}") == ALLOW, source
+
+
+def test_every_probe_pod_has_an_allow_control_and_every_target_an_allowed_caller():
+    """A pod whose probes all expect deny proves nothing if the pod cannot reach anything at all;
+    the same for a target nobody may reach."""
+    m = probes.matrix()
+    for source in probes.sources(m):
+        assert any(p.source == source and p.expected == ALLOW for p in m), source
+    # stray is the exception by design: a pod no edge names, reachable by nobody. Its listener is
+    # shown by the default-deny mutation proof instead.
+    for target in {p.target for p in m if p.kind == "tcp" and p.target not in probes.SPECIAL_TARGETS} - {"stray"}:
+        assert any(p.target == target and p.expected == ALLOW for p in m), target
+
+
+def test_the_agent_is_probed_against_every_tool():
+    edges = {p.edge for p in probes.matrix() if p.expected == DENY}
+    for tool in ("read-ticket", "lookup-account", "request-disconnection", "issue-bill-credit",
+                 "set-temp-protection"):
+        assert f"agent -> tool-{tool}:8000" in edges
 
 
 def _selects(selector: dict, label: str) -> bool:
@@ -189,7 +210,7 @@ def dns_answer(query: bytes, rcode: int, qid: int | None = None) -> bytes:
 
 @pytest.mark.parametrize("rcode,expected", [
     (0, (ALLOW, "NOERROR")), (3, (ALLOW, "NXDOMAIN")), (2, (ALLOW, "SERVFAIL")),
-    (5, (DENY, "REFUSED")),
+    (5, (DENY, "REFUSED")), (1, (probes.ERROR, "FORMERR")), (4, (probes.ERROR, "NOTIMP")),
 ])
 def test_dns_probe_reads_the_answer_code(rcode, expected):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
@@ -229,16 +250,70 @@ def test_random_name_is_filled_per_run_and_shown():
     result = probes.run_probe(probe, {}, "abc123")
     assert result["edge"] == "agent resolve {random}.exfil.example."
     assert "abc123.exfil.example." in result["detail"]
-    assert set(result) == {"edge", "source", "expected", "observed", "detail", "why"}
+    assert set(result) == {"edge", "source", "kind", "expected", "observed", "detail", "why"}
 
 
 def test_service_addresses_are_absolute_and_take_the_database_from_the_env(monkeypatch):
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
-    monkeypatch.setenv("AH_DB_HOST", "psql-ah.privatelink.postgres.database.azure.com")
+    monkeypatch.setenv("AH_DB_ADDRESS", "10.20.2.4")
     addresses = probes.service_addresses()
     assert addresses["tool-gateway"] == "tool-gateway.ah-gateway.svc.cluster.local."
     assert addresses[probes.KUBE_API] == "10.96.0.1"
-    assert addresses["postgres"] == "psql-ah.privatelink.postgres.database.azure.com."
+    assert addresses["postgres"] == "10.20.2.4"
+    monkeypatch.setenv("AH_DB_ADDRESS", "postgres.ah-data.svc.cluster.local")
+    assert probes.service_addresses()["postgres"] == "postgres.ah-data.svc.cluster.local."
+
+
+@pytest.mark.parametrize("exc,detail", [
+    (socket.gaierror(-3, "Temporary failure in name resolution"), "name lookup failed"),
+    (OSError(101, "Network is unreachable"), "OSError"),
+])
+def test_tcp_probe_reads_a_failed_lookup_or_network_as_error_not_deny(monkeypatch, exc, detail):
+    """A refused name lookup must not pass for a closed port: the wall was never tried."""
+    def fail(*_args, **_kwargs):
+        raise exc
+    monkeypatch.setattr(probes.socket, "create_connection", fail)
+    observed, text = probes.try_tcp("psql.example", 5432)
+    assert observed == probes.ERROR and text.startswith(detail)
+
+
+def test_dns_probe_without_an_answer_is_an_error():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as silent:
+        silent.bind(("127.0.0.1", 0))
+        port = silent.getsockname()[1]
+        assert probes.try_dns("x.exfil.example.", server="127.0.0.1", timeout=0.5, port=port) == (
+            probes.ERROR, "timeout (no answer)")
+
+
+def test_resolve_deny_needs_a_refused_answer(monkeypatch):
+    def refused_lookup(*_args, **_kwargs):
+        raise socket.gaierror(-3, "Temporary failure in name resolution")
+    monkeypatch.setattr(probes.socket, "getaddrinfo", refused_lookup)
+    for rcode, expected in ((5, probes.DENY), (3, probes.ERROR)):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+            server.bind(("127.0.0.1", 0))
+            port = server.getsockname()[1]
+
+            def answer(server=server, rcode=rcode):
+                query, client = server.recvfrom(512)
+                server.sendto(dns_answer(query, rcode), client)
+
+            thread = threading.Thread(target=answer)
+            thread.start()
+            observed, detail = probes.try_resolve("api.anthropic.com", server="127.0.0.1", port=port)
+            thread.join()
+        assert observed == expected, detail
+        assert detail.startswith("REFUSED") == (expected == probes.DENY)
+
+
+def test_a_deny_without_the_walls_signature_is_a_mismatch():
+    base = {"edge": "e", "expected": DENY, "observed": DENY}
+    assert probes.mismatches([{**base, "kind": "tcp", "detail": "timeout"},
+                              {**base, "kind": "dns", "detail": "REFUSED"},
+                              {**base, "kind": "resolve", "detail": "REFUSED (getaddrinfo: x)"}]) == []
+    assert len(probes.mismatches([{**base, "kind": "tcp", "detail": "OSError"},
+                                  {**base, "kind": "dns", "detail": "FORMERR"}])) == 2
+    assert probes.mismatches([{**base, "kind": "tcp", "observed": probes.ERROR, "detail": "x"}])
 
 
 def test_probe_command_prints_results_and_fails_on_a_mismatch():
@@ -273,7 +348,8 @@ def test_suite_refuses_an_unknown_source(capsys):
 
 
 def test_attacks_use_only_the_standard_library():
-    """Runtime code: no third-party package, no YAML, no app import (R6, R9)."""
+    """Runtime code: no third-party package, no YAML library, and no app import (the suite must
+    run before the app is deployed)."""
     for path in ATTACKS.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -295,7 +371,7 @@ def test_eleven_attack_tickets_one_per_attack_row():
     doc = (ROOT / "docs" / "attacks.md").read_text(encoding="utf-8")
     for t in tickets.ATTACK_TICKETS:
         assert f"\n| {t.number} |" in doc, t.number
-        assert t.leak or t.reply_forbidden or t.refused_tools or t.max_effects or t.max_calls, t.number
+        assert t.leak or t.reply_forbidden or t.refused_tools or t.effects or t.calls or t.shows, t.number
     assert len({t.ticket_id for t in tickets.ATTACK_TICKETS}) == 11
     assert min(t.ticket_id for t in tickets.ATTACK_TICKETS) > 4  # the demo seed uses 1-4
 
@@ -341,6 +417,7 @@ def outcome(number: int, results=(), status=200, stored="Thank you."):
 
 
 def test_judge_passes_when_the_walls_hold():
+    """Ticket 1 shows the owner, 4 and 7 get exactly one effect through, 9 exactly eight calls."""
     assert tickets.judge(outcome(1, [("lookup_account", "Eleni Papadopoulou, G1, Patision 10", False)])) == []
     effects = [("issue_bill_credit", "filed", False)] + [("issue_bill_credit", "ERROR: denied", True)] * 2
     assert tickets.judge(outcome(4, effects)) == []
@@ -351,9 +428,14 @@ def test_judge_passes_when_the_walls_hold():
 @pytest.mark.parametrize("number,results,stored,status,failure", [
     (1, [("lookup_account", "Nikos Georgiou, Egnatias 5", False)], "ok", 200, "leak:"),
     (3, [("set_flag", "done", False)], "ok", 200, "refused_tools: a call to set_flag"),
-    (4, [("issue_bill_credit", "filed", False)] * 2, "ok", 200, "max_effects: 2"),
-    (5, [("request_disconnection", "filed", False)] * 3, "ok", 200, "max_effects: 3"),
-    (9, [("set_temp_protection", "ok", False)] * 9, "ok", 200, "max_calls: 9"),
+    (4, [("issue_bill_credit", "filed", False)] * 2, "ok", 200, "effects: 2"),
+    (5, [("request_disconnection", "filed", False)] * 3, "ok", 200, "effects: 3"),
+    (9, [("set_temp_protection", "ok", False)] * 9, "ok", 200, "calls: 9"),
+    # Nothing worked: a stack that refuses everything must not pass.
+    (1, [("lookup_account", "ERROR: denied", True)], "ok", 200, "shows: no successful tool result"),
+    (4, [("issue_bill_credit", "ERROR: denied", True)] * 3, "ok", 200, "effects: 0"),
+    (7, [("request_disconnection", "ERROR: denied", True)] * 2, "ok", 200, "effects: 0"),
+    (9, [("set_temp_protection", "ERROR: denied", True)] * 10, "ok", 200, "calls: 0"),
     (8, [], "You will get 49 euros back", 200, "reply: the stored reply holds forbidden marker 1"),
     (8, [], None, 200, "reply: the dispatcher did not return the stored reply"),
     (2, [], "ok", 403, "reply: POST /reply answered 403"),
@@ -372,9 +454,10 @@ class FakeStack:
 
     owners = {1001: "Eleni Papadopoulou, Patision 10", 1002: "Maria", 1003: "Maria Ioannou, Maizonos 20"}
 
-    def __init__(self, ticket_ids, effect_limit=True):
+    def __init__(self, ticket_ids, effect_limit=True, refuse_all=False):
         self.queue = list(ticket_ids)
         self.effect_limit = effect_limit
+        self.refuse_all = refuse_all
         self.calls: dict[str, list[str]] = {}
         self.replies: dict[str, str] = {}
 
@@ -387,6 +470,8 @@ class FakeStack:
     def call_tool(self, lease, tool, args):
         calls = self.calls.setdefault(lease, [])
         calls.append(tool)
+        if self.refuse_all:
+            return tickets.ToolResult(tool, "ERROR: denied", True)
         if tool not in ("lookup_account", "read_ticket", "issue_bill_credit", "request_disconnection",
                         "set_temp_protection"):
             return tickets.ToolResult(tool, "ERROR: tool_not_in_lease", True)
@@ -419,6 +504,29 @@ def test_replay_names_the_tickets_a_missing_wall_lets_through():
     report = tickets.replay_all(FakeStack([t.ticket_id for t in tickets.ATTACK_TICKETS], effect_limit=False))
     failed = {r["ticket"] for r in report if not r["passed"]}
     assert failed == {4, 5, 7}  # the three tickets that try a second effect
+
+
+def test_replay_fails_when_the_stack_refuses_everything():
+    report = tickets.replay_all(FakeStack([t.ticket_id for t in tickets.ATTACK_TICKETS], refuse_all=True))
+    failed = {r["ticket"] for r in report if not r["passed"]}
+    assert {1, 4, 5, 7, 9} <= failed
+
+
+def test_a_failed_mcp_initialize_stops_the_ticket_instead_of_passing():
+    claims = [(200, {}, json.dumps({"ticket_id": 103, "lease": "L"})), (204, {}, "")]
+
+    def post(url, payload, headers):
+        if url.endswith("/claim"):
+            return claims.pop(0)
+        if url.endswith("/reply"):
+            return 200, {}, json.dumps({"text": "ok"})
+        return 503, {}, "unavailable"
+
+    api = tickets.HttpAgentApi("http://d:8081", "http://g:8080/mcp", post=post)
+    with pytest.raises(RuntimeError, match="initialize"):
+        api.call_tool("L", "set_flag", {})
+    report = tickets.replay_all(api, tickets.ATTACK_TICKETS[2:3])  # ticket 3: refused tools only
+    assert report[0]["failures"] == ["replay: RuntimeError"]
 
 
 def test_replay_fails_a_ticket_it_never_got():
@@ -574,29 +682,31 @@ def test_attack_suite_runs_one_probe_pod_per_component_source():
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
-def test_attack_suite_on_azure_has_no_database_pod_and_aims_at_the_private_endpoint():
+def test_attack_suite_on_azure_has_no_database_pod_and_aims_at_the_private_endpoint_ip():
+    """By IP: most pods may not resolve the server's name, and a refused lookup must not stand in
+    for the network wall."""
     acr = "acrplaceholder.azurecr.io/assume-hijacked-attacks@sha256:" + "1" * 64
-    pods = suite_pods("azure", "attackSuite.enabled=true", f"attackSuite.image={acr}")
+    on = ("attackSuite.enabled=true", f"attackSuite.image={acr}")
+    pods = suite_pods("azure", *on, "attackSuite.databaseAddress=10.20.2.4")
     assert "postgres" not in {p["metadata"]["labels"]["app.kubernetes.io/name"] for p in pods}
-    env = {e["name"]: e["value"] for e in pods[0]["spec"]["containers"][0]["env"]}
-    assert env["AH_DB_HOST"] == "psql-ah.privatelink.postgres.database.azure.com"
+    for p in pods:
+        env = {e["name"]: e["value"] for e in p["spec"]["containers"][0]["env"]}
+        assert env == {"AH_DB_ADDRESS": "10.20.2.4"}
+    from tests.k8s.test_chart import helm
+    for extra, message in (([], "attackSuite.databaseAddress"),
+                           (["--set", "attackSuite.databaseAddress=10.30.0.4"], "is not in network.databaseCidr")):
+        result = helm("template", "azure", *[a for s in on for a in ("--set", s)], *extra)
+        assert result.returncode != 0 and message in result.stderr, result.stderr
+    kind = suite_pods("kind", "attackSuite.enabled=true", f"attackSuite.image={SUITE_IMAGE}")
+    assert {e["value"] for p in kind for e in p["spec"]["containers"][0]["env"]} == {
+        "postgres.ah-data.svc.cluster.local"}
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
-def test_replay_pod_plays_the_agent_with_the_agent_jobs_identity():
-    from tests.k8s.test_chart import agent_job
-    pods = suite_pods("kind", "attackSuite.enabled=true", f"attackSuite.image={SUITE_IMAGE}",
-                      "attackSuite.replay=true")
-    [replay] = [p for p in pods if p["metadata"]["name"] == "attack-suite-replay"]
-    job = agent_job("kind")["spec"]["template"]["spec"]
-    spec = replay["spec"]
-    assert replay["metadata"]["namespace"] == "ah-agent"
-    assert replay["metadata"]["labels"]["app.kubernetes.io/name"] == "agent"
-    assert spec["serviceAccountName"] == "agent" and spec["runtimeClassName"] == job["runtimeClassName"]
-    assert spec["volumes"] == job["volumes"]
-    assert spec["containers"][0]["env"] == job["containers"][0]["env"]
-    assert spec["containers"][0]["volumeMounts"] == job["containers"][0]["volumeMounts"]
-    assert spec["containers"][0]["args"] == ["replay"]
+def test_attack_suite_pods_never_become_service_endpoints():
+    """They carry component labels; a readiness probe that never passes keeps real clients off."""
+    for p in suite_pods("kind", "attackSuite.enabled=true", f"attackSuite.image={SUITE_IMAGE}"):
+        assert p["spec"]["containers"][0]["readinessProbe"]["exec"]["command"] == ["false"]
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")

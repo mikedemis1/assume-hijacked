@@ -15,7 +15,7 @@ images:
   # Tag postgres:17-alpine, the same digest as compose.yaml.
   postgres: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
 
-# Registry the admission policy accepts images from, by digest (ruling R14). Set per
+# Registry the admission policy accepts images from, by digest. Set per
 # environment: kind the local registry, azure the ACR login server.
 registry: ""
 
@@ -80,12 +80,13 @@ azure:
 
 # The attack suite (attacks/, image built from attacks/Dockerfile and pushed to the registry):
 # `helm test` runs one probe pod per component that tries every forbidden edge and the allowed
-# ones (templates/attack-suite-job.yaml). replay adds the attack ticket replay, which needs the
-# app deployed. Off by default.
+# ones (templates/attack-suite-job.yaml). Off by default.
+#   databaseAddress  azure only: the private endpoint IP of PostgreSQL (inside
+#                    network.databaseCidr), where the probes aim at the database
 attackSuite:
   enabled: false
   image: ""
-  replay: false
+  databaseAddress: ""
 
 # Where the components that are not sandboxed run. The sandboxed ones (agent, tools) are placed
 # by their RuntimeClass.

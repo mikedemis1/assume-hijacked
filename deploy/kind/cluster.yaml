@@ -12,7 +12,7 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: ah
 # containerd reads registry settings from /etc/containerd/certs.d, where scripts/kind-registry.sh
-# points localhost:5001 at the local registry container kind-registry (ruling R14). From the kind
+# points localhost:5001 at the local registry container kind-registry. From the kind
 # docs, "Local Registry" (https://kind.sigs.k8s.io/docs/user/local-registry/). Applied only when
 # the cluster is created.
 containerdConfigPatches:

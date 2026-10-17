@@ -61,7 +61,7 @@ def test_sandbox_node_tainted(get):
 
 
 def test_nodes_pull_from_the_local_registry(get):
-    """Ruling R14: images by digest come from kind-registry (scripts/kind-registry.sh). Each node
+    """Images by digest come from kind-registry (scripts/kind-registry.sh). Each node
     maps localhost:5001 to the registry container; the ConfigMap tells tools where it is."""
     hosting = get("--namespace", "kube-public", "get", "configmap", "local-registry-hosting")
     assert 'host: "localhost:5001"' in hosting["data"]["localRegistryHosting.v1"]

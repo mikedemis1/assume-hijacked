@@ -1,5 +1,5 @@
 #!/bin/sh
-# The local image registry of the kind cluster "ah" (ruling R14). Run from the repository root
+# The local image registry of the kind cluster "ah". Run from the repository root
 # with Git Bash: `sh scripts/kind-registry.sh` (scripts/kind-up.sh runs it).
 #
 # A locally built image has no registry digest, and the admission policy only admits images by
@@ -13,8 +13,8 @@
 #   - ConfigMap kube-public/local-registry-hosting tells tools where the registry is (KEP-1755)
 #
 # Push from the host to 127.0.0.1:5001/<name>; pods reference localhost:5001/<name>@sha256:...
-# scripts/kind-attack-image.sh does this for the attack-suite image; B6's kind-deploy.sh for the
-# app image. Idempotent.
+# scripts/kind-attack-image.sh does this for the attack-suite image; the app image deploy does the
+# same. Idempotent.
 set -eu
 
 CLUSTER=ah

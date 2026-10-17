@@ -151,7 +151,7 @@ def test_cilium_accepted_every_policy(get):
         return seen
 
     # Cilium writes the status a few seconds after the policies are applied.
-    wait_until(lambda: all("Valid" in c for c in statuses().values()))
+    wait_until(lambda: (s := statuses()).keys() == expected and all("Valid" in c for c in s.values()), 60)
     seen = statuses()
     assert set(seen) == expected
     for key, conditions in seen.items():
@@ -360,6 +360,10 @@ def probe_pod(name: str, image: str) -> dict:
     doc = pod(namespace, "default", container={
         "name": "probe", "image": image, "args": ["serve", ",".join(map(str, ports))],
         "resources": {"requests": {"cpu": "5m", "memory": "24Mi"}, "limits": {"cpu": "200m", "memory": "64Mi"}},
+        # Never ready: a probe pod carries a component's label, and if the chart is installed a
+        # Service would otherwise send real clients to it. Probes aim at pod IPs, which do not
+        # depend on readiness.
+        "readinessProbe": {"exec": {"command": ["false"]}, "periodSeconds": 60},
     })
     del doc["spec"]["containers"][0]["command"]  # the image's entrypoint: python -m attacks.run
     if namespace not in ("ah-agent", "ah-tools"):
@@ -407,8 +411,8 @@ def probe_pods(walls):
     try:
         result = kubectl("apply", "-f", "-", stdin=json.dumps({"apiVersion": "v1", "kind": "List", "items": docs}))
         assert result.returncode == 0, result.stderr
-        result = kubectl("wait", "pods", "--all-namespaces", "-l", PROBE_LABEL, "--for=condition=Ready",
-                         "--timeout=240s")
+        result = kubectl("wait", "pods", "--all-namespaces", "-l", PROBE_LABEL,
+                         "--for=jsonpath={.status.phase}=Running", "--timeout=240s")
         assert result.returncode == 0, result.stderr
         listed = kubectl_json("get", "pods", "--all-namespaces", "-l", PROBE_LABEL)["items"]
         pods = {p["metadata"]["labels"][PROBE_LABEL]: {
@@ -460,6 +464,27 @@ def test_probe_edge(probe_results, edge):
     r = probe_results[edge]
     assert r["observed"] == r["expected"], (
         f"{edge}: expected {r['expected']}, observed {r['observed']} ({r['detail']}); wall: {r['why']}")
+    if r["expected"] == probes.DENY:
+        # The wall's own signature: Cilium drops the packets (timeout) or its DNS proxy answers
+        # REFUSED. A failed lookup or an unreachable network is an error, never a pass.
+        assert r["detail"].startswith(probes.DENY_DETAIL[r["kind"]]), f"{edge}: {r['detail']}"
+
+
+def test_probe_pods_are_never_ready(probe_pods):
+    """So a Service that selects a component's label never sends a real client to a probe pod."""
+    for p in kubectl_json("get", "pods", "--all-namespaces", "-l", PROBE_LABEL)["items"]:
+        ready = [c["status"] for c in p["status"].get("conditions", []) if c["type"] == "Ready"]
+        assert ready == ["False"], p["metadata"]["name"]
+
+
+@pytest.mark.skip(reason="needs the app deployed: the dispatcher runs the seeded attack tickets "
+                         "(attacks.tickets.seed_sql) as real agent Jobs, and the suite judges what "
+                         "each agent got back and the reply that was stored (attacks.tickets.judge)")
+def test_attack_tickets_replay_through_the_dispatcher():
+    """Attack tickets 1-11 through dispatcher -> agent Job -> tool gateway -> tools. Steps once
+    the app runs on kind: insert seed_sql() into the database, wait until the dispatcher has run
+    an agent Job for each ticket, read each ticket's tool calls and stored reply, build an Outcome
+    per ticket and assert judge() finds nothing."""
 
 
 def hubble(probe_pods: dict, source: str, *filters: str) -> list[dict]:
@@ -507,9 +532,9 @@ def test_dns_exfiltration_is_answered_by_the_proxy_and_never_forwarded(probe_res
 
 
 def test_probe_pod_search_list_is_the_cluster_suffixes_only(probe_pods):
-    """The resolver's search list decides which names a lookup sends (B3 deviation: names outside
-    the cluster are allowed with their search forms). On kind it holds the cluster suffixes only;
-    on AKS a node search domain would be added (Phase Z check)."""
+    """The resolver's search list decides which names a lookup sends (names outside the cluster
+    are allowed together with their search forms). On kind it holds the cluster suffixes only;
+    on AKS a node search domain may be added, which the DNS rules would then refuse: check there."""
     agent = probe_pods["agent"]
     result = kubectl("--namespace", agent["namespace"], "exec", agent["name"], "--", "cat", "/etc/resolv.conf")
     assert result.returncode == 0, result.stderr

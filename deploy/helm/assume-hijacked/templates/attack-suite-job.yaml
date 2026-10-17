@@ -10,13 +10,14 @@ whose source is that component, against the real Services. It prints one JSON li
 
 They are bare Pods with the helm.sh/hook "test" annotation, not Jobs: a Job in ah-agent must be
 the agent Job exactly (policy ah-agent-job-template), and a probe pod is not. Each runs as its own
-ServiceAccount attack-suite, which has no rights and no token.
+ServiceAccount attack-suite, which has no rights and no token. A readiness probe that never
+passes keeps them out of every Service's ready endpoints: they carry a component's label, and a
+real client must never be sent to one.
 
-attackSuite.replay adds the ticket replay (attacks/tickets.py): a pod that plays a fully
-hijacked agent process (ah-agent, agent label and ServiceAccount, the agent's three tokens and
-URLs) and runs attack tickets 1-11 through POST /claim, the tool gateway and POST /reply. It needs
-the app deployed, and a dispatcher that hands this pod the attack tickets (in k8s mode a claim is
-bound to the pod of an agent Job), so it is off until then.
+The database is probed at an address every pod can reach without a name lookup: on kind the
+postgres Service name (a cluster name, which every pod may resolve); on Azure the private
+endpoint's IP (attackSuite.databaseAddress), because most pods may not resolve the server's name,
+and a refused lookup must not pass for the network wall.
 
 Off by default: attackSuite.enabled and a pinned attackSuite.image from the registry.
 */ -}}
@@ -26,6 +27,15 @@ Off by default: attackSuite.enabled and a pinned attackSuite.image from the regi
 {{- $image := required "attackSuite.image is required with attackSuite.enabled" $v.attackSuite.image -}}
 {{- if not (hasPrefix $v.registry $image) -}}
 {{- fail (printf "attackSuite.image must come from the registry %s, got %s" $v.registry $image) -}}
+{{- end -}}
+{{- $dbAddress := $v.db.host -}}
+{{- if eq $v.env "azure" -}}
+{{- $dbAddress = required "attackSuite.databaseAddress (the private endpoint IP of PostgreSQL) is required with env=azure" $v.attackSuite.databaseAddress -}}
+{{- $cidr := $v.network.databaseCidr -}}
+{{- /* A /24 or longer range: the address shares its first three octets. */ -}}
+{{- if not (hasPrefix (printf "%s." (join "." (slice (splitList "." (first (splitList "/" $cidr))) 0 3))) $dbAddress) -}}
+{{- fail (printf "attackSuite.databaseAddress %s is not in network.databaseCidr %s" $dbAddress $cidr) -}}
+{{- end -}}
 {{- end -}}
 {{- $uid := include "ah.appUid" . | int -}}
 {{- $sandboxed := list "ah-agent" "ah-tools" -}}
@@ -79,54 +89,14 @@ spec:
       imagePullPolicy: IfNotPresent
       args: ["suite", {{ $name | quote }}]
       env:
-        # Where the database is: the postgres Service on kind, the private endpoint on Azure.
-        - {name: AH_DB_HOST, value: {{ $v.db.host | quote }}}
+        - {name: AH_DB_ADDRESS, value: {{ $dbAddress | quote }}}
+      readinessProbe:
+        # Never ready, so never a Service endpoint (see above).
+        exec: {command: ["false"]}
+        periodSeconds: 60
       securityContext:
         {{- include "ah.containerSecurityContext" $uid | nindent 8 }}
       resources:
         {{- toYaml $v.resources.job | nindent 8 }}
-{{- end }}
-{{- if $v.attackSuite.replay }}
-{{- $job := include "ah.agentJob" . | fromYaml -}}
-{{- $agent := index $job.spec.template.spec.containers 0 }}
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: attack-suite-replay
-  namespace: ah-agent
-  labels:
-    app.kubernetes.io/name: agent
-    app.kubernetes.io/part-of: assume-hijacked
-    app.kubernetes.io/component: attack-suite
-    helm.sh/chart: {{ printf "%s-%s" $root.Chart.Name $root.Chart.Version }}
-  annotations:
-    helm.sh/hook: test
-    helm.sh/hook-delete-policy: before-hook-creation
-spec:
-  {{- /* The agent's identity, tokens and URLs, from the same template as the agent Job. */}}
-  serviceAccountName: agent
-  automountServiceAccountToken: false
-  enableServiceLinks: false
-  restartPolicy: Never
-  activeDeadlineSeconds: 280
-  runtimeClassName: {{ $v.sandbox.runtimeClass }}
-  securityContext:
-    {{- include "ah.podSecurityContext" $uid | nindent 4 }}
-  containers:
-    - name: replay
-      image: {{ $image }}
-      imagePullPolicy: IfNotPresent
-      args: ["replay"]
-      env:
-        {{- toYaml $agent.env | nindent 8 }}
-      volumeMounts:
-        {{- toYaml $agent.volumeMounts | nindent 8 }}
-      securityContext:
-        {{- include "ah.containerSecurityContext" $uid | nindent 8 }}
-      resources:
-        {{- toYaml $v.resources.job | nindent 8 }}
-  volumes:
-    {{- toYaml $job.spec.template.spec.volumes | nindent 4 }}
 {{- end }}
 {{- end }}

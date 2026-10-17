@@ -21,7 +21,7 @@ https://docs.cilium.io/en/v1.20/security/policy/deny/ (egressDeny).
    (helper ah.dbCallers) may also resolve db.host, DNS only: the connection is the ipBlock edge.
    Each such name is allowed with its search-list forms (helper ah.searchNames).
 3. The Kubernetes API (rows 3, 10): only the dispatcher, the tool gateway and the LLM gateway
-   (TokenReview, ruling R17c; the dispatcher also creates agent Jobs). 443 is the service port
+   (TokenReview of the caller's token; the dispatcher also creates agent Jobs). 443 is the service port
    and what AKS uses; 6443 is the API server's port on kind (policy sees the backend port).
 4. The instance metadata endpoint 169.254.169.254 (Azure IMDS: managed identity tokens) is
    denied in every namespace, whatever any allow says.

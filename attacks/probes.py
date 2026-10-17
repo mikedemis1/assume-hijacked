@@ -10,12 +10,17 @@ tries one thing and reports what happened:
   dns      one DNS query for an absolute name, straight to the pod's nameserver, no search list.
            NOERROR, NXDOMAIN or SERVFAIL mean a DNS server answered for that name, so the query
            was let through (SERVFAIL: CoreDNS tried to forward it): allow. REFUSED (Cilium's DNS
-           proxy) or no answer: deny.
+           proxy) is deny.
   resolve  the C library resolver (getaddrinfo), with the pod's search list and ndots, as an
-           application would look a name up. A result is allow; an error is deny.
+           application would look a name up. A result is allow. A failed lookup is deny only when
+           the same name, asked directly, is REFUSED.
 
-Each result is {"edge", "source", "expected", "observed", "detail"}; observed is allow or deny,
-detail says why (connected, timeout, REFUSED, ...). The matrix below is data: the live test
+Anything else is error: a failed name lookup before a connection, no DNS answer at all, an
+unreachable network, a malformed answer. An error never matches an expectation, so a probe that
+could not run cannot pass as a wall that held.
+
+Each result is {"edge", "source", "expected", "observed", "detail"}; observed is allow, deny or
+error, detail says why (connected, timeout, REFUSED, ...). The matrix below is data: the live test
 (tests/k8s/test_walls.py) and the chart's attack-suite test pods run the same list.
 """
 
@@ -29,6 +34,9 @@ from dataclasses import asdict, dataclass
 
 ALLOW = "allow"
 DENY = "deny"
+ERROR = "error"
+# What a deny must look like, per probe kind: the wall's own signature.
+DENY_DETAIL = {"tcp": "timeout", "dns": "REFUSED", "resolve": "REFUSED"}
 
 # Components a probe can run as or aim at: namespace, labels (app.kubernetes.io/name) and the
 # ports the real component listens on (stand-in probe pods listen on the same ones).
@@ -40,6 +48,9 @@ COMPONENTS: dict[str, tuple[str, str, tuple[int, ...]]] = {
     "tool-gateway":        ("ah-gateway", "tool-gateway",        (8080, 9000)),
     "tool-read-ticket":    ("ah-tools",   "tool-read-ticket",    (8000, 9000)),
     "tool-lookup-account": ("ah-tools",   "tool-lookup-account", (8000, 9000)),
+    "tool-request-disconnection": ("ah-tools", "tool-request-disconnection", (8000, 9000)),
+    "tool-issue-bill-credit":     ("ah-tools", "tool-issue-bill-credit",     (8000, 9000)),
+    "tool-set-temp-protection":   ("ah-tools", "tool-set-temp-protection",   (8000, 9000)),
     "risk-engine":         ("ah-core",    "risk-engine",         (8082, 9000)),
     "executor":            ("ah-core",    "executor",            (9000,)),
     "register-sync":       ("ah-core",    "register-sync",       (9000,)),
@@ -75,6 +86,7 @@ EXTRA_SOURCES: dict[str, tuple[str, str, tuple[int, ...]]] = {
 INTERNET = "internet"            # a public IP: no component may open a connection out
 IMDS = "imds"                    # Azure instance metadata (managed identity tokens)
 KUBE_API = "kube-apiserver"      # the Kubernetes API service
+CLUSTER_NAME = "kubernetes.default.svc.cluster.local."  # always exists in a cluster
 SPECIAL_TARGETS = {
     INTERNET: ("1.1.1.1", 443),
     IMDS: ("169.254.169.254", 80),
@@ -131,6 +143,7 @@ def _everywhere_denied(source: str, extra: tuple[str, ...] = ()) -> list[Probe]:
         tcp(source, INTERNET, DENY, "default deny: no egress to the internet"),
         tcp(source, IMDS, DENY, "deny-instance-metadata (Cilium egressDeny)"),
         dns(source, EXFIL_NAME, DENY, "edge-22: DNS for cluster.local names only (exfiltration)"),
+        dns(source, CLUSTER_NAME, ALLOW, "control: this pod's DNS works, so a refusal is the rule"),
     ]
     if source not in extra:
         probes.append(tcp(source, KUBE_API, DENY, "only dispatcher, tool-gateway, llm-gateway reach the API"))
@@ -138,6 +151,7 @@ def _everywhere_denied(source: str, extra: tuple[str, ...] = ()) -> list[Probe]:
 
 
 API_CALLERS = ("dispatcher", "tool-gateway", "llm-gateway")
+TOOLS = tuple(name for name in COMPONENTS if name.startswith("tool-") and name != "tool-gateway")
 
 
 def matrix() -> list[Probe]:
@@ -150,8 +164,7 @@ def matrix() -> list[Probe]:
         tcp(a, "dispatcher", ALLOW, "edge-07 agent -> dispatcher", 8081),
         tcp(a, "tool-gateway", DENY, "wrong port on an allowed edge (ops is for ah-monitoring)", 9000),
         tcp(a, "llm-gateway", DENY, "wrong port on an allowed edge", 9000),
-        tcp(a, "tool-read-ticket", DENY, "agent never reaches a tool directly", 8000),
-        tcp(a, "tool-lookup-account", DENY, "agent never reaches a tool directly", 8000),
+        *[tcp(a, t, DENY, "agent never reaches a tool directly", 8000) for t in TOOLS],
         tcp(a, "postgres", DENY, "agent has no database"),
         tcp(a, "risk-engine", DENY, "agent never reaches the risk engine", 8082),
         tcp(a, "fake-register", DENY, "agent never reaches the outside systems"),
@@ -161,7 +174,6 @@ def matrix() -> list[Probe]:
         *_everywhere_denied(a),
         dns(a, "example.com.", DENY, "edge-22: names outside cluster.local are refused"),
         dns(a, "api.anthropic.com.", DENY, "edge-19: only llm-gateway resolves the LLM API"),
-        dns(a, "kubernetes.default.svc.cluster.local.", ALLOW, "edge-22: cluster names resolve"),
         dns(a, "tool-gateway.ah-gateway.svc.cluster.local.", ALLOW, "edge-22: cluster names resolve"),
         resolve(a, "kubernetes.default.svc.cluster.local", ALLOW,
                 "edge-22: the search walk of a service name passes the DNS rule"),
@@ -179,8 +191,7 @@ def matrix() -> list[Probe]:
     ]
     g = "tool-gateway"
     m += [
-        tcp(g, "tool-read-ticket", ALLOW, "edge-09 tool-gateway -> tools", 8000),
-        tcp(g, "tool-lookup-account", ALLOW, "edge-09 tool-gateway -> tools", 8000),
+        *[tcp(g, t, ALLOW, "edge-09 tool-gateway -> tools", 8000) for t in TOOLS],
         tcp(g, "tool-read-ticket", DENY, "ops port of a tool is for ah-monitoring only", 9000),
         tcp(g, "risk-engine", ALLOW, "edge-08 tool-gateway -> risk-engine", 8082),
         tcp(g, "postgres", ALLOW, "edge-11 tool-gateway -> db"),
@@ -252,18 +263,23 @@ def matrix() -> list[Probe]:
     m += [
         tcp("spoof-tool-gateway", "tool-read-ticket", DENY,
             "a pod in ah-agent labelled tool-gateway is not the gateway", 8000),
+        dns("spoof-tool-gateway", CLUSTER_NAME, ALLOW, "control: the pod runs and its DNS works"),
         tcp("outside-tool-gateway", "tool-read-ticket", DENY,
             "edge-09-in names the gateway's namespace, not only its label", 8000),
+        tcp("outside-tool-gateway", INTERNET, ALLOW, "control: this pod's egress is open"),
         tcp("outside-agent", "tool-gateway", DENY,
             "edge-05-in names the agent's namespace, not only its label", 8080),
+        tcp("outside-agent", INTERNET, ALLOW, "control: this pod's egress is open"),
         tcp("outside", INTERNET, ALLOW, "control: the internet is reachable without the walls"),
         dns("outside", EXFIL_NAME, ALLOW, "control: CoreDNS answers outside names without the walls"),
         tcp("monitoring", "tool-gateway", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
         tcp("monitoring", "tool-read-ticket", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
         tcp("monitoring", "tool-gateway", DENY, "ah-monitoring reaches the ops port only", 8080),
+        tcp("monitoring", "console", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
         tcp("outside", "stray", DENY, "default-deny: a pod no edge names takes no connection", 8092),
         tcp("stray", INTERNET, DENY, "default-deny: a pod no edge names opens no connection"),
         tcp("stray", "fake-dso", DENY, "default-deny: a pod no edge names opens no connection", 8091),
+        dns("stray", CLUSTER_NAME, ALLOW, "control: the pod runs and its DNS works"),
     ]
     return m
 
@@ -284,11 +300,12 @@ def service_addresses() -> dict[str, str]:
     host = os.environ.get("KUBERNETES_SERVICE_HOST")
     if host:
         addresses[KUBE_API] = host
-    # The database: the chart's db.host (the postgres Service on kind, the private endpoint's
-    # name on Azure, where no postgres pod runs in the cluster).
-    db = os.environ.get("AH_DB_HOST")
+    # The database: on kind the postgres Service (a cluster name every pod may resolve); on Azure
+    # the private endpoint's IP address, because most pods may not resolve the server's name, and
+    # a refused lookup must not stand in for the network wall.
+    db = os.environ.get("AH_DB_ADDRESS")
     if db:
-        addresses["postgres"] = db if db.endswith(".") else f"{db}."
+        addresses["postgres"] = db if db.endswith(".") or db[-1].isdigit() else f"{db}."
     return addresses
 
 
@@ -307,9 +324,9 @@ def try_tcp(host: str, port: int, timeout: float = TIMEOUT) -> tuple[str, str]:
     except TimeoutError:
         return DENY, "timeout"
     except socket.gaierror as exc:
-        return DENY, f"name lookup failed: {exc.strerror}"
+        return ERROR, f"name lookup failed: {exc.strerror}"
     except OSError as exc:
-        return DENY, f"{type(exc).__name__}: {exc.strerror or exc}"
+        return ERROR, f"{type(exc).__name__}: {exc.strerror or exc}"
 
 
 def dns_query(name: str, qid: int) -> bytes:
@@ -346,19 +363,25 @@ def try_dns(name: str, server: str | None = None, timeout: float = TIMEOUT, port
             sock.sendto(dns_query(name, qid), (server, port))
             rcode = dns_rcode(sock.recv(4096), qid)
     except TimeoutError:
-        return DENY, "timeout (no answer)"
+        return ERROR, "timeout (no answer)"
     except OSError as exc:
-        return DENY, f"{type(exc).__name__}: {exc}"
+        return ERROR, f"{type(exc).__name__}: {exc}"
     if rcode in ("NOERROR", "NXDOMAIN", "SERVFAIL"):
         return ALLOW, rcode
-    return DENY, rcode
+    if rcode == "REFUSED":
+        return DENY, rcode
+    return ERROR, rcode
 
 
-def try_resolve(name: str) -> tuple[str, str]:
+def try_resolve(name: str, server: str | None = None, port: int = 53) -> tuple[str, str]:
     try:
         infos = socket.getaddrinfo(name, None, socket.AF_INET, socket.SOCK_STREAM)
     except socket.gaierror as exc:
-        return DENY, f"getaddrinfo: {exc.strerror}"
+        # glibc reports a refusal and a lost answer alike: ask the name directly to tell them apart.
+        observed, rcode = try_dns(name if name.endswith(".") else f"{name}.", server=server, port=port)
+        if observed == DENY:
+            return DENY, f"REFUSED (getaddrinfo: {exc.strerror})"
+        return ERROR, f"getaddrinfo: {exc.strerror}; direct query: {rcode}"
     return ALLOW, "resolved to " + ", ".join(sorted({i[4][0] for i in infos}))
 
 
@@ -377,9 +400,11 @@ def run_probe(probe: Probe, addresses: dict[str, str], token: str) -> dict:
         raise ValueError(f"unknown probe kind {probe.kind!r}")
     if target != probe.target:
         detail = f"{detail} ({target})"
-    return {"edge": probe.edge, "source": probe.source, "expected": probe.expected,
+    return {"edge": probe.edge, "source": probe.source, "kind": probe.kind, "expected": probe.expected,
             "observed": observed, "detail": detail, "why": probe.why}
 
 
 def mismatches(results: list[dict]) -> list[dict]:
-    return [r for r in results if r["observed"] != r["expected"]]
+    """Results that differ from the expectation, or whose deny lacks the wall's signature."""
+    return [r for r in results if r["observed"] != r["expected"]
+            or (r["observed"] == DENY and not r["detail"].startswith(DENY_DETAIL[r["kind"]]))]
