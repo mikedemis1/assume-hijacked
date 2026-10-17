@@ -565,15 +565,24 @@ def external_names(env: str, *sets: str) -> dict:
     return out
 
 
+def search_names(host: str, namespace: str) -> list[str]:
+    """What a pod's resolver asks for (ndots:5 search list first), all of which must be allowed."""
+    return [host, f"{host}.{namespace}.svc.cluster.local", f"{host}.svc.cluster.local", f"{host}.cluster.local"]
+
+
 def test_only_named_components_reach_names_outside_the_cluster():
     # kind defaults (scripted backend, dev console): nothing outside the cluster at all.
     assert external_names("kind") == {}
     assert external_names("kind", "llm.backend=anthropic", "secrets.anthropicApiKey=test-only") == {
-        "llm-gateway": (["api.anthropic.com"], ["api.anthropic.com"])}
-    assert external_names("azure") == {"console": ([ENTRA], [ENTRA]), "db-migrate": ([ENTRA], [ENTRA])}
-    foundry = external_names("azure", "llm.backend=foundry",
-                             "llm.foundryEndpoint=https://ai-ah.openai.azure.com/")
-    assert foundry["llm-gateway"] == (["ai-ah.openai.azure.com", ENTRA], ["ai-ah.openai.azure.com", ENTRA])
+        "llm-gateway": (search_names("api.anthropic.com", "ah-agent"), ["api.anthropic.com"])}
+    assert external_names("azure") == {"console": (search_names(ENTRA, "ah-staff"), [ENTRA]),
+                                       "db-migrate": (search_names(ENTRA, "ah-core"), [ENTRA])}
+    # The endpoint's port is not part of the name.
+    for endpoint in ("https://ai-ah.openai.azure.com/", "https://ai-ah.openai.azure.com:443/openai"):
+        foundry = external_names("azure", "llm.backend=foundry", f"llm.foundryEndpoint={endpoint}")
+        assert foundry["llm-gateway"] == (
+            search_names("ai-ah.openai.azure.com", "ah-agent") + search_names(ENTRA, "ah-agent"),
+            ["ai-ah.openai.azure.com", ENTRA])
     # No other Cilium egress to the world: no CIDR allow, no entity but the API server.
     for env in ENVS:
         for p in cilium_policies(env):
@@ -707,3 +716,74 @@ def test_console_template_refuses_dev_auth_in_azure_without_the_schema():
     assert "console.authMode must be entra with env=azure" in result.stderr
     # Control: entra renders without the schema too.
     assert helm("template", "azure", "--skip-schema-validation").returncode == 0
+
+
+@pytest.mark.parametrize("endpoint", ["ai-ah.openai.azure.com", "https:///openai"])
+def test_foundry_endpoint_without_a_host_is_refused(endpoint):
+    """A scheme-less or host-less endpoint would give an empty DNS name."""
+    result = helm("template", "azure", "--set", "llm.backend=foundry", "--set", f"llm.foundryEndpoint={endpoint}")
+    assert result.returncode != 0
+    assert "llm.foundryEndpoint must be a URL with a host" in result.stderr
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_db_callers_resolve_the_database_name_on_azure_only(env):
+    """On Azure the database is reached by name (db.host, private DNS zone): its callers, and only
+    they, may resolve that one name. DNS only; the connection is the ipBlock edge."""
+    policies = [p for p in cilium_policies(env) if p["metadata"]["name"] == "edge-22-db-host-dns"]
+    if env == "kind":
+        assert policies == []
+        return
+    host = install_values("azure")["db"]["host"]
+    callers = {}
+    for p in policies:
+        ns, spec = p["metadata"]["namespace"], p["spec"]
+        [rule] = spec["egress"]
+        assert set(rule) == {"toEndpoints", "toPorts"}
+        assert rule["toPorts"][0]["ports"] == [{"port": "53", "protocol": "ANY"}]
+        assert [r["matchName"] for r in rule["toPorts"][0]["rules"]["dns"]] == search_names(host, ns)
+        callers[ns] = name_values(spec["endpointSelector"])
+    expected = {}
+    for a, b, c, _, _ in expected_edges("azure"):
+        if c == AZURE_DB_CIDR:
+            expected[a] = tuple(sorted(set(expected.get(a, ())) | set(b)))
+    assert callers == expected
+    # Blocking view: the agent and llm-gateway namespace and the fakes never resolve it.
+    assert not {"ah-agent", "ah-fakes"} & set(callers)
+
+
+@pytest.mark.parametrize(("env", "setting", "message"), [
+    ("azure", "sandbox.runtimeClass=runc", "sandbox.runtimeClass must be kata-vm-isolation"),
+    ("azure", "registry=docker.io/", "registry must be the ACR login server"),
+    ("azure", "registry=localhost:5001/", "registry must be the ACR login server"),
+    ("kind", "registry=docker.io/", "registry must be localhost:5001/"),
+    ("azure", "network.databaseCidr=0.0.0.0/0", "network.databaseCidr must be a private"),
+])
+def test_template_refuses_what_the_schema_refuses_without_the_schema(env, setting, message):
+    """helm --skip-schema-validation skips values.schema.json, and the admission and network
+    policies enforce these values, so the templates check them as well."""
+    result = helm("template", env, "--skip-schema-validation", "--set", setting)
+    assert result.returncode != 0
+    assert message in result.stderr
+    # Control: the environment's own values render without the schema.
+    assert helm("template", env, "--skip-schema-validation").returncode == 0
+
+
+@pytest.mark.parametrize("cidr", ["0.0.0.0/0", "8.8.8.0/24", "10.0.0.0/8", "10.20.2.0/23", "172.32.0.0/24",
+                                  "192.169.1.0/24"])
+def test_database_cidr_must_be_private_and_narrow(cidr):
+    # The schema refuses it ...
+    result = helm("template", "azure", "--set", f"network.databaseCidr={cidr}")
+    assert result.returncode != 0
+    assert "/network/databaseCidr" in result.stderr and "does not match pattern" in result.stderr
+    # ... and so does the template when the schema is skipped.
+    result = helm("template", "azure", "--skip-schema-validation", "--set", f"network.databaseCidr={cidr}")
+    assert result.returncode != 0
+    assert "network.databaseCidr must be a private (RFC 1918) range of /24 or longer" in result.stderr
+
+
+@pytest.mark.parametrize("cidr", ["10.20.2.0/26", "172.16.5.0/24", "192.168.1.0/28"])
+def test_database_cidr_accepts_a_private_subnet(cidr):
+    result = helm("template", "azure", "--set", f"network.databaseCidr={cidr}")
+    assert result.returncode == 0, result.stderr
+    assert f"cidr: {cidr}" in result.stdout

@@ -133,11 +133,18 @@ def test_cilium_accepted_every_policy(get):
     expected = {(o["metadata"]["namespace"], o["metadata"]["name"])
                 for o in yaml.safe_load_all(helm("template", "kind").stdout)
                 if o and o["kind"] == "CiliumNetworkPolicy"}
-    seen = {}
-    for p in get("get", "ciliumnetworkpolicies", "--all-namespaces")["items"]:
-        key = (p["metadata"]["namespace"], p["metadata"]["name"])
-        if key in expected:
-            seen[key] = {c["type"]: c["status"] for c in p.get("status", {}).get("conditions", [])}
+
+    def statuses() -> dict:
+        seen = {}
+        for p in get("get", "ciliumnetworkpolicies", "--all-namespaces")["items"]:
+            key = (p["metadata"]["namespace"], p["metadata"]["name"])
+            if key in expected:
+                seen[key] = {c["type"]: c["status"] for c in p.get("status", {}).get("conditions", [])}
+        return seen
+
+    # Cilium writes the status a few seconds after the policies are applied.
+    wait_until(lambda: all("Valid" in c for c in statuses().values()))
+    seen = statuses()
     assert set(seen) == expected
     for key, conditions in seen.items():
         assert conditions.get("Valid") == "True", (key, conditions)

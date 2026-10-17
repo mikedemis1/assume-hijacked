@@ -14,7 +14,9 @@ https://docs.cilium.io/en/v1.20/security/policy/deny/ (egressDeny).
    service name a.b.svc.cluster.local is first tried with each search suffix, and glibc stops
    at the first REFUSED, so the patterns list those forms too. All of them end in cluster.local.
 2. Names outside the cluster (rows 19, 20): only the components in helper ah.externalNames, only
-   their own names (an extra DNS rule plus toFQDNs), only on 443.
+   their own names (an extra DNS rule plus toFQDNs), only on 443. On Azure the database callers
+   (helper ah.dbCallers) may also resolve db.host, DNS only: the connection is the ipBlock edge.
+   Each such name is allowed with its search-list forms (helper ah.searchNames).
 3. The Kubernetes API (rows 3, 10): only the dispatcher, the tool gateway and the LLM gateway
    (TokenReview, ruling R17c; the dispatcher also creates agent Jobs). 443 is the service port
    and what AKS uses; 6443 is the API server's port on kind (policy sees the backend port).
@@ -81,8 +83,10 @@ spec:
             - {port: "53", protocol: ANY}
           rules:
             dns:
-              {{- range $x.hosts }}
+              {{- range $host := $x.hosts }}
+              {{- range include "ah.searchNames" (dict "host" $host "ns" $x.ns) | fromJsonArray }}
               - matchName: {{ . | quote }}
+              {{- end }}
               {{- end }}
     - toFQDNs:
         {{- range $x.hosts }}
@@ -91,6 +95,31 @@ spec:
       toPorts:
         - ports:
             - {port: "443", protocol: TCP}
+{{- end }}
+{{- range $ns, $pods := include "ah.dbCallers" . | fromJson }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: edge-22-db-host-dns
+  namespace: {{ $ns }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  endpointSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: {{ toJson $pods }}}
+  egress:
+    - toEndpoints:
+        - {{ toJson $dnsPeer }}
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+          rules:
+            dns:
+              {{- range include "ah.searchNames" (dict "host" (required "db.host is required" $root.Values.db.host) "ns" $ns) | fromJsonArray }}
+              - matchName: {{ . | quote }}
+              {{- end }}
 {{- end }}
 {{- range $c := list (list "edge-03" "dispatcher" "ah-intake") (list "edge-10" "tool-gateway" "ah-gateway") (list "edge-10" "llm-gateway" "ah-agent") }}
 ---

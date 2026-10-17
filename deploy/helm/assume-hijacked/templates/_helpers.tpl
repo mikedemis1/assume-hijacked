@@ -453,7 +453,14 @@ The Kubernetes API, DNS and the few names outside the cluster are Cilium policie
 {{- $pg := list 5432 -}}
 {{- $db := dict "ns" "ah-data" "pods" (list "postgres") "ports" $pg -}}
 {{- if eq $v.env "azure" -}}
-{{- $db = dict "cidr" (required "network.databaseCidr is required with env=azure" $v.network.databaseCidr) "ports" $pg -}}
+{{- $cidr := required "network.databaseCidr is required with env=azure" $v.network.databaseCidr -}}
+{{- /* Also in values.schema.json; here too because --skip-schema-validation skips the schema. A
+private (RFC 1918) range of /24 or longer: a wider range would open 5432 to far more than the
+database for every caller. */ -}}
+{{- if not (regexMatch (include "ah.privateCidrPattern" .) $cidr) -}}
+{{- fail (printf "network.databaseCidr must be a private (RFC 1918) range of /24 or longer, got %s" $cidr) -}}
+{{- end -}}
+{{- $db = dict "cidr" $cidr "ports" $pg -}}
 {{- end -}}
 {{- $edges := list
   (dict "id" "edge-04-dispatcher-to-db"         "from" (dict "ns" "ah-intake"  "pods" (list "dispatcher"))    "to" $db)
@@ -500,7 +507,11 @@ cluster.local.
 {{- if eq $v.llm.backend "anthropic" -}}
 {{- $out = append $out (dict "name" "llm-gateway" "ns" "ah-agent" "hosts" (list "api.anthropic.com")) -}}
 {{- else if eq $v.llm.backend "foundry" -}}
-{{- $host := (urlParse (required "llm.foundryEndpoint is required with llm.backend=foundry" $v.llm.foundryEndpoint)).host -}}
+{{- /* hostname, not host: host keeps a :port, and DNS rules match names. */ -}}
+{{- $host := (urlParse (required "llm.foundryEndpoint is required with llm.backend=foundry" $v.llm.foundryEndpoint)).hostname -}}
+{{- if not $host -}}
+{{- fail (printf "llm.foundryEndpoint must be a URL with a host (https://<name>/...), got %s" $v.llm.foundryEndpoint) -}}
+{{- end -}}
 {{- $out = append $out (dict "name" "llm-gateway" "ns" "ah-agent" "hosts" (list $host $entra)) -}}
 {{- end -}}
 {{- if eq $v.console.authMode "entra" -}}
@@ -508,6 +519,41 @@ cluster.local.
 {{- end -}}
 {{- if eq $v.env "azure" -}}
 {{- $out = append $out (dict "name" "db-migrate" "ns" "ah-core" "hosts" (list $entra)) -}}
+{{- end -}}
+{{- toJson $out -}}
+{{- end }}
+
+{{/*
+RFC 1918 range of /24 or longer, as a regular expression (values.schema.json has the same).
+*/}}
+{{- define "ah.privateCidrPattern" -}}
+^(10\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}/(2[4-9]|3[0-2])$
+{{- end }}
+
+{{/*
+The names a pod's resolver asks for when it looks up <host> from namespace <ns>, as a JSON list:
+the search list (<ns>.svc.cluster.local, svc.cluster.local, cluster.local; ndots:5) comes first
+for a name with fewer than five dots, and the resolver gives up at the first REFUSED, so a DNS
+rule must allow every form (Cilium docs, layer7 page, Kubernetes note). The extra names all end
+in cluster.local, which CoreDNS answers itself and never forwards.
+Call with (dict "host" ... "ns" ...).
+*/}}
+{{- define "ah.searchNames" -}}
+{{- toJson (list .host (printf "%s.%s.svc.cluster.local" .host .ns) (printf "%s.svc.cluster.local" .host) (printf "%s.cluster.local" .host)) -}}
+{{- end }}
+
+{{/*
+Azure only: the components that reach PostgreSQL, grouped by namespace, as a JSON object
+{namespace: [pod names]}. The connection itself is the ipBlock edge in networkpolicies.yaml;
+these pods also need to resolve db.host (the flexible server's name, answered by the private DNS
+zone with the private endpoint address). Empty on kind, where the database is a cluster service.
+*/}}
+{{- define "ah.dbCallers" -}}
+{{- $out := dict -}}
+{{- range $e := include "ah.edges" . | fromJsonArray -}}
+{{- if $e.to.cidr -}}
+{{- $_ := set $out $e.from.ns (concat (get $out $e.from.ns | default list) $e.from.pods | uniq | sortAlpha) -}}
+{{- end -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}

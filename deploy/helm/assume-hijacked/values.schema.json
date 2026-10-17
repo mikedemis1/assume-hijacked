@@ -107,14 +107,19 @@
       "then": {"properties": {"sandbox": {"properties": {"runtimeClass": {"const": "kata-vm-isolation"}}}}}
     },
     {
-      "description": "Azure: the database is outside the cluster, so its NetworkPolicy edges need the private endpoint subnet.",
+      "description": "Azure: the database is outside the cluster, so its NetworkPolicy edges need the private endpoint subnet, and nothing wider.",
       "if": {"properties": {"env": {"const": "azure"}}, "required": ["env"]},
       "then": {
         "required": ["network"],
         "properties": {
           "network": {
             "required": ["databaseCidr"],
-            "properties": {"databaseCidr": {"pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"}}
+            "properties": {
+              "databaseCidr": {
+                "description": "A private (RFC 1918) range of /24 or longer (the template checks the same: ah.privateCidrPattern).",
+                "pattern": "^(10\\.[0-9]{1,3}|172\\.(1[6-9]|2[0-9]|3[01])|192\\.168)\\.[0-9]{1,3}\\.[0-9]{1,3}/(2[4-9]|3[0-2])$"
+              }
+            }
           }
         }
       }

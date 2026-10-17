@@ -23,6 +23,18 @@ server sets), so relabelling a namespace does not take it out of scope; each bin
 {{- $root := . -}}
 {{- $v := .Values -}}
 {{- $registry := required "registry is required" $v.registry -}}
+{{- /* Also in values.schema.json; here too because --skip-schema-validation skips the schema and
+these values are what the policies below enforce. */ -}}
+{{- if eq $v.env "azure" -}}
+{{- if not (regexMatch `^[a-z0-9]{5,50}\.azurecr\.io/$` $registry) -}}
+{{- fail (printf "registry must be the ACR login server (<name>.azurecr.io/) with env=azure, got %s" $registry) -}}
+{{- end -}}
+{{- if ne $v.sandbox.runtimeClass "kata-vm-isolation" -}}
+{{- fail (printf "sandbox.runtimeClass must be kata-vm-isolation (AKS Pod Sandboxing) with env=azure, got %s" $v.sandbox.runtimeClass) -}}
+{{- end -}}
+{{- else if ne $registry "localhost:5001/" -}}
+{{- fail (printf "registry must be localhost:5001/ (the kind-registry container) with env=kind, got %s" $registry) -}}
+{{- end -}}
 {{- /* Pinned images outside the registry: allowed exactly as written, and only on kind. */ -}}
 {{- $upstream := list -}}
 {{- range $key, $image := $v.images -}}
