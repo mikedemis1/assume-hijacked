@@ -197,7 +197,7 @@ def test_admission_rejects_tool_pod_without_runtimeclass(namespace, service_acco
 
 
 def test_only_the_llm_gateway_deployment_runs_outside_the_sandbox_in_agent_namespace():
-    # The LLM gateway's own pods (from its Deployment) are not sandboxed (R17b).
+    # The LLM gateway's own pods (from its Deployment) are not sandboxed; only pods created by a Job are.
     assert admit(pod("ah-agent", "llm-gateway", runtimeClassName=None)) == (True, "")
     # A pod created by a Job is never exempt, whatever ServiceAccount it names.
     owner = [{"apiVersion": "batch/v1", "kind": "Job", "name": "agent-42",
@@ -293,7 +293,7 @@ JOB_CHANGES = {
     "writable root filesystem": edit(f"{AGENT}.securityContext.readOnlyRootFilesystem", False),
     "retries": edit("spec.backoffLimit", 3),
     "no deadline": edit("spec.activeDeadlineSeconds", delete=True),
-    # B4: the remaining pod-spec escapes, each tried once live.
+    # The remaining pod-spec escapes, each tried once live.
     "an init container": lambda j: (j["spec"]["template"]["spec"].update(initContainers=[
         {**j["spec"]["template"]["spec"]["containers"][0], "name": "init", "command": ["sh", "-c", "env"]}]) or j),
     "host aliases (point a service name elsewhere)": edit(f"{POD}.hostAliases", [

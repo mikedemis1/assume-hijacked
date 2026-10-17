@@ -235,7 +235,7 @@ def test_no_pod_automounts_sa_token(env):
 
 
 @pytest.mark.parametrize("env", ENVS)
-def test_agent_job_template_matches_ruling_r7(env):
+def test_agent_job_template_is_the_fixed_one(env):
     job = agent_job(env)
     assert job["kind"] == "Job"
     assert job["metadata"]["namespace"] == "ah-agent"
@@ -405,7 +405,7 @@ def test_db_setup_job_gets_init_sh_and_every_sql_file(env):
     assert init == (ROOT / "db" / "init" / "init.sh").read_text(encoding="utf-8")
 
 
-# --- network walls (B3) -------------------------------------------------------------------------
+# --- network walls -------------------------------------------------------------------------
 # The communication matrix (final architecture, section 4), rows that run inside the cluster:
 # (caller namespace, caller pods, callee namespace or DB, callee pods, ports). DB is Postgres in
 # ah-data on kind and the private endpoint subnet on Azure.
@@ -614,7 +614,7 @@ def test_only_api_callers_reach_kube_apiserver(env):
     assert {name for _, name in callers} == API_CALLERS
 
 
-# --- admission walls (B3) -----------------------------------------------------------------------
+# --- admission walls -----------------------------------------------------------------------
 
 @pytest.mark.parametrize("env", ENVS)
 def test_namespaces_enforce_restricted_pod_security(env):
@@ -657,7 +657,7 @@ def test_admission_policies_are_bound_and_deny(env):
 def test_image_policy_allows_only_the_registry_and_pinned_upstream_images():
     kind = policy_text("kind", "ah-images-pinned")
     assert "i.startsWith('localhost:5001/')" in kind
-    # The Postgres image keeps its public digest on kind (R14): allowed exactly as written.
+    # The Postgres image keeps its public digest on kind: allowed exactly as written.
     postgres = find("kind", "StatefulSet", "postgres")["spec"]["template"]["spec"]["containers"][0]["image"]
     assert f'!(i in ["{postgres}"])' in kind
     azure = policy_text("azure", "ah-images-pinned")

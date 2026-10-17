@@ -1,9 +1,9 @@
 {{- /*
 The agent runs only as a Job per ticket, created by the dispatcher; the chart never starts one.
-It renders the ServiceAccount and the Job template (ruling R7), as JSON in a ConfigMap mounted
+It renders the ServiceAccount and the Job template, as JSON in a ConfigMap mounted
 into the dispatcher. The dispatcher sets metadata.name and the ah/ticket label (both places)
-before it creates the Job; everything else stays as rendered here. The admission policy (B3)
-checks created Jobs against the same fields.
+before it creates the Job; everything else stays as rendered here. The admission policy
+(policies/admission.yaml) checks created Jobs against the same fields.
 
 What the agent gets: three projected tokens (audiences tool-gateway, llm-gateway, dispatcher,
 10 minutes each), the three URLs, nothing from a Secret, no API server token, no database.

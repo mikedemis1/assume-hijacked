@@ -350,7 +350,7 @@ spec:
 ["read_ticket", "lookup_account", "request_disconnection", "issue_bill_credit", "set_temp_protection"]
 {{- end }}
 
-{{/* Every DB login role that has a password (db/sql/02-roles.sql plus the roles lane A adds). */}}
+{{/* Every DB login role that has a password (db/sql/02-roles.sql plus the gateway, risk engine, dispatcher and register sync roles). */}}
 {{- define "ah.dbRoles" -}}
 ["tool_read_ticket", "tool_lookup_account", "tool_request_disconnection", "tool_issue_bill_credit", "tool_set_temp_protection", "executor", "approver", "gateway", "risk_engine", "dispatcher", "register_sync"]
 {{- end }}
@@ -421,7 +421,7 @@ one per login role, from the Secret named <secret>. Call with (dict "root" $ "se
 
 {{/*
 The namespaces of the chart, as a JSON list (one per trust zone; ah-data only on kind, where the
-chart runs PostgreSQL itself). ah-monitoring belongs to the monitoring stack (B5), not here.
+chart runs PostgreSQL itself). ah-monitoring belongs to the monitoring stack (deploy/monitoring), not here.
 */}}
 {{- define "ah.namespaces" -}}
 {{- $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" "ah-fakes" -}}
@@ -438,7 +438,7 @@ chart runs PostgreSQL itself). ah-monitoring belongs to the monitoring stack (B5
 
 {{/*
 The allowed network edges inside the cluster, as a JSON list. Each one is a row of the
-communication matrix (context: final architecture section 4) and becomes two NetworkPolicies:
+communication matrix (final architecture, section 4) and becomes two NetworkPolicies:
 the egress half in the caller's namespace and the ingress half in the callee's namespace.
 Everything else is denied by the default-deny policy of every namespace.
   from  {ns, pods}            pods: app.kubernetes.io/name values; external: no egress half
@@ -485,7 +485,7 @@ database for every caller. */ -}}
 {{- else -}}
 {{- $edges = append $edges (dict "id" "edge-db-setup-to-db" "from" (dict "ns" "ah-core" "pods" (list "db-migrate")) "to" $db) -}}
 {{- end -}}
-{{- /* Row 21: Prometheus (namespace ah-monitoring, B5) scrapes the ops port, and only that. */ -}}
+{{- /* Row 21: Prometheus (namespace ah-monitoring, deploy/monitoring) scrapes the ops port, and only that. */ -}}
 {{- range $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" -}}
 {{- $edges = append $edges (dict "id" "edge-21-monitoring-to-metrics" "from" (dict "ns" "ah-monitoring" "pods" (list) "external" true) "to" (dict "ns" $ns "pods" (list) "ports" (list 9000))) -}}
 {{- end -}}

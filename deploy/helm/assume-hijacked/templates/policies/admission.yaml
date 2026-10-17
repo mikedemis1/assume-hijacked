@@ -1,20 +1,21 @@
 {{- /*
-Admission walls (decision 9: ValidatingAdmissionPolicy + Pod Security "restricted", no Kyverno,
+Admission walls (ValidatingAdmissionPolicy + Pod Security "restricted", no Kyverno,
 no Gatekeeper). admissionregistration.k8s.io/v1, GA since Kubernetes 1.30
 (https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/).
 Each policy is matched by namespace name (the kubernetes.io/metadata.name label, which the API
 server sets), so relabelling a namespace does not take it out of scope; each binding denies.
 
   ah-images-pinned       every image comes from the allowed registry and is pinned by digest
-                         (ruling R14), or is one of the pinned upstream images in values (kind
+                         (a local build has no registry digest, so kind pushes to its own
+                         registry first), or is one of the pinned upstream images in values (kind
                          only: the Postgres image keeps its public digest)
   ah-no-host-access      no privileged container, privilege escalation, added capability,
                          host namespace, host port or hostPath (repeats Pod Security
                          "restricted" for these, so dropping the namespace labels is not enough)
   ah-sandbox-runtime     pods in ah-agent and ah-tools run under the sandbox RuntimeClass. The
                          one exception is the LLM gateway's own pods (ServiceAccount llm-gateway,
-                         not created by a Job): it lives in ah-agent but is not sandboxed (R17b)
-  ah-agent-job-template  a Job in ah-agent is exactly the agent Job of ruling R7 (templates/
+                         not created by a Job): it lives in ah-agent but is not sandboxed
+  ah-agent-job-template  a Job in ah-agent is exactly the agent Job template (templates/
                          agent.yaml): only metadata.name and the ah/ticket label may differ. So
                          the dispatcher, which may create Jobs there, cannot run a pod as the
                          LLM gateway, mount its Secret, add a token for another audience, change

@@ -6,7 +6,8 @@
 #     RuntimeClass, starts the local registry (scripts/kind-registry.sh) and waits until
 #     everything is ready.
 #   - Cluster exists but its containers are stopped: starts them and waits.
-#   - Cluster is running: checks readiness and applies the RuntimeClass again (idempotent).
+#   - Cluster is running: checks readiness, upgrades Cilium when its version or
+#     deploy/kind/cilium-values.yaml changed, and applies the RuntimeClass again (idempotent).
 #
 # Stopping to free memory for the Compose stack:  sh scripts/kind-down.sh stop
 # Deleting the cluster:                           sh scripts/kind-down.sh
@@ -55,19 +56,20 @@ ensure_api_reachable() {
     tries=0
     while :; do
         out=$(kubectl --context "$CONTEXT" get --raw /version 2>&1) && return 0
+        # One counter for every kind of failure, so the loop always ends.
+        tries=$((tries + 1))
+        if [ "$tries" -ge 60 ]; then
+            echo "the API server did not answer within 120 s: $out" >&2
+            return 1
+        fi
         case "$out" in
             *"unknown authority"*)
-                echo "TLS to the API server is intercepted (antivirus): skipping certificate"                      "verification for the loopback cluster entry $CONTEXT" >&2
+                echo "TLS to the API server is intercepted (antivirus): skipping certificate verification for the loopback cluster entry $CONTEXT" >&2
                 kubectl config unset "clusters.$CONTEXT.certificate-authority-data" >/dev/null
                 kubectl config set-cluster "$CONTEXT" --insecure-skip-tls-verify=true >/dev/null
                 ;;
             *)
                 # The API server needs a while after the containers start.
-                tries=$((tries + 1))
-                if [ "$tries" -ge 60 ]; then
-                    echo "the API server did not answer within 120 s: $out" >&2
-                    return 1
-                fi
                 sleep 2
                 ;;
         esac
@@ -100,9 +102,22 @@ fi
 kind export kubeconfig --name "$CLUSTER" >/dev/null
 ensure_api_reachable
 
-# Nodes stay NotReady until the CNI runs, so this waits for Cilium first.
+# Nodes stay NotReady until the CNI runs, so this waits for Cilium first. Cilium is installed when
+# the release is missing and upgraded when the chart version or deploy/kind/cilium-values.yaml
+# changed since the last run (the stamp is kept in a ConfigMap), so editing the values and running
+# this script again is enough on an existing cluster.
+stamp="$CILIUM_VERSION-$(sha256sum deploy/kind/cilium-values.yaml | cut -d ' ' -f 1)"
+applied=$(k --namespace kube-system get configmap ah-cilium-applied -o 'jsonpath={.data.stamp}' 2>/dev/null || true)
+needs_cilium=0
 if ! helm --kube-context "$CONTEXT" status cilium --namespace kube-system >/dev/null 2>&1; then
+    needs_cilium=1
+fi
+if [ "$applied" != "$stamp" ]; then
+    needs_cilium=1
+fi
+if [ "$needs_cilium" = 1 ]; then
     install_cilium
+    k --namespace kube-system create configmap ah-cilium-applied --from-literal=stamp="$stamp" --dry-run=client -o yaml | k apply -f - >/dev/null
 fi
 
 k wait --for=condition=Ready node --all --timeout=300s
@@ -111,7 +126,7 @@ k --namespace kube-system rollout status deployment/cilium-operator --timeout=30
 k --namespace kube-system rollout status deployment/hubble-relay --timeout=300s
 k --namespace kube-system rollout status deployment/hubble-ui --timeout=300s
 k apply -f deploy/kind/runtimeclass.yaml
-# The local registry the nodes pull pinned images from (R14).
+# The local registry the nodes pull pinned images from.
 sh scripts/kind-registry.sh
 
 echo "cluster $CLUSTER is ready (kubectl context $CONTEXT)"

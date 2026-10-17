@@ -14,7 +14,7 @@
   "properties": {
     "env": {"enum": ["kind", "azure"]},
     "registry": {
-      "description": "Registry prefix the admission policy accepts images from (ruling R14), ending in '/'.",
+      "description": "Registry prefix the admission policy accepts images from, ending in '/'.",
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9.:-]*/$"
     },
@@ -102,7 +102,7 @@
       "then": {"properties": {"images": {"required": ["azureCli"]}}}
     },
     {
-      "description": "kind: images come from the local registry container (ruling R14).",
+      "description": "kind: images come from the local registry container (a local build has no registry digest).",
       "if": {"properties": {"env": {"const": "kind"}}, "required": ["env"]},
       "then": {"properties": {"registry": {"const": "localhost:5001/"}}}
     },
