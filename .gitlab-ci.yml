@@ -152,7 +152,7 @@ iac-checkov:
 
 chart-tests:
   # tests/k8s/test_chart.py: helm lint and helm template of deploy/helm/assume-hijacked, read
-  # back as YAML (ruling R17a). The tests skip themselves without helm; ci/chart.sh turns a
+  # back as YAML. The tests skip themselves without helm; ci/chart.sh turns a
   # skip into a failure, so they cannot pass by not running. The helm image has no Python:
   # the script adds python3 from Alpine and pytest + PyYAML from requirements-dev.lock.
   stage: iac
@@ -286,7 +286,9 @@ smoke:
       aud: api://AzureADTokenExchange
 
 tf-plan:
-  # Reader identity (ci-plan), any branch: net and lab. -lock=false, nothing is written.
+  # Reader identity (ci-plan), any branch: net and lab. -lock=false, nothing is written to Azure.
+  # The plan files and a readable copy are kept for tf-apply of this pipeline. They can hold
+  # resource values, so they expire after a day.
   extends: .azure-terraform
   rules:
     - if: $AZURE_ENABLED == "true"
@@ -294,10 +296,20 @@ tf-plan:
       allow_failure: true
   script:
     - sh ci/tf-plan.sh
+  artifacts:
+    when: always
+    expire_in: 1 day
+    paths:
+      - plans/apply/
 
 tf-apply:
-  # ci-apply, main only: net, then lab, each from a saved plan. One deployment at a time.
+  # ci-apply, main only: runs the plan files of tf-plan in this pipeline, net then lab. It never
+  # plans. Without those files (tf-plan not run, or expired) the job fails.
+  # https://docs.gitlab.com/ci/yaml/#needs
   extends: .azure-terraform
+  needs:
+    - job: tf-plan
+      artifacts: true
   resource_group: azure-lab
   interruptible: false
   rules:
@@ -307,9 +319,29 @@ tf-apply:
   script:
     - sh ci/tf-apply.sh
 
-tf-destroy:
-  # ci-apply, main only: lab, then net. The contents only, never the resource groups or infra/base.
+tf-destroy-plan:
+  # Reader identity: what tf-destroy would remove (plan -destroy), lab then net, kept for
+  # tf-destroy of this pipeline. Stops if a state manages a resource group.
   extends: .azure-terraform
+  rules:
+    - if: $AZURE_ENABLED == "true"
+      when: manual
+      allow_failure: true
+  script:
+    - sh ci/tf-destroy-plan.sh
+  artifacts:
+    when: always
+    expire_in: 1 day
+    paths:
+      - plans/destroy/
+
+tf-destroy:
+  # ci-apply, main only: runs the destroy plans of tf-destroy-plan in this pipeline, lab then
+  # net. The contents only, never the resource groups or infra/base. It never plans.
+  extends: .azure-terraform
+  needs:
+    - job: tf-destroy-plan
+      artifacts: true
   resource_group: azure-lab
   interruptible: false
   rules:

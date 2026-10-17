@@ -188,7 +188,7 @@ run "lab_uses_rg_lab_without_creating_it" {
 
   assert {
     condition     = data.azurerm_resource_group.lab.name == var.resource_group_name
-    error_message = "rg-lab must be read, not created (R15)."
+    error_message = "rg-lab must be read, not created: destroying the lab must never remove the group."
   }
 }
 

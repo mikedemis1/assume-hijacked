@@ -363,7 +363,7 @@ def test_no_proof_fails_in_ci(monkeypatch, value):
         no_proof("offline")
 
 
-# --- IaC checks, chart tests and the Azure jobs (lane C, task C4) --------------------------
+# --- IaC checks, chart tests and the Azure jobs -------------------------------------------
 
 @pytest.fixture(autouse=True)
 def fresh_db():
@@ -377,7 +377,7 @@ needs_sh = pytest.mark.skipif(SH is None, reason="no POSIX sh on PATH (Git Bash 
 IAC_STEPS = {"iac-terraform": ("terraform", "TERRAFORM_IMAGE"),
              "iac-tflint": ("tflint", "TFLINT_IMAGE"),
              "iac-checkov": ("checkov", "CHECKOV_IMAGE")}
-AZURE_JOBS = ("tf-plan", "tf-apply", "tf-destroy", "leftover-check")
+AZURE_JOBS = ("tf-plan", "tf-apply", "tf-destroy-plan", "tf-destroy", "leftover-check")
 OIDC_AUDIENCE = "api://AzureADTokenExchange"
 
 
@@ -401,8 +401,8 @@ def test_iac_jobs_run_on_every_push_with_one_step_and_the_pinned_tool_image():
 
 
 def test_chart_tests_job_runs_the_helm_chart_tests_on_a_pinned_helm_image():
-    """R17a: the chart tests skip themselves without helm, so CI needs a job that has it. The
-    chart and tests/k8s/ arrive with the k8s branch; this only checks the job and the script."""
+    """The chart tests skip themselves without helm, so CI needs a job that has it. This only
+    checks the job and the script; the chart and tests/k8s/ are not part of this checkout."""
     job = _jobs()["chart-tests"]
     assert job["stage"] == "iac" and "rules" not in job
     assert DIGEST.search(_image(job["image"]))
@@ -446,6 +446,25 @@ def test_azure_jobs_are_manual_and_off_until_azure_enabled():
         assert jobs[name]["interruptible"] is False, f"{name}: a new push must not cancel it"
 
 
+@pytest.mark.parametrize("apply_job, plan_job, folder", [("tf-apply", "tf-plan", "plans/apply/"),
+                                                         ("tf-destroy", "tf-destroy-plan", "plans/destroy/")])
+def test_apply_and_destroy_need_the_plan_job_of_the_same_pipeline_and_its_files(apply_job, plan_job, folder):
+    jobs = _jobs()
+    assert jobs[apply_job]["needs"] == [{"job": plan_job, "artifacts": True}], (
+        "the plan files come from the plan job of this pipeline, nowhere else")
+    artifacts = jobs[plan_job]["artifacts"]
+    assert artifacts["paths"] == [folder] and artifacts["when"] == "always"
+    assert artifacts["expire_in"] == "1 day", "plan files can hold resource values"
+    assert "artifacts" not in jobs[apply_job] or not jobs[apply_job]["artifacts"]
+    for rule in jobs[plan_job]["rules"]:
+        assert "CI_DEFAULT_BRANCH" not in rule["if"], f"{plan_job} runs on any branch"
+    script = _text(f"ci/{apply_job}.sh")
+    code = [line for line in script.splitlines() if not line.lstrip().startswith("#")]
+    assert any("require_plan" in line for line in code)
+    assert not any(re.search(r"terraform\s.*\splan\s", line) for line in code), (
+        f"{apply_job} must apply the saved files and never plan")
+
+
 def test_azure_jobs_authenticate_with_an_id_token_and_store_no_secret():
     jobs = _jobs()
     for name in AZURE_JOBS:
@@ -454,14 +473,15 @@ def test_azure_jobs_authenticate_with_an_id_token_and_store_no_secret():
         assert not jobs[name].get("variables"), f"{name}: values belong in project variables"
     pipeline = _text(".gitlab-ci.yml")
     scripts = "".join(_text(f"ci/{n}") for n in
-                      ("tf-common.sh", "tf-plan.sh", "tf-apply.sh", "tf-destroy.sh", "leftover-check.sh"))
+                      ("tf-common.sh", "tf-plan.sh", "tf-apply.sh", "tf-destroy-plan.sh", "tf-destroy.sh",
+                       "leftover-check.sh"))
     for text in (pipeline, scripts):
-        assert not re.search(r"CLIENT_SECRET|client_secret|ARM_ACCESS_KEY|--password|\s-p\s", text)
+        assert not re.search(r"CLIENT_SECRET|client_secret|ARM_ACCESS_KEY|--password|login[^\n]* -p ", text)
     assert "ARM_OIDC_TOKEN" in scripts and "--federated-token" in scripts
 
 
 def test_local_only_tls_workaround_is_never_set_by_the_pipeline_or_a_script():
-    """R13: TF_DISABLE_PLUGIN_TLS=1 is for this PC (Avast); nothing committed may set it."""
+    """TF_DISABLE_PLUGIN_TLS=1 works around the antivirus on one PC; nothing committed may set it."""
     files = [ROOT / ".gitlab-ci.yml", *sorted((ROOT / "ci").glob("*.sh"))]
     for path in files:
         text = path.read_text(encoding="utf-8")
@@ -477,13 +497,28 @@ def test_new_tool_images_in_lib_are_all_used_by_a_job():
 
 
 # Behaviour of the Azure scripts, with stand-ins for terraform and az on PATH. The stand-in
-# terraform appends its arguments, and the Azure settings it was started with, to a log.
+# terraform appends its arguments, and the Azure settings it was started with, to a log. It
+# writes the file named by `plan -out=`, and `apply <file>` fails when that file is missing, like
+# the real one. The scratch directory plays the part of the pipeline: the plans/ folder that
+# one script leaves is the artifact the next one finds.
 
 TERRAFORM_STANDIN = """#!/bin/sh
 echo "terraform $*" >> "$STANDIN_LOG"
 echo "env ARM_OIDC_TOKEN=${ARM_OIDC_TOKEN:-} ARM_CLIENT_ID=${ARM_CLIENT_ID:-} ARM_USE_OIDC=${ARM_USE_OIDC:-}" >> "$STANDIN_LOG"
 case "$*" in
-  *"state list"*) printf '%s' "${STANDIN_STATE:-}" ;;
+  *"state list"*)
+    printf '%s' "${STANDIN_STATE:-}"
+    exit "${STANDIN_STATE_RC:-0}" ;;
+  *" plan "*)
+    for a in "$@"; do
+      case "$a" in -out=*) echo "plan file" > "${a#-out=}" ;; esac
+    done
+    exit "${STANDIN_PLAN_RC:-0}" ;;
+  *" show "*) echo "Plan: 1 to add, 0 to change, 0 to destroy." ;;
+  *" apply "*)
+    for last in "$@"; do :; done
+    [ -f "$last" ] || { echo "Error: Failed to load plan file $last" >&2; exit 1; }
+    exit "${STANDIN_APPLY_RC:-0}" ;;
 esac
 exit 0
 """
@@ -498,7 +533,7 @@ AZURE_ENV = {
     "AZURE_ENABLED": "true", "AZURE_ID_TOKEN": "token-from-gitlab", "AZURE_TENANT_ID": "tenant-1",
     "AZURE_SUBSCRIPTION_ID": "sub-1", "AZURE_CI_PLAN_CLIENT_ID": "client-plan",
     "AZURE_CI_APPLY_CLIENT_ID": "client-apply", "TF_STATE_STORAGE_ACCOUNT": "stateacct",
-    "CI_COMMIT_BRANCH": "main", "CI_DEFAULT_BRANCH": "main",
+    "CI_COMMIT_BRANCH": "main", "CI_DEFAULT_BRANCH": "main", "CI_COMMIT_SHA": "abc123",
 }
 
 
@@ -516,8 +551,9 @@ def _scratch_repo(tmp_path, standins: dict[str, str]):
 
 @pytest.fixture
 def azure_run(tmp_path):
-    """run(script, **env) -> (CompletedProcess, log lines). Runs the real ci/ scripts from a
-    scratch copy, with terraform and az replaced by stand-ins. An env value of "" blanks it."""
+    """run(script, **env) -> (CompletedProcess, log lines of that run). Runs the real ci/ scripts
+    from a scratch copy, with terraform and az replaced by stand-ins. Files the scripts leave
+    (plans/) stay for the next run, like artifacts. An env value of "" blanks a variable."""
     path = _scratch_repo(tmp_path, {"terraform": TERRAFORM_STANDIN, "az": AZ_STANDIN})
     log = tmp_path / "standin.log"
 
@@ -542,19 +578,60 @@ def _stack(call: str) -> str:
     return re.search(r"-chdir=(\S+)", call).group(1)
 
 
+def _kinds(calls):
+    """(stack, subcommand) for each terraform call; the subcommand follows -chdir=<stack>."""
+    return [(_stack(c), c.split()[2]) for c in calls]
+
+
 @needs_sh
-def test_apply_goes_net_then_lab_from_a_saved_plan_and_never_touches_base(azure_run):
+def test_plan_saves_each_plan_for_the_apply_job_and_never_applies(azure_run):
+    done, lines = azure_run("tf-plan.sh", CI_COMMIT_BRANCH="feature/x")  # any branch
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = _terraform_calls(lines)
+    assert _kinds(calls) == [("infra/net", "init"), ("infra/net", "plan"), ("infra/net", "show"),
+                             ("infra/lab", "init"), ("infra/lab", "plan"), ("infra/lab", "show")]
+    plans = [c for c in calls if " plan " in c]
+    assert all("-lock=false" in c and "-detailed-exitcode" in c for c in plans)
+    assert not any(" apply " in c or "infra/base" in c for c in calls)
+    folder = azure_run.root / "plans" / "apply"
+    for name in ("net", "lab"):
+        assert (folder / f"{name}.tfplan").is_file() and (folder / f"{name}.txt").is_file()
+        assert (folder / f"{name}.changes").read_text(encoding="utf-8").strip() == "no"
+    assert (folder / "commit").read_text(encoding="utf-8").strip() == "abc123"
+    assert "ARM_CLIENT_ID=client-plan" in "".join(lines)
+    assert "Plan: 1 to add" in done.stdout, "the plan is printed in the job log"
+
+
+@needs_sh
+def test_a_failed_plan_fails_the_job(azure_run):
+    done, _ = azure_run("tf-plan.sh", STANDIN_PLAN_RC="1")
+    assert done.returncode != 0 and "plan failed" in done.stderr
+
+
+@needs_sh
+def test_var_files_come_from_file_variables_when_set(azure_run, tmp_path):
+    vars_file = tmp_path / "net.tfvars"
+    vars_file.write_text("", encoding="utf-8")
+    _, lines = azure_run("tf-plan.sh", TFVARS_NET=str(vars_file))
+    plans = [c for c in _terraform_calls(lines) if " plan " in c]
+    assert f"-var-file={vars_file}" in plans[0] and "-var-file" not in plans[1]
+
+
+@needs_sh
+def test_apply_runs_the_saved_plans_net_then_lab_and_never_plans(azure_run):
+    assert azure_run("tf-plan.sh")[0].returncode == 0
     done, lines = azure_run("tf-apply.sh")
     assert done.returncode == 0, done.stdout + done.stderr
     calls = _terraform_calls(lines)
-    assert [(_stack(c), c.split()[2]) for c in calls] == [
-        ("infra/net", "init"), ("infra/net", "plan"), ("infra/net", "apply"),
-        ("infra/lab", "init"), ("infra/lab", "plan"), ("infra/lab", "apply")]
-    assert not any("infra/base" in c for c in calls)
-    apply_calls = [c for c in calls if " apply " in c]
-    assert all(c.endswith(" tfplan") and "-auto-approve" not in c for c in apply_calls), (
-        "apply must run the saved plan, not plan again")
-    assert "-backend-config=key=net.tfstate" in calls[0] and "-backend-config=key=lab.tfstate" in calls[3]
+    assert _kinds(calls) == [("infra/net", "init"), ("infra/net", "apply"),
+                             ("infra/lab", "init"), ("infra/lab", "apply")]
+    assert not any(" plan " in c or "infra/base" in c for c in calls), "apply never plans"
+    assert all("-auto-approve" not in c for c in calls)
+    plan_files = [c.split()[-1] for c in calls if " apply " in c]
+    assert [Path(p).name for p in plan_files] == ["net.tfplan", "lab.tfplan"]
+    assert all(Path(p).parent.name == "apply" and Path(p).parent.parent.name == "plans"
+               for p in plan_files), "the files tf-plan saved"
+    assert "-backend-config=key=net.tfstate" in calls[0] and "-backend-config=key=lab.tfstate" in calls[2]
     assert "-lockfile=readonly" in calls[0]
     text = "".join(lines)
     assert "ARM_CLIENT_ID=client-apply" in text and "ARM_OIDC_TOKEN=token-from-gitlab" in text
@@ -563,7 +640,32 @@ def test_apply_goes_net_then_lab_from_a_saved_plan_and_never_touches_base(azure_
 
 
 @needs_sh
+def test_apply_without_a_saved_plan_or_with_a_plan_of_another_commit_fails_before_terraform(azure_run):
+    done, lines = azure_run("tf-apply.sh")
+    assert done.returncode != 0 and "no saved plan" in done.stderr and lines == []
+    azure_run("tf-plan.sh")
+    (azure_run.root / "plans" / "apply" / "lab.tfplan").unlink()
+    done, lines = azure_run("tf-apply.sh")
+    assert done.returncode != 0 and "no saved plan" in done.stderr
+    assert not any(" apply " in c for c in _terraform_calls(lines)), "net must not be applied alone"
+    azure_run("tf-plan.sh")
+    done, lines = azure_run("tf-apply.sh", CI_COMMIT_SHA="def456")
+    assert done.returncode != 0 and "another commit" in done.stderr and lines == []
+
+
+@needs_sh
+def test_apply_stops_before_lab_when_net_changed(azure_run):
+    """The lab plan was made against the old net state: net is applied, lab is not."""
+    azure_run("tf-plan.sh", STANDIN_PLAN_RC="2")  # both plans have changes
+    done, lines = azure_run("tf-apply.sh")
+    assert done.returncode != 0 and "tf-plan again" in done.stderr
+    assert _kinds(_terraform_calls(lines)) == [("infra/net", "init"), ("infra/net", "apply")]
+
+
+@needs_sh
 def test_apply_and_destroy_refuse_to_run_off_the_default_branch(azure_run):
+    azure_run("tf-plan.sh")
+    azure_run("tf-destroy-plan.sh")
     for script in ("tf-apply.sh", "tf-destroy.sh"):
         done, lines = azure_run(script, CI_COMMIT_BRANCH="feature/x")
         assert done.returncode != 0 and "default branch" in done.stderr, script
@@ -575,52 +677,76 @@ def test_apply_and_destroy_refuse_to_run_off_the_default_branch(azure_run):
 @pytest.mark.parametrize("missing", ["AZURE_ENABLED", "AZURE_ID_TOKEN", "AZURE_CI_APPLY_CLIENT_ID",
                                      "TF_STATE_STORAGE_ACCOUNT"])
 def test_azure_scripts_stop_without_their_inputs(azure_run, missing):
+    azure_run("tf-plan.sh")
     done, lines = azure_run("tf-apply.sh", **{missing: ""})
     assert done.returncode != 0, missing
     assert not any(" apply " in c for c in _terraform_calls(lines)), missing
 
 
 @needs_sh
-def test_destroy_goes_lab_then_net_and_only_after_both_states_are_checked(azure_run):
+def test_destroy_plan_goes_lab_then_net_and_saves_destroy_plans(azure_run):
     state = "data.azurerm_resource_group.lab\nazurerm_firewall.hub[0]\n"
-    done, lines = azure_run("tf-destroy.sh", STANDIN_STATE=state)
+    done, lines = azure_run("tf-destroy-plan.sh", STANDIN_STATE=state)
     assert done.returncode == 0, done.stdout + done.stderr
     calls = _terraform_calls(lines)
-    assert [(_stack(c), c.split()[2]) for c in calls] == [
-        ("infra/lab", "init"), ("infra/lab", "state"), ("infra/net", "init"), ("infra/net", "state"),
-        ("infra/lab", "plan"), ("infra/lab", "apply"), ("infra/net", "plan"), ("infra/net", "apply")]
-    assert all("-destroy" in c for c in calls if " plan " in c)
-    assert not any("infra/base" in c for c in calls)
-    assert all(c.endswith(" destroy.tfplan") for c in calls if " apply " in c)
+    assert _kinds(calls) == [("infra/lab", "init"), ("infra/lab", "state"), ("infra/lab", "plan"),
+                             ("infra/lab", "show"), ("infra/net", "init"), ("infra/net", "state"),
+                             ("infra/net", "plan"), ("infra/net", "show")]
+    assert all("-destroy" in c and "-lock=false" in c for c in calls if " plan " in c)
+    assert not any(" apply " in c or "infra/base" in c for c in calls)
+    assert (azure_run.root / "plans" / "destroy" / "lab.tfplan").is_file()
+    assert "ARM_CLIENT_ID=client-plan" in "".join(lines)
 
 
 @needs_sh
-def test_destroy_refuses_when_a_state_manages_a_resource_group(azure_run):
-    done, lines = azure_run("tf-destroy.sh", STANDIN_STATE="azurerm_resource_group.lab\n")
+def test_destroy_runs_the_saved_destroy_plans_lab_then_net_after_checking_both_states(azure_run):
+    state = "data.azurerm_resource_group.lab\nmodule.x.data.azurerm_resource_group.y\nazurerm_firewall.hub[0]\n"
+    assert azure_run("tf-destroy-plan.sh", STANDIN_STATE=state)[0].returncode == 0
+    done, lines = azure_run("tf-destroy.sh", STANDIN_STATE=state)
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = _terraform_calls(lines)
+    assert _kinds(calls) == [("infra/lab", "init"), ("infra/lab", "state"), ("infra/net", "init"),
+                             ("infra/net", "state"), ("infra/lab", "apply"), ("infra/net", "apply")]
+    assert not any(" plan " in c or "infra/base" in c for c in calls), "destroy never plans"
+    assert [Path(c.split()[-1]).parts[-2:] for c in calls if " apply " in c] == [
+        ("destroy", "lab.tfplan"), ("destroy", "net.tfplan")]
+    assert "ARM_CLIENT_ID=client-apply" in "".join(lines)
+
+
+@needs_sh
+def test_destroy_without_a_saved_destroy_plan_fails_before_terraform(azure_run):
+    done, lines = azure_run("tf-destroy.sh")
+    assert done.returncode != 0 and "no saved plan" in done.stderr and lines == []
+    azure_run("tf-plan.sh")  # an apply plan is not a destroy plan
+    done, lines = azure_run("tf-destroy.sh")
+    assert done.returncode != 0 and lines == []
+
+
+@needs_sh
+@pytest.mark.parametrize("script", ["tf-destroy-plan.sh", "tf-destroy.sh"])
+@pytest.mark.parametrize("state", [
+    "azurerm_resource_group.lab\n",
+    "azurerm_firewall.hub[0]\nmodule.x.azurerm_resource_group.y\n",
+    'module.x["a"].azurerm_resource_group.y[0]\n',
+])
+def test_destroy_refuses_when_a_state_manages_a_resource_group_also_inside_a_module(azure_run, script, state):
+    if script == "tf-destroy.sh":
+        assert azure_run("tf-destroy-plan.sh")[0].returncode == 0  # saved plans exist
+    done, lines = azure_run(script, STANDIN_STATE=state)
     assert done.returncode != 0 and "resource group" in done.stderr
     assert not any(" apply " in c or " plan " in c for c in _terraform_calls(lines)), (
         "nothing may be planned or destroyed once a managed resource group is found")
 
 
 @needs_sh
-def test_plan_uses_the_reader_identity_without_locking_and_never_applies(azure_run):
-    done, lines = azure_run("tf-plan.sh", CI_COMMIT_BRANCH="feature/x")  # any branch
-    assert done.returncode == 0, done.stdout + done.stderr
-    calls = _terraform_calls(lines)
-    plans = [c for c in calls if " plan " in c]
-    assert [_stack(c) for c in plans] == ["infra/net", "infra/lab"]
-    assert all("-lock=false" in c for c in plans)
-    assert not any(" apply " in c or "infra/base" in c for c in calls)
-    assert "ARM_CLIENT_ID=client-plan" in "".join(lines)
-
-
-@needs_sh
-def test_var_files_come_from_file_variables_when_set(azure_run, tmp_path):
-    vars_file = tmp_path / "net.tfvars"
-    vars_file.write_text("", encoding="utf-8")
-    _, lines = azure_run("tf-plan.sh", TFVARS_NET=str(vars_file))
-    plans = [c for c in _terraform_calls(lines) if " plan " in c]
-    assert f"-var-file={vars_file}" in plans[0] and "-var-file" not in plans[1]
+@pytest.mark.parametrize("script", ["tf-destroy-plan.sh", "tf-destroy.sh"])
+def test_destroy_refuses_when_the_state_list_fails(azure_run, script):
+    """A failing `state list` must not look like an empty state (a pipe would hide its status)."""
+    if script == "tf-destroy.sh":
+        assert azure_run("tf-destroy-plan.sh")[0].returncode == 0
+    done, lines = azure_run(script, STANDIN_STATE_RC="1")
+    assert done.returncode != 0 and "could not read the state" in done.stderr
+    assert not any(" apply " in c or " plan " in c for c in _terraform_calls(lines))
 
 
 @needs_sh

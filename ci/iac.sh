@@ -158,7 +158,7 @@ step_checkov() {
             echo "deploy/helm is missing and IAC_REQUIRE_DEPLOY=true" >&2
             return 1
         fi
-        echo "== checkov: deploy/ not found, skipped (the chart arrives with the k8s branch)"
+        echo "== checkov: deploy/ not found, skipped"
         return
     fi
     rendered=$(mktemp -d)

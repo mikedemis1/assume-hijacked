@@ -30,7 +30,7 @@ variable "location" {
 }
 
 variable "resource_group_name" {
-  description = "Resource group for the lab. Created EMPTY by infra/base (ruling R15); this stack only reads it."
+  description = "Resource group for the lab. Created EMPTY by infra/base, so that destroying the lab never removes it; this stack only reads it."
   type        = string
   default     = "rg-lab"
 }
@@ -130,7 +130,7 @@ variable "node_vm_size" {
 }
 
 variable "system_node_count" {
-  description = "Nodes in the system pool. It also runs the app components that are not sandboxed (R17b), so one node is not enough."
+  description = "Nodes in the system pool. It also runs the app components that are not sandboxed, so one node is not enough."
   type        = number
   default     = 2
 
@@ -266,7 +266,7 @@ variable "alert_email" {
 }
 
 variable "attack_event_kinds" {
-  description = "Security event kinds (the `kind` field of the app's JSON security log, app/agent/events.py) that raise the attack alert. Add the gateway and risk-engine kinds when lane A defines them."
+  description = "Security event kinds (the `kind` field of the app's JSON security log, app/agent/events.py) that raise the attack alert. Add the gateway and risk-engine kinds once the application logs them."
   type        = list(string)
   default     = ["blocked", "reply_blocked", "unknown_tool"]
 

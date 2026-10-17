@@ -150,7 +150,7 @@ run "address_plan_and_subnet_names" {
       && azurerm_subnet.spoke["snet-aks-sandbox"].address_prefixes == tolist(["10.20.1.0/24"])
       && azurerm_subnet.spoke["snet-pe"].address_prefixes == tolist(["10.20.2.0/26"])
     )
-    error_message = "Spoke subnets moved: C3 and the NSG rules rely on these ranges."
+    error_message = "Spoke subnets moved: the lab and the NSG rules rely on these ranges."
   }
 }
 

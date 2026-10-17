@@ -13,7 +13,7 @@
 #      login that can be reset through ARM (`az postgres flexible-server update
 #      --admin-password`) by someone with rights on rg-lab. Day-to-day admin is Entra.
 #      Bump postgres_admin_password_version to rotate it.
-#   2. The per-role workload passwords never pass through Terraform (ruling R18). The
+#   2. The per-role workload passwords never pass through Terraform. The
 #      db-migrate Job (in the cluster, workload identity, Entra admin of this server)
 #      generates one password per workload role on every deploy, runs ALTER ROLE ... PASSWORD
 #      and writes secret db-password-<role> into that workload's Key Vault. Terraform only

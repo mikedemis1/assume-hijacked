@@ -6,7 +6,7 @@
 #   firewall.tf    Azure Firewall Basic, its policy and the route table (count = enable_firewall)
 #   monitoring.tf  diagnostic settings, container log collection, log alert rules
 #
-# The resource group is created EMPTY by infra/base (ruling R15). This stack only reads it.
+# The resource group is created EMPTY by infra/base; destroying this stack must never remove it. This stack only reads it.
 #
 # How the lab gets the values of base and net
 # -------------------------------------------
@@ -65,7 +65,7 @@ locals {
   aks_subnet_ids   = { for n in local.aks_subnet_names : n => local.net.spoke_subnet_ids[n] }
   aks_prefixes     = { for n in local.aks_subnet_names : n => local.net.spoke_subnet_address_prefixes[n] }
 
-  # ------------------------------------------------------------ capability manifests (R8)
+  # ------------------------------------------------------------ capability manifests
   capabilities_dir = coalesce(var.capabilities_dir, "${path.module}/../../security/capabilities")
 
   manifests = {
@@ -91,7 +91,7 @@ locals {
   unplaced  = sort([for c, ns in local.namespaces : c if ns == null])
   all_roles = flatten([for c, m in local.identity_manifests : [for r in try(m.azure.roles, []) : merge(r, { component = c })]])
 
-  # ------------------------------------------------------------ Key Vault RBAC (ruling R18)
+  # ------------------------------------------------------------ Key Vault RBAC
   #
   # The vault roles are DERIVED here, not copied from the manifests:
   #   - every workload identity: Key Vault Secrets User on its OWN vault (scope kv-<component>)
@@ -100,7 +100,7 @@ locals {
   #     of every component that has a database role. db-migrate generates each role's password
   #     on every deploy, runs ALTER ROLE ... PASSWORD and writes secret db-password-<role> into
   #     that vault.
-  # The manifests may still list vault roles (lane A writes them); a listed role that the rule
+  # The manifests may still list vault roles (the application's capability files); a listed role that the rule
   # above would not grant stops the plan (manifest_checks), so a manifest cannot widen access.
   own_vault = { for c in keys(local.placed) : c => "kv-${c}" }
 

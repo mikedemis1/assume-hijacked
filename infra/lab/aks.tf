@@ -4,7 +4,7 @@
 #
 #   system   2+ x Standard_D4als_v6, Azure Linux, tainted CriticalAddonsOnly=true:NoSchedule
 #            (only_critical_addons_enabled). There is no user pool (decision 6), so the app
-#            components that are not sandboxed tolerate the taint and run here (ruling R17b).
+#            components that are not sandboxed tolerate the taint and run here.
 #   sandbox  0-3 x Standard_D4als_v6, Azure Linux, workload runtime KataVmIsolation. AKS
 #            provides the RuntimeClass `kata-vm-isolation`; agent Jobs and tools use it.
 #            No taint: the AKS RuntimeClass carries no toleration, and the system taint

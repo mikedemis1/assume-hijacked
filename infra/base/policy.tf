@@ -1,5 +1,5 @@
 # Azure Policy at subscription scope: guardrails for the resource layer.
-# In-cluster rules are a different layer (ValidatingAdmissionPolicy, lane B).
+# In-cluster rules are a different layer (ValidatingAdmissionPolicy, in the Helm chart).
 #
 # Built-in definitions are referenced by their fixed GUIDs (checked against
 # github.com/Azure/azure-policy, built-in-policies/policyDefinitions):

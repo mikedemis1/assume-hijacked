@@ -1,7 +1,7 @@
 # rg-net: hub and spoke VNets, peering, subnets, private DNS zones (this file), NSGs (nsg.tf),
 # DNS security policy (dns-policy.tf).
 #
-# The resource group is created EMPTY by infra/base (ruling R15). This stack only reads it.
+# The resource group is created EMPTY by infra/base; destroying this stack must never remove it. This stack only reads it.
 # A destroy of this stack removes its contents, never the group.
 
 data "azurerm_resource_group" "net" {

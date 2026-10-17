@@ -8,7 +8,7 @@
 # Alert rules and the action group live in rg-lab on purpose: they are destroyed with the lab,
 # so the "heartbeat missing" rule cannot fire every night while the lab is down. The Key Vault
 # diagnostic settings are extension resources on the vaults in rg-base (ci-apply has
-# Monitoring Contributor there, ruling R15); vault reads while the lab is down are therefore
+# Monitoring Contributor there); vault reads while the lab is down are therefore
 # not logged, and nothing can read the vaults then except their owners.
 #
 # Table and category names checked on learn.microsoft.com/azure/azure-monitor/reference/tables:

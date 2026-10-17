@@ -7,7 +7,7 @@ terraform {
       version = "~> 4.0"
     }
 
-    # Used ONLY for the DNS security policy objects in dns-policy.tf (ruling R16).
+    # Used ONLY for the DNS security policy objects in dns-policy.tf.
     # azurerm 4.81.0 has no resource for them; upstream request:
     # https://github.com/hashicorp/terraform-provider-azurerm/issues/28597
     # When azurerm gains them, move dns-policy.tf to azurerm and drop this provider.

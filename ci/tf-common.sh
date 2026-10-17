@@ -21,9 +21,11 @@
 # destroyed after it.
 . ci/lib.sh
 
-PLAN_STACKS="infra/net infra/lab"
 APPLY_STACKS="infra/net infra/lab"
 DESTROY_STACKS="infra/lab infra/net"
+# Saved plans, passed between jobs of one pipeline as GitLab artifacts: plans/apply/<stack>.tfplan
+# (+ .txt to read, .changes yes|no) from tf-plan, plans/destroy/... from tf-destroy-plan.
+PLANS=plans
 
 die() {
     echo "$*" >&2
@@ -92,5 +94,52 @@ tf_vars() {
 need_terraform() {
     if ! in_tool_image && ! command -v terraform >/dev/null 2>&1; then
         die "terraform is not installed; this job runs in CI, in $TERRAFORM_IMAGE"
+    fi
+}
+
+# plan_stack <apply|destroy> <stack> [extra plan arguments]: plan without a lock (ci-plan can read
+# the state but not write its lease), save the plan file and a readable copy under plans/<kind>/,
+# print it, and record whether it changes anything. The apply and destroy jobs run these files and
+# never plan again, so what a person read in the plan job is what runs.
+plan_stack() {
+    kind=$1
+    stack=$2
+    shift 2
+    name=$(basename "$stack")
+    dir="$PWD/$PLANS/$kind"
+    mkdir -p "$dir"
+    set -- -input=false -lock=false -no-color -detailed-exitcode -out="$dir/$name.tfplan" "$@"
+    for arg in $(tf_vars "$stack"); do
+        set -- "$@" "$arg"
+    done
+    rc=0
+    terraform -chdir="$stack" plan "$@" || rc=$?
+    case "$rc" in
+        0) changes=no ;;
+        2) changes=yes ;;
+        *) die "terraform plan failed for $stack (exit code $rc)" ;;
+    esac
+    terraform -chdir="$stack" show -no-color "$dir/$name.tfplan" >"$dir/$name.txt"
+    cat "$dir/$name.txt"
+    echo "$changes" >"$dir/$name.changes"
+    echo "${CI_COMMIT_SHA:-unknown}" >"$dir/commit"
+}
+
+# require_plan <apply|destroy> <stack>: the saved plan must exist and come from this commit.
+require_plan() {
+    file="$PLANS/$1/$(basename "$2").tfplan"
+    [ -f "$file" ] || die "no saved plan for $2 ($file): run the plan job of this pipeline first"
+    [ "$(cat "$PLANS/$1/commit" 2>/dev/null)" = "${CI_COMMIT_SHA:-unknown}" ] \
+        || die "the saved plan for $2 was made for another commit"
+}
+
+# refuse_managed_resource_groups <stack>: infra/net and infra/lab only read rg-net and rg-lab (infra/base
+# creates them empty), so a resource group among the resources a stack manages means destroy would
+# delete it. A state that cannot be read stops the job too: an unreadable list is not an empty one.
+# Data sources (data.azurerm_resource_group...) are fine; module-nested groups are caught.
+refuse_managed_resource_groups() {
+    list=$(terraform -chdir="$1" state list) || die "could not read the state of $1; refusing to go on"
+    if echo "$list" | grep -E '(^|\.)azurerm_resource_group\.' | grep -vqE '(^|\.)data\.azurerm_resource_group\.'; then
+        die "$1 manages a resource group; destroying it would remove the group. Refusing."
     fi
 }

@@ -30,7 +30,7 @@ variable "location" {
 }
 
 variable "resource_group_name" {
-  description = "Resource group for the network. Created EMPTY by infra/base (R15); this stack only reads it."
+  description = "Resource group for the network. Created EMPTY by infra/base, so that destroying the network never removes it; this stack only reads it."
   type        = string
   default     = "rg-net"
 }

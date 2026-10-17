@@ -1,6 +1,6 @@
 #!/bin/sh
 # Helm chart tests: `pytest tests/k8s/test_chart.py` (helm lint and helm template, read back as
-# YAML; no cluster). The chart is deploy/helm/assume-hijacked, from the k8s branch (ruling R17a).
+# YAML; no cluster). The chart is deploy/helm/assume-hijacked.
 #
 # The tests skip themselves when the helm binary is missing. In CI that would make a green job
 # that checked nothing, so this script fails when any test is skipped or none ran.
@@ -16,7 +16,7 @@
 . ci/lib.sh
 
 if [ ! -f tests/k8s/test_chart.py ]; then
-    echo "tests/k8s/test_chart.py is missing: the chart arrives with the k8s branch" >&2
+    echo "tests/k8s/test_chart.py is missing" >&2
     exit 1
 fi
 

@@ -1,4 +1,4 @@
-# One Key Vault per workload that holds secrets (decision: D15).
+# One Key Vault per workload that holds secrets.
 #
 # The list of vaults is not written here. It comes from the capability manifests
 # (security/capabilities/*.json): every distinct `azure.roles[].scope` that starts
