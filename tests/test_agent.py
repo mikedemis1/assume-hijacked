@@ -401,6 +401,37 @@ def test_unknown_tool_is_logged(caplog):
     assert gw.calls == [("read_ticket", {"lease": LEASE})]  # and nothing was sent to a tool
 
 
+class TranscriptSpy(ScriptedLLM):
+    """The scripted model, keeping a copy of every transcript it is shown."""
+
+    def __init__(self):
+        self.seen = []
+
+    def next_action(self, transcript):
+        self.seen.append(json.dumps(transcript, ensure_ascii=False))
+        return super().next_action(transcript)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        # What an MCP argument validation error looks like: it repeats the arguments sent.
+        f"ERROR: 1 validation error for lookup_accountArguments input_value={{'lease': '{LEASE}'}}",
+        json.dumps({"name": "Canned", "note": LEASE}),
+    ],
+    ids=["error", "result"],
+)
+def test_lease_never_reaches_the_transcript_or_the_reply(result):
+    # The lease is a credential: the model must never see it, nor be able to repeat it.
+    gw = RecordingGateway("CALL lookup_account {}\nCALL lookup_account {}\nSAY {last}", {"lookup_account": result})
+    llm = TranscriptSpy()
+    reply = Agent(llm, gw).handle_ticket(7, LEASE)
+    assert gw.calls[1] == ("lookup_account", {"lease": LEASE})  # the tools still get it
+    assert len(llm.seen) == 3
+    assert all(LEASE not in seen for seen in llm.seen)
+    assert LEASE not in reply
+
+
 def test_tool_error_is_logged_without_the_error_text(caplog):
     gw = RecordingGateway(
         "CALL lookup_account {}\nSAY done", {"lookup_account": "ERROR: patient Maria has a flag"}

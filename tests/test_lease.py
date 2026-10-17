@@ -137,6 +137,64 @@ def test_expiry_uses_the_database_clock_not_the_transaction_start(admin, as_role
         conn.rollback()
 
 
+@pytest.mark.parametrize(
+    "level",
+    [psycopg.IsolationLevel.REPEATABLE_READ, psycopg.IsolationLevel.SERIALIZABLE],
+    ids=["repeatable_read", "serializable"],
+)
+def test_revoked_lease_is_refused_inside_an_old_snapshot(admin, as_role, level):
+    # In REPEATABLE READ and SERIALIZABLE every statement reads the snapshot taken at the start of
+    # the transaction, so a tool that took one while the lease was live would not see the revoke.
+    # The lease check refuses any isolation level other than READ COMMITTED.
+    lease = open_lease(admin, 1, ["lookup_account"])
+    conn = as_role("tool_lookup_account")
+    conn.autocommit = False
+    conn.isolation_level = level
+    try:
+        conn.execute("SELECT 1")  # the snapshot is taken here, while the lease is live
+        as_role("dispatcher").execute("SELECT revoke_lease(%s)", (lease,))
+        with pytest.raises(psycopg.errors.RaiseException, match="lease invalid"):
+            call_api(conn, "lookup_account", lease)
+    finally:
+        conn.rollback()
+
+
+def test_lease_still_works_in_a_read_committed_transaction(admin, as_role):
+    # The control for the test above: a transaction as such is fine, only an old snapshot is not.
+    lease = open_lease(admin, 1, ["lookup_account"])
+    conn = as_role("tool_lookup_account")
+    conn.autocommit = False
+    try:
+        conn.execute("SELECT 1")
+        assert call_api(conn, "lookup_account", lease)
+        as_role("dispatcher").execute("SELECT revoke_lease(%s)", (lease,))
+        with pytest.raises(psycopg.errors.RaiseException, match="lease invalid"):
+            call_api(conn, "lookup_account", lease)
+    finally:
+        conn.rollback()
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+def test_lease_functions_refuse_a_caller_granted_another_tools_function(admin, tool):
+    # A grant added by mistake: another tool role gets EXECUTE on this tool's function. The lease
+    # lists every tool, so only the session_user check inside the function can refuse it.
+    lease = open_lease(admin, 1, TOOLS)
+    intruder = next(f"tool_{t}" for t in TOOLS if t != tool)
+    signature = next(sig for sig, role in API_FUNCTIONS.items() if role == f"tool_{tool}")
+    with admin.transaction():
+        admin.execute(f"GRANT EXECUTE ON FUNCTION {signature} TO {intruder}")
+        admin.execute(f"SET SESSION AUTHORIZATION {intruder}")
+        with pytest.raises(psycopg.errors.RaiseException, match="lease invalid"):
+            with admin.transaction():
+                call_api(admin, tool, lease)
+        # Control: the function's own role, in the same transaction, is served.
+        admin.execute("RESET SESSION AUTHORIZATION")
+        admin.execute(f"SET SESSION AUTHORIZATION tool_{tool}")
+        assert call_api(admin, tool, lease)
+        admin.execute("RESET SESSION AUTHORIZATION")
+        raise psycopg.Rollback
+
+
 @pytest.mark.parametrize("tool", TOOLS)
 def test_lease_function_refuses_tool_not_in_lease(admin, as_role, tool):
     others = [t for t in TOOLS if t != tool]
@@ -194,6 +252,40 @@ def test_new_functions_are_definer_with_fixed_search_path_and_no_public_execute(
     else:
         assert row["owner"] == "lease_owner"
         assert set(row["callers"]) == LEASE_FUNCTIONS[signature]
+
+
+def test_lease_check_helper_is_callable_by_no_login_role(admin):
+    # lease_ticket_for_tool takes the tool name as an argument, so only the api_* functions
+    # (running as api_owner, its owner) may call it.
+    row = admin.execute(
+        "SELECT p.prosecdef, pg_get_userbyid(p.proowner) AS owner, "
+        "ARRAY(SELECT r.rolname FROM pg_roles r WHERE r.rolname !~ '^pg_' AND NOT r.rolsuper "
+        "      AND r.rolname <> 'api_owner' AND has_function_privilege(r.oid, p.oid, 'EXECUTE')) AS callers "
+        "FROM pg_proc p WHERE p.oid = 'lease_ticket_for_tool(text,text)'::regprocedure"
+    ).fetchone()
+    assert row == {"prosecdef": False, "owner": "api_owner", "callers": []}
+
+
+def test_no_function_in_public_is_executable_by_public(admin):
+    # PostgreSQL grants EXECUTE to PUBLIC on every new function unless told otherwise. Each file
+    # revokes it, and 01-schema.sql changes the default, so a function added later starts closed.
+    rows = admin.execute(
+        "SELECT p.oid::regprocedure::text AS f FROM pg_proc p "
+        "WHERE p.pronamespace = 'public'::regnamespace AND has_function_privilege('public', p.oid, 'EXECUTE') "
+        "ORDER BY 1"
+    ).fetchall()
+    assert [r["f"] for r in rows] == []
+
+
+def test_a_new_function_gets_no_public_execute_by_default(admin):
+    # The default privilege from 01-schema.sql: a function created without any REVOKE.
+    with admin.transaction():
+        admin.execute("CREATE FUNCTION public.added_later() RETURNS int LANGUAGE sql AS 'SELECT 1'")
+        public_execute = admin.execute(
+            "SELECT has_function_privilege('public', 'public.added_later()', 'EXECUTE') AS ok"
+        ).fetchone()["ok"]
+        raise psycopg.Rollback
+    assert public_execute is False
 
 
 def test_old_ticket_id_function_is_gone(admin):

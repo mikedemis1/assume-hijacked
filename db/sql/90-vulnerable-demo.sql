@@ -12,15 +12,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
     v_ticket int;
 BEGIN
-    -- Same check as api_lookup_account (05-lease.sql): session_user, live lease, tool listed.
-    SELECT l.ticket_id INTO v_ticket FROM public.leases l
-    WHERE session_user = 'tool_lookup_account'
-      AND l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
-      AND NOT l.revoked AND l.expires_at > clock_timestamp()
-      AND 'lookup_account' = ANY (l.allowed_tools);
-    IF v_ticket IS NULL THEN
-        RAISE EXCEPTION 'lease invalid';
-    END IF;
+    -- Same check as api_lookup_account (05-lease.sql).
+    v_ticket := public.lease_ticket_for_tool(p_lease, 'lookup_account');
     RETURN QUERY
         SELECT c.name, a.tariff, a.status, s.address
         FROM public.accounts a

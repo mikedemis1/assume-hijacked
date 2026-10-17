@@ -10,6 +10,8 @@ from app.agent.guard import SAFE_REPLY, block_reason, numbers_in
 from app.agent.llm import Reply
 
 MAX_STEPS = 10
+# What the model sees when a tool call failed, whatever the tool said (see _scrub).
+TOOL_ERROR = "ERROR: the tool could not complete this request"
 GIVE_UP = "We could not complete your request automatically. A colleague will contact you."
 
 # Arguments the LLM may set. The lease (which names the ticket) is always set by this code, and a
@@ -62,7 +64,7 @@ class Agent:
         """Answer one ticket. `lease` is the lease opened for this ticket; it goes to every tool
         and never into the transcript, so the model never sees it. `ticket_id` is for the
         security log only: the tools take the ticket from the lease."""
-        body = _ticket_body(self.gateway.call("read_ticket", {"lease": lease}))
+        body = _ticket_body(_scrub(self.gateway.call("read_ticket", {"lease": lease}), lease))
         if body is None:
             security_event("ticket_unreadable", ticket_id=ticket_id)
             return GIVE_UP
@@ -89,7 +91,7 @@ class Agent:
                     )
                 if action.name == "issue_bill_credit":
                     credit_asked = True
-                result = self.gateway.call(action.name, args)
+                result = _scrub(self.gateway.call(action.name, args), lease)
                 if result.startswith("ERROR:"):
                     security_event("tool_error", ticket_id=ticket_id, tool=action.name)
                 else:
@@ -115,6 +117,17 @@ class Agent:
         dropped = [key for key in args if key not in allowed]
         clean["lease"] = lease
         return clean, dropped
+
+
+def _scrub(result: str, lease: str) -> str:
+    """What a tool answered, made safe for the transcript: the model must never see the lease.
+
+    An error text can repeat the arguments that were sent (an MCP argument validation error shows
+    them, shortened, so a plain search for the lease would miss part of it). So an error is reduced
+    to a fixed text, and any other result has the lease removed."""
+    if result.startswith("ERROR:"):
+        return TOOL_ERROR
+    return result.replace(lease, "<lease>") if lease else result
 
 
 def _ticket_body(raw: str) -> str | None:

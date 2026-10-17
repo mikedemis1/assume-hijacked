@@ -24,6 +24,8 @@ CREATE SCHEMA crypto;
 CREATE EXTENSION pgcrypto WITH SCHEMA crypto;
 REVOKE ALL ON SCHEMA crypto FROM PUBLIC;
 GRANT USAGE ON SCHEMA crypto TO lease_owner;
+-- The default privileges (01-schema.sql) leave the extension's functions closed too.
+GRANT EXECUTE ON FUNCTION crypto.gen_random_bytes(int) TO lease_owner;
 
 CREATE TABLE leases (
     id            bigserial PRIMARY KEY,
@@ -82,33 +84,54 @@ GRANT EXECUTE ON FUNCTION open_lease(int, text[], text), revoke_lease(text) TO d
 GRANT EXECUTE ON FUNCTION lease_scope(text) TO gateway, dispatcher;
 
 
--- The five tool functions. Each one is granted to exactly one tool role and starts with the same
--- check, written out in each function so that each can be read and reviewed on its own:
+-- The lease check every tool function starts with, in one place. It returns the lease's ticket,
+-- or raises 'lease invalid' (the same text for every case, so a caller learns nothing about which
+-- leases exist) unless all of these hold:
 --
---   1. session_user is that tool's role. session_user is the role that logged in; inside a
---      SECURITY DEFINER function current_user is the function's owner (api_owner), so current_user
+--   1. The transaction is READ COMMITTED. In REPEATABLE READ or SERIALIZABLE every statement reads
+--      the snapshot taken when the transaction started, so a tool that took one while its lease
+--      was live would not see the lease being revoked. In READ COMMITTED each statement of this
+--      (volatile) function reads a fresh snapshot.
+--   2. session_user is the tool's role. session_user is the role that logged in; inside the
+--      SECURITY DEFINER api_* functions current_user is their owner (api_owner), so current_user
 --      cannot tell who called. A login role cannot change its session_user (only a superuser can,
 --      with SET SESSION AUTHORIZATION), and SET ROLE changes current_user only. So a role that was
---      granted this function by mistake, or a member of the tool role, is still refused.
---   2. The lease is known, not revoked and not expired (clock_timestamp(), see the top).
---   3. The lease lists this tool. The tool name is fixed in the function, not passed in.
+--      granted another tool's function by mistake, or a member of a tool role, is refused.
+--   3. The lease is known, not revoked and not expired (clock_timestamp(), see the top).
+--   4. The lease lists the tool.
 --
--- Any failure raises 'lease invalid', the same text for every case, so a caller learns nothing
--- about which leases exist. Arguments never name a ticket, a customer or an account.
+-- p_tool comes from the calling api_* function, where it is a constant. The helper is not SECURITY
+-- DEFINER: it runs as its caller, api_owner, and only api_owner may execute it, so no tool role
+-- can call it with a tool name of its choosing.
+CREATE FUNCTION lease_ticket_for_tool(p_lease text, p_tool text) RETURNS int
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+DECLARE
+    v_ticket int;
+BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'lease invalid';
+    END IF;
+    SELECT l.ticket_id INTO v_ticket FROM public.leases l
+    WHERE session_user = 'tool_' || p_tool
+      AND l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
+      AND NOT l.revoked AND l.expires_at > clock_timestamp()
+      AND p_tool = ANY (l.allowed_tools);
+    IF v_ticket IS NULL THEN
+        RAISE EXCEPTION 'lease invalid';
+    END IF;
+    RETURN v_ticket;
+END $$;
+
+-- The five tool functions. Each one is granted to exactly one tool role, starts with the lease
+-- check above for its own, fixed tool name, and takes no argument that names a ticket, a customer
+-- or an account.
 
 CREATE FUNCTION api_read_ticket(p_lease text) RETURNS TABLE(id int, body text)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
     v_ticket int;
 BEGIN
-    SELECT l.ticket_id INTO v_ticket FROM public.leases l
-    WHERE session_user = 'tool_read_ticket'
-      AND l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
-      AND NOT l.revoked AND l.expires_at > clock_timestamp()
-      AND 'read_ticket' = ANY (l.allowed_tools);
-    IF v_ticket IS NULL THEN
-        RAISE EXCEPTION 'lease invalid';
-    END IF;
+    v_ticket := public.lease_ticket_for_tool(p_lease, 'read_ticket');
     RETURN QUERY SELECT t.id, t.body FROM public.tickets t WHERE t.id = v_ticket;
 END $$;
 
@@ -119,14 +142,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
     v_ticket int;
 BEGIN
-    SELECT l.ticket_id INTO v_ticket FROM public.leases l
-    WHERE session_user = 'tool_lookup_account'
-      AND l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
-      AND NOT l.revoked AND l.expires_at > clock_timestamp()
-      AND 'lookup_account' = ANY (l.allowed_tools);
-    IF v_ticket IS NULL THEN
-        RAISE EXCEPTION 'lease invalid';
-    END IF;
+    v_ticket := public.lease_ticket_for_tool(p_lease, 'lookup_account');
     RETURN QUERY
         SELECT c.name, a.tariff, a.status, s.address
         FROM public.tickets t
@@ -145,14 +161,7 @@ DECLARE
     v_account int;
     v_id      int;
 BEGIN
-    SELECT l.ticket_id INTO v_ticket FROM public.leases l
-    WHERE session_user = 'tool_request_disconnection'
-      AND l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
-      AND NOT l.revoked AND l.expires_at > clock_timestamp()
-      AND 'request_disconnection' = ANY (l.allowed_tools);
-    IF v_ticket IS NULL THEN
-        RAISE EXCEPTION 'lease invalid';
-    END IF;
+    v_ticket := public.lease_ticket_for_tool(p_lease, 'request_disconnection');
     SELECT a.id INTO STRICT v_account
     FROM public.tickets t JOIN public.accounts a ON a.customer_id = t.customer_id
     WHERE t.id = v_ticket;
@@ -173,14 +182,7 @@ DECLARE
     v_account int;
     v_id      int;
 BEGIN
-    SELECT l.ticket_id INTO v_ticket FROM public.leases l
-    WHERE session_user = 'tool_issue_bill_credit'
-      AND l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
-      AND NOT l.revoked AND l.expires_at > clock_timestamp()
-      AND 'issue_bill_credit' = ANY (l.allowed_tools);
-    IF v_ticket IS NULL THEN
-        RAISE EXCEPTION 'lease invalid';
-    END IF;
+    v_ticket := public.lease_ticket_for_tool(p_lease, 'issue_bill_credit');
     IF p_reason IS NULL OR p_reason NOT IN ('duplicate_charge', 'outage', 'late_technician') THEN
         RAISE EXCEPTION 'credit reason is not on the closed list';
     END IF;
@@ -203,14 +205,7 @@ DECLARE
     v_ticket int;
     v_sp     text;
 BEGIN
-    SELECT l.ticket_id INTO v_ticket FROM public.leases l
-    WHERE session_user = 'tool_set_temp_protection'
-      AND l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
-      AND NOT l.revoked AND l.expires_at > clock_timestamp()
-      AND 'set_temp_protection' = ANY (l.allowed_tools);
-    IF v_ticket IS NULL THEN
-        RAISE EXCEPTION 'lease invalid';
-    END IF;
+    v_ticket := public.lease_ticket_for_tool(p_lease, 'set_temp_protection');
     SELECT a.supply_point_id INTO STRICT v_sp
     FROM public.tickets t JOIN public.accounts a ON a.customer_id = t.customer_id
     WHERE t.id = v_ticket;
@@ -224,7 +219,7 @@ END $$;
 
 -- api_owner holds exactly what the five functions read and write. Column lists, so not even
 -- these functions could read a phone number or a ticket's status by a later edit by mistake.
-GRANT SELECT (token_hash, ticket_id, allowed_tools, expires_at, revoked) ON leases TO api_owner;
+GRANT SELECT (token_hash, ticket_id, allowed_tools, expires_at, revoked) ON leases TO api_owner;  -- the lease check
 GRANT SELECT (id, customer_id, body) ON tickets TO api_owner;
 GRANT SELECT (id, name) ON customers TO api_owner;
 GRANT SELECT (id, customer_id, supply_point_id, tariff, status) ON accounts TO api_owner;
@@ -237,6 +232,8 @@ GRANT SELECT (supply_point_id), INSERT (supply_point_id, source) ON flags TO api
 GRANT INSERT (kind, actor, detail) ON events TO api_owner;
 GRANT USAGE ON SEQUENCE events_id_seq TO api_owner;
 
+ALTER FUNCTION lease_ticket_for_tool(text, text) OWNER TO api_owner;
+REVOKE ALL ON FUNCTION lease_ticket_for_tool(text, text) FROM PUBLIC;
 ALTER FUNCTION api_read_ticket(text) OWNER TO api_owner;
 ALTER FUNCTION api_lookup_account(text) OWNER TO api_owner;
 ALTER FUNCTION api_request_moveout(text, date) OWNER TO api_owner;

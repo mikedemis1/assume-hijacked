@@ -1,3 +1,12 @@
+-- PostgreSQL grants EXECUTE to PUBLIC on every new function by default. In this database no
+-- function is executable by PUBLIC: each one is granted to its callers by name. This changes the
+-- default for functions created by the init user and by the function owners (02-roles.sql), so a
+-- function added later starts closed even if its file forgets the REVOKE. Default privileges are
+-- per database, which is why this is here and not in 02-roles.sql.
+-- (tests/test_lease.py: test_no_function_in_public_is_executable_by_public)
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres, api_owner, lease_owner, flags_writer, flags_admin
+    REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
 CREATE TABLE customers (
     id    int PRIMARY KEY,
     name  text NOT NULL,
