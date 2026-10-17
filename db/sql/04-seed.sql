@@ -31,3 +31,6 @@ INSERT INTO charges VALUES
 -- SP-1003: life-support equipment, from the state register.
 INSERT INTO flags (supply_point_id, source) VALUES ('SP-1003', 'state_register');
 INSERT INTO register_sync VALUES (1, now());
+
+-- The agents' stop switch (06-risk.sql) starts open.
+INSERT INTO agent_control (id, paused) VALUES (1, false);

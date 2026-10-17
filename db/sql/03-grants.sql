@@ -1,13 +1,14 @@
 -- Applied to every database (supplier and supplier_test) after 01-schema.sql.
 -- Roles and database-level REVOKEs live in 02-roles.sql. The lease, the five tool functions and
--- their owners' grants are in 05-lease.sql; row-level security in 08-rls.sql.
+-- their owners' grants are in 05-lease.sql; the risk tables and theirs in 06-risk.sql; row-level
+-- security in 08-rls.sql.
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
 -- USAGE only lets a role find names in the schema; what it may do there is granted per object.
 GRANT USAGE ON SCHEMA public TO
     tool_read_ticket, tool_lookup_account, tool_request_disconnection,
     tool_issue_bill_credit, tool_set_temp_protection, executor, approver,
-    gateway, risk_engine, dispatcher, register_sync, api_owner, lease_owner;
+    gateway, risk_engine, dispatcher, register_sync, api_owner, lease_owner, risk_owner;
 
 -- Tools: no table, column or sequence grant at all. Each tool role may only EXECUTE its one
 -- api_* function, which answers for the ticket of a live lease (05-lease.sql).
@@ -30,7 +31,8 @@ GRANT USAGE ON SEQUENCE credits_id_seq, occupier_notices_id_seq, disconnection_o
 -- Staff approval page.
 GRANT SELECT ON action_requests TO approver;
 -- No created_at: the database sets it, so an approval cannot be back-dated or post-dated.
-GRANT INSERT (request_id, approver) ON approvals TO approver;
+-- approver_role comes from the console, which reads it from the staff member's token.
+GRANT INSERT (request_id, approver, approver_role) ON approvals TO approver;
 
 -- Advisory locks (gap I9). By default PUBLIC may call these, so any tool role could hold a
 -- home's lock and freeze the executor. Only the executor (its own lock and the order trigger)

@@ -4,7 +4,7 @@
 -- function added later starts closed even if its file forgets the REVOKE. Default privileges are
 -- per database, which is why this is here and not in 02-roles.sql.
 -- (tests/test_lease.py: test_no_function_in_public_is_executable_by_public)
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres, api_owner, lease_owner, flags_writer, flags_admin
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres, api_owner, lease_owner, flags_writer, flags_admin, risk_owner
     REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
 CREATE TABLE customers (
@@ -107,10 +107,15 @@ END $$;
 CREATE TRIGGER action_requests_check BEFORE INSERT ON action_requests
     FOR EACH ROW EXECUTE FUNCTION check_action_request();
 
+-- approver is the Entra object id the console validated (decision 8), or a dev user id locally.
+-- approver_role is the app role the console read from the same token. The database cannot check
+-- that claim (v1: staff do not log in to PostgreSQL); what it does enforce is that one person
+-- counts once, whatever the role or spelling (check_approval_floor, 06-risk.sql).
 CREATE TABLE approvals (
-    request_id int NOT NULL REFERENCES action_requests,
-    approver   text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
+    request_id    int NOT NULL REFERENCES action_requests,
+    approver      text NOT NULL CHECK (btrim(approver, E' \t\r\n') <> ''),
+    approver_role text NOT NULL DEFAULT 'Approver' CHECK (approver_role IN ('Approver', 'SeniorApprover')),
+    created_at    timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (request_id, approver)
 );
 
@@ -131,13 +136,21 @@ CREATE TABLE credits (
 -- The charges must also back it, the same evidence rule the executor applies (decision 4): the
 -- evidence is a charge on that account, an earlier charge has the same account, period and
 -- amount (so this one is the duplicate), and the credit is no more than the charge.
--- Runs as the inserting role (executor), which can read action_requests and charges.
+-- Last, the approval floor (check_approval_floor, 06-risk.sql): the request needs a risk assessment
+-- whose tier allows a credit, and as many distinct approvers as that tier asks for.
+-- Runs as the inserting role (executor), which can read action_requests, charges,
+-- risk_assessments and approvals.
 CREATE FUNCTION check_credit() RETURNS trigger
 LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 DECLARE
     req    record;
     charge record;
 BEGIN
+    -- numeric takes 'NaN', which PostgreSQL sorts above every number, so a plain `> 0` lets it
+    -- through. (Infinity cannot reach here: numeric(10,2) cannot hold it.)
+    IF NOT (NEW.amount_eur > 0 AND NEW.amount_eur < 'Infinity') THEN
+        RAISE EXCEPTION 'credit amount must be a positive finite number';
+    END IF;
     SELECT kind, account_id, amount_eur, evidence_ref INTO req
     FROM public.action_requests WHERE id = NEW.request_id;
     IF NOT FOUND THEN
@@ -179,6 +192,7 @@ BEGIN
     IF NEW.amount_eur > 500.00 THEN
         RAISE EXCEPTION 'credit of % is above the hard cap of 500.00', NEW.amount_eur;
     END IF;
+    PERFORM public.check_approval_floor(NEW.request_id, NULL);
     RETURN NEW;
 END $$;
 
@@ -205,7 +219,10 @@ CREATE TABLE disconnection_orders (
 -- a move-out request at notice_sent (not pending, nor sent to a human as manual_only or
 -- held_rate_limit, nor executed), for that request's own home (exact string), a home that is not
 -- protected and a register synced in the last 24 hours, an occupier notice to that same home
--- at least 72 hours old, a staff approval given after that notice, and a move-out date that has come.
+-- at least 72 hours old, a staff approval given after that notice, a move-out date that has come,
+-- and the approval floor: a risk assessment whose tier allows an order, and as many distinct
+-- approvers as that tier asks for, counting only approvals given after the notice
+-- (check_approval_floor, 06-risk.sql).
 -- All times are the database's (now()), never a value the executor passes in. The date is
 -- taken in UTC so a session cannot move it with SET TimeZone; Greece is ahead of UTC, so the
 -- order can only come later than local midnight, never earlier.
@@ -258,6 +275,7 @@ BEGIN
     IF req.move_out_date IS NULL OR req.move_out_date > (now() AT TIME ZONE 'UTC')::date THEN
         RAISE EXCEPTION 'request % move-out date has not come yet', NEW.request_id;
     END IF;
+    PERFORM public.check_approval_floor(NEW.request_id, notice_at);
     RETURN NEW;
 END $$;
 

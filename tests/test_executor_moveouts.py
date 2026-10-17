@@ -7,7 +7,7 @@ import pytest
 from app.executor.approvals import approve, approver_count
 from app.executor.moveouts import process_moveouts
 from app.tools.set_temp_protection import set_temp_protection
-from tests.conftest import open_lease
+from tests.conftest import assess, open_lease
 
 # The order trigger uses the database clock, so the tests never jump time with the executor's
 # `now`. They back-date rows as admin instead: notices, approvals, the register sync.
@@ -17,14 +17,19 @@ def utc_today():
     return datetime.now(timezone.utc).date()
 
 
-def add_moveout(admin, account_id=1, ticket_id=1, move_out_date=None) -> int:
-    """A pending move-out. The date defaults to today (UTC), so an order is allowed once the rest holds."""
+def add_moveout(admin, account_id=1, ticket_id=1, move_out_date=None, tier="T1") -> int:
+    """A pending move-out. The date defaults to today (UTC), so an order is allowed once the rest holds.
+    It is assessed T1 by default (one approval, the rule these tests were written for), so they check
+    the executor and check_disconnection_order, not the approval floor (tests/test_risk_floor.py)."""
     admin.execute(
         "INSERT INTO action_requests (kind, ticket_id, account_id, move_out_date) "
         "VALUES ('move_out', %s, %s, %s)",
         (ticket_id, account_id, move_out_date or utc_today()),
     )
-    return admin.execute("SELECT max(id) AS id FROM action_requests").fetchone()["id"]
+    rid = admin.execute("SELECT max(id) AS id FROM action_requests").fetchone()["id"]
+    if tier is not None:
+        assess(admin, rid, tier)
+    return rid
 
 
 def status(admin, request_id):
@@ -59,8 +64,8 @@ def back_date_approvals(admin, request_id, hours):
 
 
 def ready_for_order(admin, staff, account_id=1, ticket_id=1, move_out_date=None) -> int:
-    """A move-out where every condition for an order holds: notice sent 73 hours ago,
-    a staff approval after it, move-out date today. Tests break one condition at a time."""
+    """A move-out where every condition for an order holds: a T1 risk assessment, notice sent
+    73 hours ago, a staff approval after it, move-out date today. Tests break one condition at a time."""
     rid = add_moveout(admin, account_id, ticket_id, move_out_date)
     admin.execute(
         "INSERT INTO occupier_notices (request_id, supply_point_id, sent_at) "
@@ -296,6 +301,7 @@ def _credit_request_with_notice_and_approval(admin, staff):
         (utc_today(),),
     )
     rid = admin.execute("SELECT max(id) AS id FROM action_requests").fetchone()["id"]
+    assess(admin, rid, "T1")
     admin.execute(
         "INSERT INTO occupier_notices (request_id, supply_point_id, sent_at) "
         "VALUES (%s, 'SP-1001', now() - interval '73 hours')",

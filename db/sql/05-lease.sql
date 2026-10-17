@@ -173,7 +173,9 @@ END $$;
 
 -- A credit request for the ticket owner's account. The reason must be on the closed list here
 -- too: the tool code checks it first, but a hijacked tool process could skip that check. The
--- amount is checked by the action_requests column constraint. Returns the request id.
+-- amount must be a positive, finite number: numeric takes 'NaN' (which PostgreSQL sorts above
+-- every number, so `> 0` alone lets it through) and, since PostgreSQL 14, 'Infinity'. The
+-- action_requests column constraint is the backstop. Returns the request id.
 CREATE FUNCTION api_request_credit(p_lease text, p_amount numeric, p_reason text, p_evidence int)
 RETURNS int
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
@@ -183,6 +185,9 @@ DECLARE
     v_id      int;
 BEGIN
     v_ticket := public.lease_ticket_for_tool(p_lease, 'issue_bill_credit');
+    IF p_amount IS NULL OR NOT (p_amount > 0 AND p_amount < 'Infinity') THEN
+        RAISE EXCEPTION 'credit amount must be a positive finite number';
+    END IF;
     IF p_reason IS NULL OR p_reason NOT IN ('duplicate_charge', 'outage', 'late_technician') THEN
         RAISE EXCEPTION 'credit reason is not on the closed list';
     END IF;

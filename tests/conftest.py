@@ -76,7 +76,8 @@ from app import config  # noqa: E402  (after .env is loaded)
 SEED_SQL = (ROOT / "db" / "sql" / "04-seed.sql").read_text(encoding="utf-8")
 VULNERABLE_SQL = (ROOT / "db" / "sql" / "90-vulnerable-demo.sql").read_text(encoding="utf-8")
 ALL_TABLES = (
-    "events, disconnection_orders, occupier_notices, credits, approvals, action_requests, "
+    "events, disconnection_orders, occupier_notices, credits, approvals, risk_assessments, "
+    "call_assessments, agent_control, action_requests, "
     "leases, register_sync, flags, charges, tickets, accounts, supply_points, customers"
 )
 # The tool names a lease can list (the leases.allowed_tools check in db/sql/05-lease.sql).
@@ -127,6 +128,25 @@ def open_lease(admin, ticket: int, tools=TOOLS, bound_pod: str | None = None) ->
     return admin.execute(
         "SELECT open_lease(%s, %s, %s) AS lease", (ticket, list(tools), bound_pod)
     ).fetchone()["lease"]
+
+
+def assess(admin, request_id: int, tier: str, score: int = 0, reasons: tuple[str, ...] = ()) -> None:
+    """The risk engine's verdict on one request (db/sql/06-risk.sql), written as the superuser.
+    The risk service (task A5) writes these in the stack; tests that need an effect to go through
+    write one themselves, because the credit and order triggers refuse a request without one."""
+    admin.execute(
+        "INSERT INTO risk_assessments (request_id, tier, score, reasons, engine_version) "
+        "VALUES (%s, %s, %s, %s, 'test')",
+        (request_id, tier, score, list(reasons)),
+    )
+
+
+def approve_as(conn, request_id: int, approver: str, role: str = "Approver") -> None:
+    """A staff approval with its role, as the console will write it (task A11)."""
+    conn.execute(
+        "INSERT INTO approvals (request_id, approver, approver_role) VALUES (%s, %s, %s)",
+        (request_id, approver, role),
+    )
 
 
 @pytest.fixture

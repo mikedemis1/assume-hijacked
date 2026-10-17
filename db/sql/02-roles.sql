@@ -19,12 +19,15 @@ CREATE ROLE register_sync              LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_re
 --   api_owner    the five tool functions (05-lease.sql)
 --   lease_owner  open_lease, revoke_lease, lease_scope (05-lease.sql)
 --   flags_admin  the register sync functions (07-register.sql, later)
+--   risk_owner   the risk objects: pause_agents, resume_agents (SECURITY DEFINER), and
+--                required_approvals, check_approval_floor (06-risk.sql)
 --   flags_writer owned set_temp_protection(int) until api_set_temp_protection replaced it; kept
 --                because the RLS policy (08-rls.sql) and later tasks name it. It has no grants.
 CREATE ROLE flags_writer               NOLOGIN;
 CREATE ROLE api_owner                  NOLOGIN;
 CREATE ROLE lease_owner                NOLOGIN;
 CREATE ROLE flags_admin                NOLOGIN;
+CREATE ROLE risk_owner                 NOLOGIN;
 
 -- Every executor session, whatever the code does: a lock it cannot get within 5 s fails that
 -- request (executor_error, the batch goes on) instead of hanging the only component that

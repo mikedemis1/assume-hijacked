@@ -177,9 +177,15 @@ def test_request_account_comes_from_the_ticket_owner(as_role, admin, role, call)
 @pytest.mark.parametrize("amount", ["0", "-5", "NaN"])
 def test_request_amount_must_be_a_positive_number(as_role, admin, amount):
     conn = as_role("tool_issue_bill_credit")
-    with pytest.raises(psycopg.errors.CheckViolation):
+    with pytest.raises(psycopg.errors.RaiseException, match="positive finite number"):
         conn.execute(
             "SELECT api_request_credit(%s, %s::numeric, 'duplicate_charge', 2)", (open_lease(admin, 1), amount)
+        )
+    # Behind the function's own check, the column constraint refuses them even from the superuser.
+    with pytest.raises(psycopg.errors.CheckViolation):
+        admin.execute(
+            "INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur) VALUES ('credit', 1, 1, %s::numeric)",
+            (amount,),
         )
 
 

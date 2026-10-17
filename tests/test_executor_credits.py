@@ -4,15 +4,22 @@ import psycopg
 import pytest
 
 from app.executor.credits import decide_credit, process_credits
+from tests.conftest import assess
 
 
-def add_credit(admin, amount, evidence, reason="duplicate_charge", account_id=1, ticket_id=1) -> int:
+def add_credit(admin, amount, evidence, reason="duplicate_charge", account_id=1, ticket_id=1, tier="T0") -> int:
+    """A pending credit request with a risk assessment (T0 by default: no approval needed), so the
+    tests here check the executor and check_credit, not the approval floor (tests/test_risk_floor.py).
+    tier=None leaves it unassessed."""
     admin.execute(
         "INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref) "
         "VALUES ('credit', %s, %s, %s, %s, %s)",
         (ticket_id, account_id, amount, reason, evidence),
     )
-    return admin.execute("SELECT max(id) AS id FROM action_requests").fetchone()["id"]
+    rid = admin.execute("SELECT max(id) AS id FROM action_requests").fetchone()["id"]
+    if tier is not None:
+        assess(admin, rid, tier)
+    return rid
 
 
 def statuses(admin):
