@@ -43,6 +43,7 @@ only_mutate = [
     "app/agent/core.py",
     "app/agent/guard.py",
     "app/executor/*",
+    "app/risk/rules.py",
     "app/tools/lookup_account.py",
 ]
 # Copied next to the mutated code: conftest.py reloads the seed data from db/sql before each test.

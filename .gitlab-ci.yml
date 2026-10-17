@@ -226,6 +226,7 @@ mutation:
           - "app.agent.core*"
           - "app.agent.guard*"
           - "app.executor*"
+          - "app.risk.rules*"
           - "app.tools.lookup_account*"
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"

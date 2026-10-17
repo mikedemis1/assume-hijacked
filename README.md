@@ -129,6 +129,7 @@ Mutation testing edits the walls' code one change at a time and checks that a te
 - Mutation score baseline `app.agent.core*`: 91.2%
 - Mutation score baseline `app.agent.guard*`: 80.6%
 - Mutation score baseline `app.executor*`: 78.5%
+- Mutation score baseline `app.risk.rules*`: 100.0%
 - Mutation score baseline `app.tools.lookup_account*`: 68.0%
 
 Baselines were measured locally with the CI setup on 2026-10-16. The mutation job has not run on GitLab yet. Jobs, accepted findings and the trivy exceptions: [docs/pipeline.md](docs/pipeline.md).
