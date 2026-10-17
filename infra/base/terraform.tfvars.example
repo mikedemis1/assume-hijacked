@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars (git-ignored) and fill in. Nothing here is a secret,
+# but the IDs and the address identify the owner, so they stay out of the repo.
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+
+# Globally unique, lowercase letters and digits only.
+state_storage_account_name = "stahstateexample01"
+acr_name                   = "acrassumehijackedexample"
+
+# Budget alerts go here.
+budget_notification_emails = ["owner@example.com"]
+budget_start_date          = "2026-10-01T00:00:00Z" # first day of a month
+
+# Set after infra/net exists: the spoke subnets that may reach the Key Vaults.
+# spoke_subnet_ids = ["/subscriptions/.../subnets/snet-aks"]
+
+# Set to true after rg-lab and rg-net exist (a role assignment needs its scope).
+# grant_ci_apply_on_lab_and_net = true
+
+# Default: <repo>/security/capabilities
+# capabilities_dir = "../../security/capabilities"

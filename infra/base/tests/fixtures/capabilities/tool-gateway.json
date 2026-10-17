@@ -1,0 +1,7 @@
+{"component": "tool-gateway",
+ "db": {"role": "gateway", "execute": ["lease_scope(text)"], "tables": {}},
+ "network": {"ingress_from": ["agent"], "egress_to": ["db", "risk-engine"], "dns": ["cluster"]},
+ "k8s": {"service_account": "tool-gateway", "rbac": []},
+ "azure": {"identity": "id-tool-gateway", "roles": [{"role": "Key Vault Secrets User", "scope": "kv-tool-gateway"}]},
+ "runtime_class": "runc",
+ "mcp": {"tools": []}}
