@@ -15,6 +15,13 @@ GITLEAKS_IMAGE="zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16
 HADOLINT_IMAGE="hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552"
 CHECKOV_IMAGE="bridgecrew/checkov:3.3.21@sha256:9aefe56582004ebdac112fe85c3268dc4d3658231a8f023fb714ba9d29539d53"
 TRIVY_IMAGE="aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969"
+# IaC checks (ci/iac.sh), the chart tests (ci/chart.sh) and the Azure jobs (ci/tf-*.sh). Tags from
+# Docker Hub, GHCR and MCR, each at least 14 days old when pinned (checked 2026-10-17). The
+# Terraform tag is inside the "~> 1.15.0" that every infra/*/versions.tf asks for.
+TERRAFORM_IMAGE="hashicorp/terraform:1.15.9@sha256:fd5debae63188975d6febc6aa5bd1a982a588f55e4a4ddb7de28be923f250456"
+TFLINT_IMAGE="ghcr.io/terraform-linters/tflint:v0.64.0@sha256:1c595f42d794c32c45a6ea8b58655fd66433d4ca3b1bc631c574a48d120bd19f"
+HELM_IMAGE="alpine/helm:4.3.0@sha256:a6cf54599ccb99d90cf0712b30f03fdb3cab062e6b94e0418cc4db7e8a1464b2"
+AZURE_CLI_IMAGE="mcr.microsoft.com/azure-cli:2.90.0@sha256:e3768dde8142efa45d8f356a317aaac77abd7da15ba3719b0a150e9453f251db"
 # Same digest as the Dockerfile base image: the tests run on the Python that ships.
 PYTHON_IMAGE="python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
 # Same digest as the db in compose.yaml: the CI test database is the one that ships.

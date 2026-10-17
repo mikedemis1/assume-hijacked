@@ -117,6 +117,7 @@ resource "azurerm_public_ip" "firewall_management" {
 }
 
 resource "azurerm_firewall_policy" "egress" {
+  #checkov:skip=CKV_AZURE_220: IDPS needs the Premium SKU; the lab uses Basic
   count = local.firewall_count
 
   name                     = "afwp-egress"
@@ -189,6 +190,7 @@ resource "azurerm_firewall_policy_rule_collection_group" "egress" {
 }
 
 resource "azurerm_firewall" "hub" {
+  #checkov:skip=CKV_AZURE_216: Basic supports threat intelligence in Alert mode only
   count = local.firewall_count
 
   name                = "afw-hub"

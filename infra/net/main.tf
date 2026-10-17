@@ -62,6 +62,7 @@ resource "azurerm_virtual_network" "spoke" {
 }
 
 resource "azurerm_subnet" "hub" {
+  #checkov:skip=CKV2_AZURE_31: Azure Firewall subnets cannot have an NSG
   for_each = local.hub_subnets
 
   name                 = each.key
@@ -71,6 +72,7 @@ resource "azurerm_subnet" "hub" {
 }
 
 resource "azurerm_subnet" "spoke" {
+  #checkov:skip=CKV2_AZURE_31: false positive: azurerm_subnet_network_security_group_association.spoke in nsg.tf attaches an NSG to every spoke subnet, but its for_each is only known at plan time
   for_each = local.spoke_subnets
 
   name                 = each.key

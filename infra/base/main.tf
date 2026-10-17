@@ -37,7 +37,18 @@ resource "azurerm_resource_group" "lab" {
 
 # ---------------------------------------------------------------- Terraform state
 
+# prevent_destroy: the state of every stack lives here and cannot be rebuilt. To tear the lab
+# project down for good, remove the lifecycle block of the account and the container first.
 resource "azurerm_storage_account" "state" {
+  #checkov:skip=CKV_AZURE_59: GitLab.com runners and the owner's PC reach the state over the public endpoint; shared keys and anonymous access are off, Entra roles are required
+  #checkov:skip=CKV2_AZURE_33: no private endpoint: GitLab.com runners have no path into the VNet (same reason as CKV_AZURE_59)
+  #checkov:skip=CKV_AZURE_206: LRS on purpose, the cheapest; blob versioning and 14 days of soft delete cover a bad apply
+  #checkov:skip=CKV_AZURE_33: the queue service is not used by this account
+  #checkov:skip=CKV2_AZURE_1: Microsoft-managed keys; a customer-managed key needs its own Key Vault key and identity (backlog)
+  lifecycle {
+    prevent_destroy = true
+  }
+
   name                = var.state_storage_account_name
   resource_group_name = azurerm_resource_group.base.name
   location            = azurerm_resource_group.base.location
@@ -68,6 +79,11 @@ resource "azurerm_storage_account" "state" {
 }
 
 resource "azurerm_storage_container" "state" {
+  #checkov:skip=CKV2_AZURE_21: blob read logging is off; the Activity log records management changes (backlog)
+  lifecycle {
+    prevent_destroy = true
+  }
+
   name                  = var.state_container_name
   storage_account_id    = azurerm_storage_account.state.id
   container_access_type = "private"
@@ -76,6 +92,14 @@ resource "azurerm_storage_container" "state" {
 # ---------------------------------------------------------------- container registry
 
 resource "azurerm_container_registry" "acr" {
+  #checkov:skip=CKV_AZURE_139: Basic tier on purpose (cost); this needs Premium or Defender for Containers
+  #checkov:skip=CKV_AZURE_163: Basic tier on purpose (cost); this needs Premium or Defender for Containers
+  #checkov:skip=CKV_AZURE_164: Basic tier on purpose (cost); this needs Premium or Defender for Containers
+  #checkov:skip=CKV_AZURE_165: Basic tier on purpose (cost); this needs Premium or Defender for Containers
+  #checkov:skip=CKV_AZURE_166: Basic tier on purpose (cost); this needs Premium or Defender for Containers
+  #checkov:skip=CKV_AZURE_167: Basic tier on purpose (cost); this needs Premium or Defender for Containers
+  #checkov:skip=CKV_AZURE_233: Basic tier on purpose (cost); this needs Premium or Defender for Containers
+  #checkov:skip=CKV_AZURE_237: Basic tier on purpose (cost); this needs Premium or Defender for Containers
   name                = var.acr_name
   resource_group_name = azurerm_resource_group.base.name
   location            = azurerm_resource_group.base.location

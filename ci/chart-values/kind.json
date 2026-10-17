@@ -1,0 +1,22 @@
+{
+  "gateway": {
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\ntest-only\n-----END PUBLIC KEY-----\n"
+  },
+  "secrets": {
+    "postgresPassword": "test-postgres",
+    "dbPasswords": {
+      "approver": "test-approver",
+      "dispatcher": "test-dispatcher",
+      "executor": "test-executor",
+      "gateway": "test-gateway",
+      "register_sync": "test-register_sync",
+      "risk_engine": "test-risk_engine",
+      "tool_issue_bill_credit": "test-tool_issue_bill_credit",
+      "tool_lookup_account": "test-tool_lookup_account",
+      "tool_read_ticket": "test-tool_read_ticket",
+      "tool_request_disconnection": "test-tool_request_disconnection",
+      "tool_set_temp_protection": "test-tool_set_temp_protection"
+    },
+    "gatewaySigningKeyPem": "-----BEGIN EC PRIVATE KEY-----\ntest-only\n-----END EC PRIVATE KEY-----\n"
+  }
+}

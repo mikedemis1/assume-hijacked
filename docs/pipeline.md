@@ -25,6 +25,10 @@ The tests read `.env` for the passwords and DB_PORT. Each test truncates the tab
 | `lock-check` | pip-compile again, compared with both locks | a difference (non-blocking) | Python image, needs plain PyPI access (the `docker run` is in the header of `ci/lock-check.sh`) |
 | `lint-container-hadolint` | hadolint on both Dockerfiles | warning or error | hadolint image |
 | `lint-container-checkov` | checkov on both Dockerfiles and `.gitlab-ci.yml` | a failed check | checkov image |
+| `iac-terraform` | `terraform fmt -check`, `init -backend=false`, `validate` and `terraform test` (mock providers) on `infra/base`, `net`, `lab` and `modules/workload-identity` | a format difference, an invalid configuration, a failed test, a lock file that does not cover the providers | `terraform` binary, else the pinned image |
+| `iac-tflint` | tflint with `.tflint.hcl` (bundled terraform rules and the pinned azurerm ruleset) | any finding | `tflint` binary, else the pinned image |
+| `iac-checkov` | checkov on `infra/`, and on the Helm chart in `deploy/` rendered for kind and Azure | a failed check, a scan that found nothing, a file it could not parse | checkov image |
+| `chart-tests` | `tests/k8s/test_chart.py` (helm lint and template, no cluster) on a pinned helm image | a failed test, and also a skipped one | your virtualenv and `helm`, else the pinned image |
 | `test` | pytest against a PostgreSQL service, JUnit report | a failed test | your Compose db |
 | `build-scan` | `docker build`, then trivy on the image: a full report (artifact) and the gate | HIGH or CRITICAL with a fixed version | Docker Desktop |
 | `smoke` | the whole Compose stack, `pytest -m smoke` | a failed or skipped wall test | your running stack |
@@ -39,6 +43,33 @@ Merge requests from forks run this pipeline with the fork's code. That exposes n
 `build-scan` and `smoke` use Docker-in-Docker, so they need a runner that allows privileged containers (GitLab.com's own runners do). `smoke` runs on the default branch, on schedules and by hand. It writes a `.env` with random passwords, starts the stack and runs pytest in `ci/smoke-runner.Dockerfile` on the same Docker daemon. Both jobs were rehearsed on a PC with a local `docker:dind` container set up like a GitLab Docker executor (TLS, alias `docker`, shared `/builds`): smoke 16 passed, build-scan clean. Both now run on GitLab.com's shared runners.
 
 checkov has no Docker Compose framework, so `compose.yaml` is not scanned by a policy tool. Its walls are checked by the smoke tests instead.
+
+## IaC checks
+
+`sh ci/iac.sh` runs the three IaC steps in a row on a PC; in CI each step is its own job (`IAC_STEP=terraform|tflint|checkov`), because the Terraform image has no tflint and the reverse. Nothing here talks to Azure and nothing costs money.
+
+- On this PC Terraform needs `TF_DISABLE_PLUGIN_TLS=1` in your shell (the antivirus breaks the provider plugin handshake). The scripts pass it on if it is set and never set it; nothing in `.gitlab-ci.yml` sets it.
+- `terraform init` runs with `-lockfile=readonly`: the committed `.terraform.lock.hcl` (hashes for Windows and Linux) must already cover the providers.
+- tflint downloads its azurerm ruleset from GitHub on `--init`; the version is pinned in `.tflint.hcl`.
+- An accepted checkov finding in Terraform carries `#checkov:skip=CKV_xxx: reason` in the resource. Each skip names the lab decision behind it (Basic container registry, Free AKS tier, public endpoint behind the Key Vault firewall, and so on). For the chart, checkov cannot skip one rendered object, so `ci/iac.sh` lists four checks for the whole chart with the reason next to them.
+- checkov exits 0 when it parsed nothing, so `ci/iac.sh` fails when no check passed or a file could not be parsed. Behind Docker Desktop on this PC, a directory listing sometimes fails with "Cannot allocate memory" while the machine is busy and checkov then sees an empty folder; the script tries a scan that found nothing up to five times.
+- `deploy/` arrives with the k8s branch. Without it the checkov step skips the chart and says so; the CI job sets `IAC_REQUIRE_DEPLOY=true`, so a pipeline without `deploy/` fails. The chart is rendered with `ci/chart-values/{kind,azure}.json`, stand-in install values that match the ones in `tests/k8s/test_chart.py`. Update both together.
+- `chart-tests` uses the `alpine/helm` image, which has no Python: the script installs `python3` from Alpine and only pytest and PyYAML (and their dependencies) from `requirements-dev.lock`, hash-checked.
+
+## Azure jobs
+
+Four jobs are defined and switched off: `tf-plan`, `tf-apply`, `tf-destroy` and `leftover-check`, in the stage `azure`. They do not exist in a pipeline until the project variable `AZURE_ENABLED` is `true`, and then each one waits for a click (`when: manual`). Nothing is stored: each job asks GitLab for an ID token (`id_tokens`, audience `api://AzureADTokenExchange`), Entra checks it against a federated credential from `infra/base/ci-identities.tf` and returns an Azure token, which terraform reads from `ARM_OIDC_TOKEN`.
+
+| Job | Identity | Runs on | What it does |
+|-----|----------|---------|--------------|
+| `tf-plan` | `ci-plan` (Reader, state blob reader) | any branch | plan `infra/net`, then `infra/lab`, with `-lock=false` |
+| `tf-apply` | `ci-apply` (Contributor on rg-net and rg-lab) | main | for net, then lab: plan to a file, apply that file |
+| `tf-destroy` | `ci-apply` | main | destroy lab, then net. Checks both states first; refuses if one manages a resource group |
+| `leftover-check` | `ci-plan` | any branch | lists everything in rg-lab and every billable resource type in the subscription; fails if any is left |
+
+`infra/base` is not planned or applied in CI, on purpose. It holds the CI identities and the role assignments they may hand out, so a job that could apply it could widen its own rights. It needs Microsoft Graph rights for the Entra applications, which neither CI identity has, so even a plan would fail. The owner applies it from a PC; every push still runs fmt, validate, `terraform test`, tflint and checkov on it. `destroy` removes the contents of rg-net and rg-lab, never the groups and never base, because `infra/net` and `infra/lab` only read the groups (ruling R15).
+
+The stacks keep their `backend "azurerm"` block commented out until the owner has migrated the state. The jobs write a `zz_backend_override.tf` with an empty backend and pass the settings with `-backend-config`; that file is ignored by git. Project variables (none is a secret): `AZURE_ENABLED`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CI_PLAN_CLIENT_ID`, `AZURE_CI_APPLY_CLIENT_ID`, `TF_STATE_STORAGE_ACCOUNT`, and the optional File variables `TFVARS_NET` and `TFVARS_LAB` for the values kept out of git (address ranges, e-mail address, admin group). `tf-apply` and `tf-destroy` share the GitLab `resource_group: azure-lab`, so only one runs at a time. None of these jobs has run against Azure yet; `tests/test_ci.py` runs the real scripts against stand-in `terraform` and `az` programs to check the order, the saved plan, the main-only rule and the destroy guard.
 
 ## Mutation testing
 

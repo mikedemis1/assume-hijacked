@@ -33,7 +33,7 @@ resource "azurerm_policy_definition" "deny_firewall_skus" {
   metadata = jsonencode({ category = "Network" })
 
   policy_rule = jsonencode({
-    if = {
+    "if" = {
       allOf = [
         { field = "type", equals = "Microsoft.Network/azureFirewalls" },
         { field = "Microsoft.Network/azureFirewalls/sku.tier", in = ["Standard", "Premium"] },
@@ -60,7 +60,7 @@ resource "azurerm_policy_definition" "deny_vm_sizes" {
   })
 
   policy_rule = jsonencode({
-    if = {
+    "if" = {
       anyOf = [
         {
           allOf = [

@@ -52,6 +52,10 @@ locals {
 }
 
 resource "azurerm_key_vault" "workload" {
+  #checkov:skip=CKV_AZURE_42: lab: no purge protection, so a vault name can be reused in the same week (see below)
+  #checkov:skip=CKV_AZURE_110: lab: no purge protection, so a vault name can be reused in the same week (see below)
+  #checkov:skip=CKV_AZURE_189: public endpoint behind the vault firewall (default Deny, spoke subnets only); no private endpoint per vault
+  #checkov:skip=CKV2_AZURE_32: a private endpoint per workload vault costs money every month; the vault firewall is the wall in the lab
   for_each = local.key_vault_scopes
 
   name                = local.key_vault_physical_names[each.key]

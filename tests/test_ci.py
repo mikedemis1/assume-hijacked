@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -155,7 +156,8 @@ def test_local_scripts_use_the_same_images_as_the_pipeline():
     lib = _lib_images()
     ci = _ci_images()
     # The tool images run as job images in CI and through `docker run` on a PC.
-    for var in ("GITLEAKS_IMAGE", "HADOLINT_IMAGE", "CHECKOV_IMAGE", "PYTHON_IMAGE"):
+    for var in ("GITLEAKS_IMAGE", "HADOLINT_IMAGE", "CHECKOV_IMAGE", "PYTHON_IMAGE", "TERRAFORM_IMAGE",
+                "TFLINT_IMAGE", "HELM_IMAGE", "AZURE_CLI_IMAGE"):
         assert lib[var] in ci, f"ci/lib.sh {var}={lib[var]} is not the image in .gitlab-ci.yml"
     # Every other CI image is either Docker itself (CI only; a PC has Docker Desktop) or the
     # compose db image used as the test service. trivy runs from lib.sh in both places.
@@ -359,3 +361,332 @@ def test_no_proof_fails_in_ci(monkeypatch, value):
     monkeypatch.setenv("CI", value)
     with pytest.raises(pytest.fail.Exception):
         no_proof("offline")
+
+
+# --- IaC checks, chart tests and the Azure jobs (lane C, task C4) --------------------------
+
+@pytest.fixture(autouse=True)
+def fresh_db():
+    """Replaces the autouse fixture of tests/conftest.py for this module. Nothing in here reads
+    a database; the original would TRUNCATE the test database before every test, which only
+    slows these file checks down and gets in the way of whoever is running the DB suite."""
+
+
+SH = shutil.which("sh")
+needs_sh = pytest.mark.skipif(SH is None, reason="no POSIX sh on PATH (Git Bash on Windows)")
+IAC_STEPS = {"iac-terraform": ("terraform", "TERRAFORM_IMAGE"),
+             "iac-tflint": ("tflint", "TFLINT_IMAGE"),
+             "iac-checkov": ("checkov", "CHECKOV_IMAGE")}
+AZURE_JOBS = ("tf-plan", "tf-apply", "tf-destroy", "leftover-check")
+OIDC_AUDIENCE = "api://AzureADTokenExchange"
+
+
+def _text(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+def test_iac_jobs_run_on_every_push_with_one_step_and_the_pinned_tool_image():
+    jobs = _jobs()
+    lib = _lib_images()
+    for name, (step, var) in IAC_STEPS.items():
+        job = jobs[name]
+        assert job["stage"] == "iac", name
+        assert "rules" not in job and "only" not in job, f"{name} must run on every push"
+        assert job["script"] == ["sh ci/iac.sh"], name
+        assert job["variables"]["IAC_STEP"] == step, name
+        assert _image(job["image"]) == lib[var], f"{name}: image differs from ci/lib.sh {var}"
+        assert DIGEST.search(_image(job["image"])), name
+    assert jobs["iac-checkov"]["variables"]["IAC_REQUIRE_DEPLOY"] == "true", (
+        "a pipeline without deploy/ must fail, not scan nothing")
+
+
+def test_chart_tests_job_runs_the_helm_chart_tests_on_a_pinned_helm_image():
+    """R17a: the chart tests skip themselves without helm, so CI needs a job that has it. The
+    chart and tests/k8s/ arrive with the k8s branch; this only checks the job and the script."""
+    job = _jobs()["chart-tests"]
+    assert job["stage"] == "iac" and "rules" not in job
+    assert DIGEST.search(_image(job["image"]))
+    assert _image(job["image"]) == _lib_images()["HELM_IMAGE"]
+    assert _image(job["image"]).startswith("alpine/helm:")
+    assert job["script"] == ["sh ci/chart.sh"]
+    script = _text("ci/chart.sh")
+    assert "tests/k8s/test_chart.py" in script
+    assert "SKIPPED" in script, "a skipped chart test must fail the job"
+    assert "requirements-dev.lock" in script and "--require-hashes" in script
+    assert job["artifacts"]["reports"]["junit"] == "reports/chart-junit.xml"
+
+
+def test_iac_script_runs_every_check_the_brief_names():
+    script = _text("ci/iac.sh")
+    for needed in ("fmt -check", "init -backend=false", "-lockfile=readonly", "validate",
+                   'terraform -chdir="$stack" test', "tflint", "checkov_run infra",
+                   "--framework kubernetes", "--skip-path tests"):
+        assert needed in script, needed
+    for stack in ("infra/base", "infra/net", "infra/lab", "infra/modules/workload-identity"):
+        assert stack in script, stack
+    tflint = _text(".tflint.hcl")
+    assert re.search(r'plugin "azurerm" \{[^}]*version\s*=\s*"\d+\.\d+\.\d+"', tflint), (
+        "the azurerm ruleset must be pinned")
+
+
+def test_azure_jobs_are_manual_and_off_until_azure_enabled():
+    jobs = _jobs()
+    for name in AZURE_JOBS:
+        job = jobs[name]
+        assert job["stage"] == "azure", name
+        assert job["rules"], f"{name} has no rules, so it would run on every push"
+        for rule in job["rules"]:
+            assert rule.get("when") == "manual", f"{name}: a rule that is not manual: {rule}"
+            assert '$AZURE_ENABLED == "true"' in rule.get("if", ""), f"{name}: rule without AZURE_ENABLED"
+        assert "only" not in job and "except" not in job, name
+    for name in ("tf-apply", "tf-destroy"):
+        condition = jobs[name]["rules"][0]["if"]
+        assert "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH" in condition, f"{name} must be main only"
+        assert jobs[name]["resource_group"] == "azure-lab", f"{name}: one deployment at a time"
+        assert jobs[name]["interruptible"] is False, f"{name}: a new push must not cancel it"
+
+
+def test_azure_jobs_authenticate_with_an_id_token_and_store_no_secret():
+    jobs = _jobs()
+    for name in AZURE_JOBS:
+        assert jobs[name]["id_tokens"] == {"AZURE_ID_TOKEN": {"aud": OIDC_AUDIENCE}}, name
+        assert DIGEST.search(_image(jobs[name]["image"])), name
+        assert not jobs[name].get("variables"), f"{name}: values belong in project variables"
+    pipeline = _text(".gitlab-ci.yml")
+    scripts = "".join(_text(f"ci/{n}") for n in
+                      ("tf-common.sh", "tf-plan.sh", "tf-apply.sh", "tf-destroy.sh", "leftover-check.sh"))
+    for text in (pipeline, scripts):
+        assert not re.search(r"CLIENT_SECRET|client_secret|ARM_ACCESS_KEY|--password|\s-p\s", text)
+    assert "ARM_OIDC_TOKEN" in scripts and "--federated-token" in scripts
+
+
+def test_local_only_tls_workaround_is_never_set_by_the_pipeline_or_a_script():
+    """R13: TF_DISABLE_PLUGIN_TLS=1 is for this PC (Avast); nothing committed may set it."""
+    files = [ROOT / ".gitlab-ci.yml", *sorted((ROOT / "ci").glob("*.sh"))]
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert not re.search(r"TF_DISABLE_PLUGIN_TLS\s*[=:]", text), path.name
+        assert not re.search(r"export\s+TF_DISABLE_PLUGIN_TLS", text), path.name
+
+
+def test_new_tool_images_in_lib_are_all_used_by_a_job():
+    lib = _lib_images()
+    used = _ci_images()
+    for var in ("TERRAFORM_IMAGE", "TFLINT_IMAGE", "HELM_IMAGE", "AZURE_CLI_IMAGE"):
+        assert lib[var] in used, f"{var} is in ci/lib.sh but no job uses it"
+
+
+# Behaviour of the Azure scripts, with stand-ins for terraform and az on PATH. The stand-in
+# terraform appends its arguments, and the Azure settings it was started with, to a log.
+
+TERRAFORM_STANDIN = """#!/bin/sh
+echo "terraform $*" >> "$STANDIN_LOG"
+echo "env ARM_OIDC_TOKEN=${ARM_OIDC_TOKEN:-} ARM_CLIENT_ID=${ARM_CLIENT_ID:-} ARM_USE_OIDC=${ARM_USE_OIDC:-}" >> "$STANDIN_LOG"
+case "$*" in
+  *"state list"*) printf '%s' "${STANDIN_STATE:-}" ;;
+esac
+exit 0
+"""
+AZ_STANDIN = """#!/bin/sh
+echo "az $*" >> "$STANDIN_LOG"
+case "$*" in
+  "resource list"*) printf '%s' "${STANDIN_RESOURCES:-}" ;;
+esac
+exit 0
+"""
+AZURE_ENV = {
+    "AZURE_ENABLED": "true", "AZURE_ID_TOKEN": "token-from-gitlab", "AZURE_TENANT_ID": "tenant-1",
+    "AZURE_SUBSCRIPTION_ID": "sub-1", "AZURE_CI_PLAN_CLIENT_ID": "client-plan",
+    "AZURE_CI_APPLY_CLIENT_ID": "client-apply", "TF_STATE_STORAGE_ACCOUNT": "stateacct",
+    "CI_COMMIT_BRANCH": "main", "CI_DEFAULT_BRANCH": "main",
+}
+
+
+def _scratch_repo(tmp_path, standins: dict[str, str]):
+    """A copy of ci/ and empty infra stacks, with stand-in tools first on PATH."""
+    shutil.copytree(ROOT / "ci", tmp_path / "ci", ignore=shutil.ignore_patterns("__pycache__"))
+    for stack in ("base", "net", "lab"):
+        (tmp_path / "infra" / stack).mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, body in standins.items():
+        (bin_dir / name).write_text(body, encoding="utf-8", newline="\n")
+    return str(bin_dir) + os.pathsep + os.environ["PATH"]
+
+
+@pytest.fixture
+def azure_run(tmp_path):
+    """run(script, **env) -> (CompletedProcess, log lines). Runs the real ci/ scripts from a
+    scratch copy, with terraform and az replaced by stand-ins. An env value of "" blanks it."""
+    path = _scratch_repo(tmp_path, {"terraform": TERRAFORM_STANDIN, "az": AZ_STANDIN})
+    log = tmp_path / "standin.log"
+
+    def run(script: str, **env):
+        merged = {**os.environ, **AZURE_ENV, **env, "STANDIN_LOG": str(log), "PATH": path}
+        done = subprocess.run([SH, f"ci/{script}"], cwd=tmp_path, env=merged, capture_output=True,
+                              text=True, timeout=60, check=False)
+        lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        if log.exists():
+            log.unlink()
+        return done, lines
+
+    run.root = tmp_path
+    return run
+
+
+def _terraform_calls(lines):
+    return [line for line in lines if line.startswith("terraform ")]
+
+
+def _stack(call: str) -> str:
+    return re.search(r"-chdir=(\S+)", call).group(1)
+
+
+@needs_sh
+def test_apply_goes_net_then_lab_from_a_saved_plan_and_never_touches_base(azure_run):
+    done, lines = azure_run("tf-apply.sh")
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = _terraform_calls(lines)
+    assert [(_stack(c), c.split()[2]) for c in calls] == [
+        ("infra/net", "init"), ("infra/net", "plan"), ("infra/net", "apply"),
+        ("infra/lab", "init"), ("infra/lab", "plan"), ("infra/lab", "apply")]
+    assert not any("infra/base" in c for c in calls)
+    apply_calls = [c for c in calls if " apply " in c]
+    assert all(c.endswith(" tfplan") and "-auto-approve" not in c for c in apply_calls), (
+        "apply must run the saved plan, not plan again")
+    assert "-backend-config=key=net.tfstate" in calls[0] and "-backend-config=key=lab.tfstate" in calls[3]
+    assert "-lockfile=readonly" in calls[0]
+    text = "".join(lines)
+    assert "ARM_CLIENT_ID=client-apply" in text and "ARM_OIDC_TOKEN=token-from-gitlab" in text
+    override = (azure_run.root / "infra" / "net" / "zz_backend_override.tf").read_text(encoding="utf-8")
+    assert 'backend "azurerm" {}' in override
+
+
+@needs_sh
+def test_apply_and_destroy_refuse_to_run_off_the_default_branch(azure_run):
+    for script in ("tf-apply.sh", "tf-destroy.sh"):
+        done, lines = azure_run(script, CI_COMMIT_BRANCH="feature/x")
+        assert done.returncode != 0 and "default branch" in done.stderr, script
+        assert lines == [], f"{script} must stop before terraform runs"
+    assert azure_run("tf-apply.sh")[0].returncode == 0, "control: the same job on main runs"
+
+
+@needs_sh
+@pytest.mark.parametrize("missing", ["AZURE_ENABLED", "AZURE_ID_TOKEN", "AZURE_CI_APPLY_CLIENT_ID",
+                                     "TF_STATE_STORAGE_ACCOUNT"])
+def test_azure_scripts_stop_without_their_inputs(azure_run, missing):
+    done, lines = azure_run("tf-apply.sh", **{missing: ""})
+    assert done.returncode != 0, missing
+    assert not any(" apply " in c for c in _terraform_calls(lines)), missing
+
+
+@needs_sh
+def test_destroy_goes_lab_then_net_and_only_after_both_states_are_checked(azure_run):
+    state = "data.azurerm_resource_group.lab\nazurerm_firewall.hub[0]\n"
+    done, lines = azure_run("tf-destroy.sh", STANDIN_STATE=state)
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = _terraform_calls(lines)
+    assert [(_stack(c), c.split()[2]) for c in calls] == [
+        ("infra/lab", "init"), ("infra/lab", "state"), ("infra/net", "init"), ("infra/net", "state"),
+        ("infra/lab", "plan"), ("infra/lab", "apply"), ("infra/net", "plan"), ("infra/net", "apply")]
+    assert all("-destroy" in c for c in calls if " plan " in c)
+    assert not any("infra/base" in c for c in calls)
+    assert all(c.endswith(" destroy.tfplan") for c in calls if " apply " in c)
+
+
+@needs_sh
+def test_destroy_refuses_when_a_state_manages_a_resource_group(azure_run):
+    done, lines = azure_run("tf-destroy.sh", STANDIN_STATE="azurerm_resource_group.lab\n")
+    assert done.returncode != 0 and "resource group" in done.stderr
+    assert not any(" apply " in c or " plan " in c for c in _terraform_calls(lines)), (
+        "nothing may be planned or destroyed once a managed resource group is found")
+
+
+@needs_sh
+def test_plan_uses_the_reader_identity_without_locking_and_never_applies(azure_run):
+    done, lines = azure_run("tf-plan.sh", CI_COMMIT_BRANCH="feature/x")  # any branch
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = _terraform_calls(lines)
+    plans = [c for c in calls if " plan " in c]
+    assert [_stack(c) for c in plans] == ["infra/net", "infra/lab"]
+    assert all("-lock=false" in c for c in plans)
+    assert not any(" apply " in c or "infra/base" in c for c in calls)
+    assert "ARM_CLIENT_ID=client-plan" in "".join(lines)
+
+
+@needs_sh
+def test_var_files_come_from_file_variables_when_set(azure_run, tmp_path):
+    vars_file = tmp_path / "net.tfvars"
+    vars_file.write_text("", encoding="utf-8")
+    _, lines = azure_run("tf-plan.sh", TFVARS_NET=str(vars_file))
+    plans = [c for c in _terraform_calls(lines) if " plan " in c]
+    assert f"-var-file={vars_file}" in plans[0] and "-var-file" not in plans[1]
+
+
+@needs_sh
+def test_leftover_check_fails_and_lists_what_is_still_there(azure_run):
+    done, lines = azure_run("leftover-check.sh")
+    assert done.returncode == 0, done.stdout + done.stderr
+    login = next(line for line in lines if line.startswith("az login"))
+    assert "--federated-token" in login and "client-plan" in login and "token-from-gitlab" in login
+    queried = "".join(lines)
+    for billable in ("managedClusters", "azureFirewalls", "flexibleServers", "publicIPAddresses"):
+        assert billable in queried, billable
+    left = "/subscriptions/s/resourceGroups/rg-lab/providers/Microsoft.Network/azureFirewalls/afw-hub\n"
+    done, _ = azure_run("leftover-check.sh", STANDIN_RESOURCES=left)
+    assert done.returncode == 1 and "azureFirewalls/afw-hub" in done.stderr
+
+
+# Behaviour of ci/iac.sh that needs no tool: the step switch and the checkov guards, with a
+# stand-in checkov.
+
+CHECKOV_STANDIN = """#!/bin/sh
+echo "$STANDIN_CHECKOV_OUTPUT"
+exit "${STANDIN_CHECKOV_RC:-0}"
+"""
+
+
+@pytest.fixture
+def iac_run(tmp_path):
+    path = _scratch_repo(tmp_path, {"checkov": CHECKOV_STANDIN})
+
+    def run(**env):
+        merged = {**os.environ, "GITLAB_CI": "true", "IAC_STEP": "checkov", "IAC_RETRY_SLEEP": "0",
+                  **env, "PATH": path}
+        return subprocess.run([SH, "ci/iac.sh"], cwd=tmp_path, env=merged, capture_output=True,
+                              text=True, timeout=60, check=False)
+
+    return run
+
+
+@needs_sh
+def test_iac_script_rejects_an_unknown_step_and_the_all_step_in_ci(iac_run):
+    assert iac_run(IAC_STEP="bogus").returncode == 2
+    assert iac_run(IAC_STEP="all").returncode == 2  # CI has one job per step
+
+
+@needs_sh
+def test_checkov_step_passes_on_a_clean_scan_and_skips_a_missing_deploy_folder(iac_run):
+    done = iac_run(STANDIN_CHECKOV_OUTPUT="Passed checks: 40, Failed checks: 0, Skipped checks: 35")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "deploy/ not found, skipped" in done.stdout
+
+
+@needs_sh
+def test_checkov_step_fails_when_deploy_is_required_but_missing(iac_run):
+    done = iac_run(STANDIN_CHECKOV_OUTPUT="Passed checks: 40, Failed checks: 0, Skipped checks: 0",
+                   IAC_REQUIRE_DEPLOY="true")
+    assert done.returncode == 1 and "IAC_REQUIRE_DEPLOY" in done.stderr
+
+
+@needs_sh
+@pytest.mark.parametrize("output, rc, why", [
+    ("Passed checks: 40, Failed checks: 2, Skipped checks: 0", 1, "findings"),
+    ("Passed checks: 0, Failed checks: 0, Skipped checks: 0, Parsing errors: 1", 0, "nothing scanned"),
+    ("Passed checks: 17, Failed checks: 0, Skipped checks: 0, Parsing errors: 2", 0, "parsing errors"),
+    ("Passed checks: 0, Failed checks: 0, Skipped checks: 0", 0, "empty scan, no parse error"),
+    ("", 0, "no summary at all"),
+])
+def test_checkov_step_fails_on_findings_nothing_scanned_and_parse_errors(iac_run, output, rc, why):
+    done = iac_run(STANDIN_CHECKOV_OUTPUT=output, STANDIN_CHECKOV_RC=str(rc))
+    assert done.returncode == 1, why
