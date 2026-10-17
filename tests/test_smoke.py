@@ -103,8 +103,11 @@ with ThreadPoolExecutor(8) as pool:
         print(line)
 """
 
+# The stand-ins for the outside systems, and their HTTP ports.
+FAKE_PORTS = {"fake-register": 8090, "fake-dso": 8091, "fake-sms": 8092}
+
 # Every service on an internal network except the db (which is also on hostaccess on purpose).
-WALLED_SERVICES = [*TOOL_HOSTS, "executor", "risk-engine", "agent"]
+WALLED_SERVICES = [*TOOL_HOSTS, "executor", "risk-engine", "register-sync", *FAKE_PORTS, "agent"]
 
 DB_PORT = 5432  # inside the stack; the published host port is DB_HOST_PORT
 DB_HOST_PORT = int(os.environ.get("DB_PORT", "5432"))
@@ -298,13 +301,44 @@ def test_risk_engine_cannot_reach_tools(tool):
     assert_blocked("risk-engine", service_targets(tool, TOOL_PORT))
 
 
+@pytest.mark.parametrize("tool", TOOL_HOSTS)
+def test_register_sync_cannot_reach_tools(tool):
+    # Its edges are the db and the register; nothing else.
+    assert_blocked("register-sync", service_targets(tool, TOOL_PORT))
+
+
+@pytest.mark.parametrize("fake", FAKE_PORTS)
+def test_fakes_cannot_reach_db(fake):
+    # A fake stands for a system outside the company: it gets no route to the database.
+    assert_blocked(fake, [*service_targets("db", DB_PORT), ("host.docker.internal", DB_HOST_PORT)])
+
+
+FAKE_TARGETS = [(fake, port) for fake, port in FAKE_PORTS.items()]
+
+
+@pytest.mark.parametrize("source", ["agent", *TOOL_HOSTS, "risk-engine"])
+def test_only_their_callers_reach_the_fakes(source):
+    # A hijacked agent or tool cannot send an order to the grid operator or a text to an occupier
+    # by itself: only the executor reaches the DSO and SMS fakes, only register-sync the register.
+    assert_blocked(source, [t for fake, port in FAKE_TARGETS for t in service_targets(fake, port)])
+
+
+FAKE_PAIRS = list(itertools.permutations(FAKE_PORTS, 2))
+
+
+@pytest.mark.parametrize("source,target", FAKE_PAIRS, ids=[f"{s}->{t}" for s, t in FAKE_PAIRS])
+def test_fakes_cannot_reach_each_other(source, target):
+    assert_blocked(source, service_targets(target, FAKE_PORTS[target]))
+
+
 # The controls: the same ports on the edges that ARE allowed. Without these, "blocked" above could
 # just mean the service was down or the probe was broken.
 ALLOWED_EDGES = {
     "agent": [(tool, TOOL_PORT) for tool in TOOL_HOSTS],
     **{tool: [("db", DB_PORT)] for tool in TOOL_HOSTS},
-    "executor": [("db", DB_PORT)],
+    "executor": [("db", DB_PORT), ("fake-dso", FAKE_PORTS["fake-dso"]), ("fake-sms", FAKE_PORTS["fake-sms"])],
     "risk-engine": [("db", DB_PORT)],
+    "register-sync": [("db", DB_PORT), ("fake-register", FAKE_PORTS["fake-register"])],
 }
 
 
@@ -378,3 +412,67 @@ def test_risk_engine_serves_decide_and_healthz():
     answer, health = done.stdout.strip().splitlines()
     assert json.loads(answer) == {"decision": "deny", "reasons": ["lease"]}
     assert health == "200"
+
+
+# --- register-sync and the fakes in the stack ---
+
+def wait_for(conn, query, args, done, seconds=60):
+    """Run the query every second until done(row) or the time is up. Returns the last row."""
+    deadline = time.monotonic() + seconds
+    row = None
+    while time.monotonic() < deadline:
+        row = conn.execute(query, args).fetchone()
+        if done(row):
+            break
+        time.sleep(1)
+    return row
+
+
+def test_register_sync_keeps_the_register_fresh():
+    with stack_db() as conn:
+        row = wait_for(
+            conn,
+            "SELECT (SELECT last_success > now() - interval '2 minutes' FROM register_sync WHERE id = 1), "
+            "       (SELECT last_beat > now() - interval '2 minutes' FROM heartbeats WHERE component = 'register-sync'), "
+            "       (SELECT source FROM flags WHERE supply_point_id = 'SP-1003')",
+            (),
+            lambda r: r[0] and r[1],
+        )
+    assert row == (True, True, "state_register"), row
+
+
+CALLS_FROM_INSIDE = """
+import json, urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:{port}/calls", timeout=5).read().decode())
+"""
+
+
+def fake_calls(fake):
+    done = compose("exec", "-T", fake, "python", "-c", CALLS_FROM_INSIDE.format(port=FAKE_PORTS[fake]), timeout=60)
+    assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
+    return json.loads(done.stdout)["calls"]
+
+
+def test_executor_calls_fake_dso_once_per_order():
+    # A move-out for SP-1001 (not protected), assessed by the real risk engine. The executor sends
+    # the notice (one SMS call); the test then makes the notice 73 hours old and two people approve,
+    # so the executor writes the order (one DSO call). A later round makes no second call.
+    with stack_db() as conn:
+        rid = conn.execute(
+            "INSERT INTO action_requests (kind, ticket_id, account_id, move_out_date) "
+            "VALUES ('move_out', 1, 1, (now() AT TIME ZONE 'UTC')::date) RETURNING id"
+        ).fetchone()[0]
+        row = wait_for(conn, "SELECT status FROM action_requests WHERE id = %s", (rid,), lambda r: r[0] != "pending")
+        assert row == ("notice_sent",), row
+        conn.execute("UPDATE occupier_notices SET sent_at = now() - interval '73 hours' WHERE request_id = %s", (rid,))
+        for who in ("smoke.anna", "smoke.petros"):  # T1 needs one, T2 two
+            conn.execute("INSERT INTO approvals (request_id, approver) VALUES (%s, %s)", (rid, who))
+        row = wait_for(conn, "SELECT status FROM action_requests WHERE id = %s", (rid,), lambda r: r[0] != "notice_sent")
+        assert row == ("executed",), row
+        order_id = conn.execute("SELECT id FROM disconnection_orders WHERE request_id = %s", (rid,)).fetchone()[0]
+    time.sleep(6)  # one more executor round (every 5 s)
+    to_dso = [c for c in fake_calls("fake-dso") if c["body"]["request_id"] == rid]
+    assert [c["body"] for c in to_dso] == [{"request_id": rid, "order_id": order_id, "supply_point_id": "SP-1001"}]
+    assert [c["caller"] for c in to_dso] == ["network"]
+    to_sms = [c for c in fake_calls("fake-sms") if c["body"]["request_id"] == rid]
+    assert len(to_sms) == 1, to_sms

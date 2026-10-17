@@ -18,7 +18,8 @@ CREATE ROLE register_sync              LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_re
 -- privileges, so each owner holds only what its functions read and write.
 --   api_owner    the five tool functions (05-lease.sql)
 --   lease_owner  open_lease, revoke_lease, lease_scope (05-lease.sql)
---   flags_admin  the register sync functions (07-register.sql, later)
+--   flags_admin  the register sync functions, which only add flags (07-register.sql)
+--   flags_remover the flag removal functions (07-register.sql); the only role with DELETE on flags
 --   risk_owner   the risk objects: pause_agents, resume_agents (SECURITY DEFINER), and
 --                required_approvals, check_approval_floor (06-risk.sql)
 --   flags_writer owned set_temp_protection(int) until api_set_temp_protection replaced it; kept
@@ -27,6 +28,7 @@ CREATE ROLE flags_writer               NOLOGIN;
 CREATE ROLE api_owner                  NOLOGIN;
 CREATE ROLE lease_owner                NOLOGIN;
 CREATE ROLE flags_admin                NOLOGIN;
+CREATE ROLE flags_remover              NOLOGIN;
 CREATE ROLE risk_owner                 NOLOGIN;
 
 -- Every executor session, whatever the code does: a lock it cannot get within 5 s fails that

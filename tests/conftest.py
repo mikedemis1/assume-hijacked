@@ -78,7 +78,8 @@ VULNERABLE_SQL = (ROOT / "db" / "sql" / "90-vulnerable-demo.sql").read_text(enco
 ALL_TABLES = (
     "events, disconnection_orders, occupier_notices, credits, approvals, risk_assessments, "
     "call_assessments, agent_control, heartbeats, action_requests, "
-    "leases, register_sync, flags, charges, tickets, accounts, supply_points, customers"
+    "leases, flag_removal_approvals, flag_removal_requests, register_sync, flags, charges, tickets, "
+    "accounts, supply_points, customers"
 )
 # The tool names a lease can list (the leases.allowed_tools check in db/sql/05-lease.sql).
 TOOLS = (

@@ -549,9 +549,36 @@ def test_home_protection_per_request(admin, engine):
     one = "SELECT home_protection(%s) AS p"
     assert engine.execute(one, (plain,)).fetchone()["p"] == "NO"
     assert engine.execute(one, (protected,)).fetchone()["p"] == "YES"
-    assert engine.execute(one, (999,)).fetchone()["p"] == "UNKNOWN"
     admin.execute("UPDATE register_sync SET last_success = now() - interval '25 hours'")
     assert engine.execute(one, (plain,)).fetchone()["p"] == "UNKNOWN"
+
+
+def _not_a_pending_move_out(admin):
+    """Requests the engine has no reason to ask about, each for the protected home SP-1003."""
+    credit = add_credit(admin, 49, 7, account_id=3, ticket_id=3, tier=None)
+    decided = add_moveout(admin, account_id=3, ticket_id=3, tier=None)
+    admin.execute("UPDATE action_requests SET status = 'manual_only' WHERE id = %s", (decided,))
+    assessed = add_moveout(admin, account_id=3, ticket_id=3, tier="T1")
+    return {"a credit request": credit, "a decided move-out": decided, "an assessed move-out": assessed,
+            "an unknown request": 999}
+
+
+def test_home_protection_answers_only_for_a_pending_move_out_awaiting_its_assessment(admin, engine):
+    # The flags are health data. The engine needs one answer per move-out it assesses; it must not
+    # be able to ask about any account it likes by pointing at an old or unrelated request.
+    one = "SELECT home_protection(%s) AS p"
+    for case, request_id in _not_a_pending_move_out(admin).items():
+        with pytest.raises(psycopg.errors.RaiseException, match="not a pending move-out"):
+            engine.execute(one, (request_id,))
+    # Control: the same home through a pending, unassessed move-out.
+    assert engine.execute(one, (add_moveout(admin, account_id=3, ticket_id=3, tier=None),)).fetchone()["p"] == "YES"
+
+
+def test_assess_pending_still_reads_protection_for_each_new_move_out(admin, engine, settings, now):
+    protected = add_moveout(admin, account_id=3, ticket_id=3, tier=None)
+    service.assess_pending(engine, settings, now)
+    row = admin.execute("SELECT tier, reasons FROM risk_assessments WHERE request_id = %s", (protected,)).fetchone()
+    assert row == {"tier": "HUMAN_ONLY", "reasons": ["protected_or_unknown_home"]}
 
 
 RISK_ENGINE_FUNCTIONS = {

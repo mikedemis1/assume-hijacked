@@ -224,12 +224,16 @@ CREATE TRIGGER disconnection_orders_no_update BEFORE UPDATE ON disconnection_ord
 --                                 was paused (reasons = {paused}); those say nothing about this
 --                                 ticket. Calls the gateway blocks itself (tool_calls, task A8) can
 --                                 join this count once they exist.
---   home_protection(request)      YES, NO or UNKNOWN for the home of one request. The flags say
---                                 which homes have life-support equipment (health data); the
---                                 engine learns one category per request it assesses, not the
---                                 list. UNKNOWN when the register sync is older than 24 hours (the
---                                 same fixed age check_disconnection_order uses) or the request is
---                                 unknown: fail closed.
+--   home_protection(request)      YES, NO or UNKNOWN for the home of one move-out request. The
+--                                 flags say which homes have life-support equipment (health data);
+--                                 the engine learns one category per move-out it assesses, not the
+--                                 list. It answers only for a move-out that is still pending and
+--                                 has no assessment yet, the one moment the engine needs it, and
+--                                 raises for anything else (a credit, a decided or assessed request,
+--                                 an unknown id): otherwise the engine could ask about any account
+--                                 by pointing at an old request. UNKNOWN when the register sync is
+--                                 older than 24 hours (the same fixed age check_disconnection_order
+--                                 uses): fail closed.
 --
 -- Each is SECURITY DEFINER, owned by risk_owner, with a fixed search_path, granted to risk_engine
 -- only, and checks session_user too, so a grant added by mistake is still refused.
@@ -272,9 +276,10 @@ BEGIN
     END IF;
     SELECT a.supply_point_id INTO v_home
     FROM public.action_requests r JOIN public.accounts a ON a.id = r.account_id
-    WHERE r.id = p_request;
+    WHERE r.id = p_request AND r.kind = 'move_out' AND r.status = 'pending'
+      AND NOT EXISTS (SELECT 1 FROM public.risk_assessments k WHERE k.request_id = r.id);
     IF v_home IS NULL THEN
-        RETURN 'UNKNOWN';
+        RAISE EXCEPTION 'request % is not a pending move-out awaiting its assessment', p_request;
     END IF;
     IF EXISTS (SELECT 1 FROM public.flags f WHERE f.supply_point_id = v_home) THEN
         RETURN 'YES';
@@ -303,7 +308,8 @@ GRANT SELECT (id, account_id, period, amount_eur) ON charges TO risk_engine;
 -- risk_owner holds exactly what the three functions read.
 GRANT SELECT (token_hash, ticket_id, allowed_tools, expires_at, revoked) ON leases TO risk_owner;
 GRANT SELECT (lease_hash, decision, reasons) ON call_assessments TO risk_owner;
-GRANT SELECT (id, account_id) ON action_requests TO risk_owner;
+GRANT SELECT (id, kind, account_id, status) ON action_requests TO risk_owner;
+GRANT SELECT (request_id) ON risk_assessments TO risk_owner;
 GRANT SELECT (id, supply_point_id) ON accounts TO risk_owner;
 GRANT SELECT (supply_point_id) ON flags TO risk_owner;
 GRANT SELECT (id, last_success) ON register_sync TO risk_owner;
@@ -350,3 +356,31 @@ GRANT SELECT, INSERT (component, last_beat), UPDATE (last_beat) ON heartbeats TO
 ALTER FUNCTION beat(text) OWNER TO risk_owner;
 REVOKE ALL ON FUNCTION beat(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION beat(text) TO executor, risk_engine, dispatcher, register_sync, gateway;
+
+
+-- ---------------------------------------------------------------------------------------------
+-- Occupier notices for held move-outs.
+--
+-- A HOLD is a flood of move-outs, and a flood may be fake requests filed through a hijacked
+-- agent. A notice tells a real occupier that their power is about to be cut, so a held request
+-- gets none until two distinct SeniorApprovers released it: the approval floor of its tier,
+-- counting approvals given after the assessment (check_approval_floor). The executor waits for
+-- the same release itself (app/executor/moveouts.py); this is the wall below its code. Other tiers
+-- send their notice first and are approved after it (the order rule in check_disconnection_order).
+-- The release does not count for the order: that floor counts approvals after the notice, and the
+-- approvals primary key stops the same person approving twice, so a real held move-out needs four
+-- seniors in all.
+-- Runs as the inserting role (executor), which reads risk_assessments and approvals.
+CREATE FUNCTION check_occupier_notice() RETURNS trigger
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.risk_assessments WHERE request_id = NEW.request_id AND tier = 'HOLD') THEN
+        PERFORM public.check_approval_floor(NEW.request_id, NULL);
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER occupier_notices_check BEFORE INSERT ON occupier_notices
+    FOR EACH ROW EXECUTE FUNCTION check_occupier_notice();
+
+REVOKE ALL ON FUNCTION check_occupier_notice() FROM PUBLIC;

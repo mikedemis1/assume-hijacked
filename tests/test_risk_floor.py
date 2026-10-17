@@ -15,7 +15,13 @@ import pytest
 from app.executor.credits import process_credits
 from tests.conftest import approve_as, assess, open_lease
 from tests.test_executor_credits import add_credit, credits_count, insert_credit
-from tests.test_executor_moveouts import add_moveout, insert_order, notice_73_hours_ago, orders
+from tests.test_executor_moveouts import (
+    add_moveout,
+    insert_order,
+    notice_73_hours_ago,
+    orders,
+    released_hold_notice_73_hours_ago,
+)
 
 TIERS = ["T0", "T1", "T2", "HUMAN_ONLY", "HOLD", "REJECT"]
 ANNA, PETROS = "staff.anna", "staff.petros"
@@ -38,7 +44,10 @@ def _credit(admin, tier):
 
 def _order(admin, tier):
     rid = add_moveout(admin, tier=tier)
-    notice_73_hours_ago(admin, rid)
+    if tier == "HOLD":  # a held move-out gets its notice only once two seniors released it
+        released_hold_notice_73_hours_ago(admin, rid)
+    else:
+        notice_73_hours_ago(admin, rid)
     return rid, lambda conn: insert_order(conn, rid, "SP-1001")
 
 

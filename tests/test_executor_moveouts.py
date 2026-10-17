@@ -468,9 +468,10 @@ def test_trigger_takes_the_home_lock(admin, as_role):  # gap I4
     assert orders(admin) == 1
 
 
-# --- risk tiers (task A5). A move-out's approvals count only after the occupier notice (the
-# order rule), so the executor waits for the tier's approvals at the order step: T1 one person,
-# T2 two, HOLD two SeniorApprovers. HUMAN_ONLY ends at manual_only without a notice.
+# --- risk tiers. A move-out's approvals count only after the occupier notice (the order rule), so
+# the executor waits for the tier's approvals at the order step: T1 one person, T2 two, HOLD two
+# SeniorApprovers. A HOLD also waits for two SeniorApprovers before its notice. HUMAN_ONLY ends at
+# manual_only without a notice.
 
 def test_t2_move_out_needs_two_approvals_after_the_notice(admin, as_role, settings, now):
     from tests.conftest import approve_as
@@ -487,19 +488,99 @@ def test_t2_move_out_needs_two_approvals_after_the_notice(admin, as_role, settin
     assert status(admin, rid) == "executed" and orders(admin) == 1
 
 
-def test_hold_move_out_needs_two_senior_approvals(admin, as_role, settings, now):
+def notices(admin):
+    return admin.execute("SELECT count(*) AS n FROM occupier_notices").fetchone()["n"]
+
+
+def test_hold_move_out_sends_no_notice_until_two_seniors_release_it(admin, as_role, settings, now):
+    # A flood of move-outs (tier HOLD) may be fake requests: a notice would frighten real occupiers
+    # for nothing. So two SeniorApprovers release a held request before its notice goes out.
     from tests.conftest import approve_as
 
     ex, staff = as_role("executor"), as_role("approver")
     rid = add_moveout(admin, tier="HOLD")
-    notice_73_hours_ago(admin, rid)
-    approve_as(staff, rid, "staff.anna", "SeniorApprover")
-    approve_as(staff, rid, "staff.petros", "Approver")
+    control = add_moveout(admin, ticket_id=2)  # T1, same home: its notice goes out on the first run
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "pending" and status(admin, control) == "notice_sent"
+    assert notices(admin) == 1 and errors(admin) == []
+    approve_as(staff, rid, "senior.anna", "SeniorApprover")
+    approve_as(staff, rid, "staff.petros", "Approver")  # not a senior: does not count
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "pending" and notices(admin) == 1 and errors(admin) == []
+    approve_as(staff, rid, "senior.ioanna", "SeniorApprover")
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "notice_sent" and notices(admin) == 2 and errors(admin) == []
+
+
+def test_released_hold_move_out_still_needs_two_seniors_after_the_notice(admin, as_role, settings, now):
+    from tests.conftest import approve_as
+
+    ex, staff = as_role("executor"), as_role("approver")
+    rid = add_moveout(admin, tier="HOLD")
+    approve_as(staff, rid, "senior.anna", "SeniorApprover")
+    approve_as(staff, rid, "senior.ioanna", "SeniorApprover")
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "notice_sent"
+    # 73 hours later. The release came before the notice, so it does not count for the order.
+    back_date_approvals(admin, rid, 74)
+    back_date_notice(admin, rid, 73)
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve_as(staff, rid, "staff.ioanna", "SeniorApprover")
+    approve_as(staff, rid, "senior.petros", "SeniorApprover")
+    approve_as(staff, rid, "staff.eleni", "Approver")
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
+    approve_as(staff, rid, "senior.nikos", "SeniorApprover")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "executed" and orders(admin) == 1
+
+
+def insert_notice(conn, request_id, supply_point_id="SP-1001"):
+    conn.execute(
+        "INSERT INTO occupier_notices (request_id, supply_point_id) VALUES (%s, %s)", (request_id, supply_point_id)
+    )
+
+
+def test_database_refuses_notice_for_a_held_move_out_without_two_seniors(admin, as_role):
+    # The same rule below the executor code: check_occupier_notice (db/sql/06-risk.sql).
+    from tests.conftest import approve_as
+
+    ex, staff = as_role("executor"), as_role("approver")
+    rid = add_moveout(admin, tier="HOLD")
+    with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
+        insert_notice(ex, rid)
+    approve_as(staff, rid, "senior.anna", "SeniorApprover")
+    approve_as(staff, rid, "staff.petros", "Approver")
+    with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
+        insert_notice(ex, rid)
+    assert notices(admin) == 0
+    approve_as(staff, rid, "senior.ioanna", "SeniorApprover")
+    insert_notice(ex, rid)  # released
+    insert_notice(ex, add_moveout(admin, ticket_id=2))  # control: T1 needs no release
+    assert notices(admin) == 2
+
+
+def test_release_given_before_the_assessment_does_not_count(admin, as_role):
+    from tests.conftest import approve_as
+
+    ex, staff = as_role("executor"), as_role("approver")
+    rid = add_moveout(admin, tier=None)
+    approve_as(staff, rid, "senior.anna", "SeniorApprover")
+    approve_as(staff, rid, "senior.ioanna", "SeniorApprover")
+    assess(admin, rid, "HOLD")
+    with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
+        insert_notice(ex, rid)
+
+
+def released_hold_notice_73_hours_ago(admin, rid, account_id=1):
+    """A HOLD move-out whose two seniors released it and whose notice went out 73 hours ago. The
+    release approvals are moved before the notice, so they do not count for the order."""
+    for who in ("senior.release.1", "senior.release.2"):
+        admin.execute(
+            "INSERT INTO approvals (request_id, approver, approver_role) VALUES (%s, %s, 'SeniorApprover')", (rid, who)
+        )
+    notice_73_hours_ago(admin, rid, account_id)
+    back_date_approvals(admin, rid, 74)
 
 
 def test_human_only_move_out_gets_no_notice_even_at_an_unprotected_home(admin, as_role, settings, now):
@@ -515,3 +596,180 @@ def test_rejected_move_out_is_rejected(admin, as_role, settings, now):
     rid = add_moveout(admin, tier="REJECT")
     process_moveouts(as_role("executor"), settings, now)
     assert status(admin, rid) == "rejected" and orders(admin) == 0
+
+
+# --- the outside world: the grid operator (DSO) gets each order, the SMS provider each notice ---
+
+@pytest.fixture
+def outside_world():
+    from app.executor.outside import OutsideCalls
+    from app.fakes import FAKES, start_fake
+
+    dso = start_fake(FAKES["dso"], port=0, mode="compose", host="127.0.0.1")
+    sms = start_fake(FAKES["sms"], port=0, mode="compose", host="127.0.0.1")
+    outside = OutsideCalls(f"http://127.0.0.1:{dso.port}/orders", f"http://127.0.0.1:{sms.port}/messages")
+    yield dso, sms, outside
+    dso.shutdown()
+    sms.shutdown()
+
+
+def row_id(admin, table, rid):
+    return admin.execute(f"SELECT id FROM {table} WHERE request_id = %s", (rid,)).fetchone()["id"]
+
+
+def test_executor_calls_fake_dso_once_per_order(admin, as_role, settings, now, outside_world):
+    dso, sms, outside = outside_world
+    ex = as_role("executor")
+    rid = add_moveout(admin)
+    process_moveouts(ex, settings, now, outside=outside)
+    assert status(admin, rid) == "notice_sent"
+    notice = {"request_id": rid, "notice_id": row_id(admin, "occupier_notices", rid), "supply_point_id": "SP-1001"}
+    assert [c["body"] for c in sms.calls()] == [notice] and dso.calls() == []
+    back_date_notice(admin, rid, settings.occupier_wait_hours + 1)
+    approve(as_role("approver"), rid, "staff.anna")
+    for _ in range(3):  # the order run and two more: the call is made once, with the order
+        process_moveouts(ex, settings, now, outside=outside)
+    assert status(admin, rid) == "executed" and orders(admin) == 1
+    order = {"request_id": rid, "order_id": row_id(admin, "disconnection_orders", rid), "supply_point_id": "SP-1001"}
+    assert [c["body"] for c in dso.calls()] == [order]
+    assert [c["body"] for c in sms.calls()] == [notice]
+    assert errors(admin) == []
+
+
+def test_no_outside_call_for_a_request_that_gets_no_effect(admin, as_role, settings, now, outside_world):
+    dso, sms, outside = outside_world
+    add_moveout(admin, account_id=3, ticket_id=3)  # protected home: manual_only
+    add_moveout(admin, tier="HOLD")  # waits for its release
+    add_moveout(admin, tier="HUMAN_ONLY")
+    process_moveouts(as_role("executor"), settings, now, outside=outside)
+    assert dso.calls() == [] and sms.calls() == []
+
+
+def closed_port():
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def outside_failures(admin):
+    return [r["detail"] for r in admin.execute("SELECT detail FROM events WHERE kind = 'outside_call_failed' ORDER BY id")]
+
+
+def test_failed_dso_call_is_logged_counted_and_never_becomes_a_second_order(admin, as_role, settings, now):
+    from app.common.ops import Metrics
+    from app.executor.outside import OutsideCalls
+
+    down = f"http://127.0.0.1:{closed_port()}"
+    outside = OutsideCalls(f"{down}/orders", f"{down}/messages", timeout_s=2)
+    metrics = Metrics()
+    ex = as_role("executor")
+    rid = ready_for_order(admin, as_role("approver"))
+    process_moveouts(ex, settings, now, metrics, outside=outside)
+    # The order stands (it is the database's record); the call failed and says so.
+    assert status(admin, rid) == "executed" and orders(admin) == 1
+    assert outside_failures(admin) == [f"dso move_out request={rid}: URLError"]
+    lines = metrics.render().splitlines()
+    assert 'executor_outside_calls_total{outcome="error",target="dso"} 1' in lines
+    for _ in range(2):  # no retry, and no second order
+        process_moveouts(ex, settings, now, metrics, outside=outside)
+    assert orders(admin) == 1 and len(outside_failures(admin)) == 1
+    assert 'executor_outside_calls_total{outcome="error",target="dso"} 1' in metrics.render().splitlines()
+    assert errors(admin) == []
+
+
+def test_failed_sms_call_leaves_the_notice_in_place(admin, as_role, settings, now):
+    from app.common.ops import Metrics
+    from app.executor.outside import OutsideCalls
+
+    down = f"http://127.0.0.1:{closed_port()}"
+    metrics = Metrics()
+    rid = add_moveout(admin)
+    outside = OutsideCalls(f"{down}/orders", f"{down}/messages", timeout_s=2)
+    process_moveouts(as_role("executor"), settings, now, metrics, outside=outside)
+    assert status(admin, rid) == "notice_sent" and notices(admin) == 1
+    assert outside_failures(admin) == [f"sms move_out request={rid}: URLError"]
+    assert 'executor_outside_calls_total{outcome="error",target="sms"} 1' in metrics.render().splitlines()
+
+
+def test_successful_outside_calls_are_counted(admin, as_role, settings, now, outside_world):
+    from app.common.ops import Metrics
+
+    _, _, outside = outside_world
+    metrics = Metrics()
+    add_moveout(admin)
+    process_moveouts(as_role("executor"), settings, now, metrics, outside=outside)
+    assert 'executor_outside_calls_total{outcome="sent",target="sms"} 1' in metrics.render().splitlines()
+    assert outside_failures(admin) == []
+
+
+def test_a_refused_outside_call_counts_as_a_failure(admin, as_role, settings, now):
+    # The fake refuses a call without its caller token (Kubernetes mode): logged, not retried.
+    from app.executor.outside import OutsideCalls
+    from app.fakes import FAKES, start_fake
+
+    dso = start_fake(FAKES["dso"], port=0, mode="k8s", verifier=lambda token, audience: None, host="127.0.0.1")
+    try:
+        outside = OutsideCalls(f"http://127.0.0.1:{dso.port}/orders", "")
+        rid = ready_for_order(admin, as_role("approver"))
+        process_moveouts(as_role("executor"), settings, now, outside=outside)
+    finally:
+        dso.shutdown()
+    assert status(admin, rid) == "executed"
+    assert outside_failures(admin) == [f"dso move_out request={rid}: HTTPError"]
+
+
+def test_without_a_url_the_call_is_skipped(admin, as_role, settings, now):
+    from app.executor.outside import OutsideCalls
+
+    rid = add_moveout(admin)
+    process_moveouts(as_role("executor"), settings, now, outside=OutsideCalls("", ""))
+    assert status(admin, rid) == "notice_sent" and outside_failures(admin) == []
+
+
+def test_outside_calls_from_settings(settings):
+    import dataclasses
+
+    from app.executor.outside import outside_calls
+
+    assert outside_calls(dataclasses.replace(settings, dso_url="", sms_url="")) is None
+    built = outside_calls(
+        dataclasses.replace(settings, dso_url="http://fake-dso:8091/orders", sms_url="http://fake-sms:8092/messages")
+    )
+    assert built.urls == {"dso": "http://fake-dso:8091/orders", "sms": "http://fake-sms:8092/messages"}
+    assert built.audiences == {"dso": "fake-dso", "sms": "fake-sms"}
+
+
+def test_outside_call_sends_the_caller_token_in_kubernetes_mode(tmp_path):
+    from app.executor.outside import OutsideCalls
+
+    sent = []
+    (tmp_path / "fake-dso").mkdir()
+    (tmp_path / "fake-dso" / "token").write_text("tok", encoding="utf-8")
+    outside = OutsideCalls(
+        "http://dso/orders", "", caller_auth="k8s", token_dir=tmp_path,
+        post=lambda url, payload, headers, timeout_s: sent.append((url, headers)) or 202,
+    )
+    outside.send("dso", {"request_id": 1})
+    assert sent == [("http://dso/orders", {"Authorization": "Bearer tok"})]
+
+
+def test_a_failed_outside_call_is_attempted_exactly_once(admin, as_role, settings, now):
+    # A retry is how one order becomes two at the grid operator: a call that timed out may still
+    # have arrived. So one attempt, whatever happens, on this round and every later one.
+    from app.executor.outside import OutsideCalls
+
+    attempts = []
+
+    def unreachable(url, payload, headers, timeout_s):
+        attempts.append(payload["request_id"])
+        raise TimeoutError("no answer")
+
+    outside = OutsideCalls("http://dso/orders", "http://sms/messages", post=unreachable)
+    ex = as_role("executor")
+    rid = ready_for_order(admin, as_role("approver"))
+    for _ in range(3):
+        process_moveouts(ex, settings, now, outside=outside)
+    assert attempts == [rid] and orders(admin) == 1
+    assert outside_failures(admin) == [f"dso move_out request={rid}: TimeoutError"]
