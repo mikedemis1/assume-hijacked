@@ -1,0 +1,81 @@
+{
+  "component": "console",
+  "description": "Staff approvals, protection-removal review, operational status and alert identifiers. Browser sessions validate Entra object ids and app roles.",
+  "db": {
+    "role": "approver",
+    "login": true,
+    "connection_limit": 5,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {
+      "action_requests": [
+        "SELECT",
+        "UPDATE (decided_at, decision_reason, status)"
+      ],
+      "approvals": [
+        "INSERT (approver, approver_role, request_id)"
+      ],
+      "events": [
+        "INSERT (detail, kind)",
+        "SELECT (actor, created_at, id, kind)"
+      ],
+      "events_id_seq": [
+        "USAGE"
+      ],
+      "risk_assessments": [
+        "SELECT"
+      ],
+      "flag_removal_requests": [
+        "SELECT"
+      ],
+      "flag_removal_approvals": [
+        "SELECT"
+      ],
+      "heartbeats": [
+        "SELECT (component, last_beat)"
+      ],
+      "agent_control": [
+        "SELECT (paused)"
+      ]
+    },
+    "execute": [
+      "approve_flag_removal(integer, text)",
+      "request_flag_removal(text, text, text)",
+      "required_approvals(text)",
+      "resume_agents()"
+    ]
+  },
+  "network": {
+    "ingress_from": [
+      "internet"
+    ],
+    "egress_to": [
+      "db",
+      "internet"
+    ],
+    "dns": [
+      "cluster",
+      "login.microsoftonline.com"
+    ]
+  },
+  "k8s": {
+    "service_account": "console",
+    "rbac": []
+  },
+  "azure": {
+    "identity": "id-console",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-console"
+      }
+    ]
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}

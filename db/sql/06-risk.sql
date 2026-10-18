@@ -124,7 +124,7 @@ $$;
 -- approve early, or a hijacked one that approves everything in advance, cannot pre-pay the floor.
 -- With p_after, only approvals given after that time count too (the occupier notice, for orders).
 -- One person counts once: the primary key already refuses the same approver twice, and the count
--- folds case and surrounding white space, so 'Staff.Anna ' is still staff.anna.
+-- uses UUID identities, so alternative spellings cannot become separate people.
 -- Not SECURITY DEFINER: it runs as the trigger's inserting role (executor), which reads
 -- risk_assessments and approvals.
 CREATE FUNCTION check_approval_floor(p_request int, p_after timestamptz) RETURNS void
@@ -144,7 +144,7 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'request % is tier %, which no approval allows', p_request, v_tier;
     END IF;
-    SELECT count(DISTINCT lower(btrim(a.approver, E' \t\r\n'))) INTO v_have
+    SELECT count(DISTINCT a.approver) INTO v_have
     FROM public.approvals a
     WHERE a.request_id = p_request
       AND (NOT v_need.senior OR a.approver_role = 'SeniorApprover')
@@ -356,6 +356,12 @@ GRANT SELECT, INSERT (component, last_beat), UPDATE (last_beat) ON heartbeats TO
 ALTER FUNCTION beat(text) OWNER TO risk_owner;
 REVOKE ALL ON FUNCTION beat(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION beat(text) TO executor, risk_engine, dispatcher, register_sync, gateway;
+
+-- Operational status only: the console cannot beat on a stopped component's behalf.
+GRANT SELECT (component, last_beat) ON heartbeats TO approver;
+GRANT SELECT (paused) ON agent_control TO approver;
+GRANT SELECT (id, kind, actor, created_at) ON events TO approver;
+GRANT UPDATE (status, decision_reason, decided_at) ON action_requests TO approver;
 
 
 -- ---------------------------------------------------------------------------------------------

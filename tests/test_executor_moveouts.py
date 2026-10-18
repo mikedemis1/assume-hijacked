@@ -73,7 +73,7 @@ def ready_for_order(admin, staff, account_id=1, ticket_id=1, move_out_date=None)
         (rid, account_id),
     )
     admin.execute("UPDATE action_requests SET status = 'notice_sent' WHERE id = %s", (rid,))
-    approve(staff, rid, "staff.anna")
+    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     return rid
 
 
@@ -82,7 +82,7 @@ def test_unprotected_needs_notice_wait_and_approval(admin, as_role, settings, no
     rid = add_moveout(admin)
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "notice_sent"
-    approve(staff, rid, "staff.anna")
+    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     process_moveouts(ex, settings, now)
     # Still waiting: the executor's own check holds it, so the trigger never has to refuse.
     assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
@@ -106,7 +106,7 @@ def test_approval_given_before_the_notice_does_not_count(admin, as_role, setting
     back_date_approvals(admin, rid, 80)  # the notice is 73 hours old
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve(staff, rid, "staff.petros")  # a fresh approval, after the notice
+    approve(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")  # a fresh approval, after the notice
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "executed" and orders(admin) == 1
 
@@ -127,7 +127,7 @@ def test_no_order_without_approval(admin, as_role, settings, now):  # gap I4
     process_moveouts(ex, settings, now)
     # No executor_error: the executor's own approver_count check held it, the trigger was never asked.
     assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve(as_role("approver"), rid, "staff.anna")  # control: the same request goes through with one
+    approve(as_role("approver"), rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")  # control: the same request goes through with one
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "executed" and orders(admin) == 1 and errors(admin) == []
 
@@ -148,7 +148,7 @@ def test_approver_cannot_choose_the_approval_time(admin, as_role):  # gap N3
     rid = add_moveout(admin)
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         as_role("approver").execute(
-            "INSERT INTO approvals (request_id, approver, created_at) VALUES (%s, 'staff.anna', now() + interval '1 year')",
+            "INSERT INTO approvals (request_id, approver, created_at) VALUES (%s, 'eeab6c5e-f5bc-5d16-af4b-813d9b88be01', now() + interval '1 year')",
             (rid,),
         )
 
@@ -158,8 +158,8 @@ def test_protected_home_never_gets_order(admin, as_role, settings, now):  # ⑦
     rid = add_moveout(admin, account_id=3, ticket_id=3)
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "manual_only"
-    approve(staff, rid, "staff.anna")
-    approve(staff, rid, "staff.petros")
+    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
+    approve(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "manual_only" and orders(admin) == 0
 
@@ -177,7 +177,7 @@ def test_flag_raised_after_notice_stops_order(admin, as_role, settings, now):
     process_moveouts(ex, settings, now)
     set_temp_protection(as_role("tool_set_temp_protection"), open_lease(admin, 1))
     back_date_notice(admin, rid, settings.occupier_wait_hours + 1)
-    approve(staff, rid, "staff.anna")
+    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "manual_only" and orders(admin) == 0
 
@@ -213,10 +213,10 @@ def test_forged_alert_does_not_silence_the_flood_alert(admin, as_role, settings,
 def test_same_approver_twice_is_rejected(admin, as_role):  # ⑥
     staff, ex = as_role("approver"), as_role("executor")
     rid = add_moveout(admin)
-    assert approve(staff, rid, "staff.anna") is True
-    assert approve(staff, rid, "staff.anna") is False
+    assert approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01") is True
+    assert approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01") is False
     assert approver_count(ex, rid) == 1
-    assert approve(staff, rid, "staff.petros") is True
+    assert approve(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3") is True
     assert approver_count(ex, rid) == 2
 
 
@@ -247,7 +247,7 @@ def test_rate_limit_counts_old_backlog(admin, as_role, settings, now):
 def test_protected_home_with_notice_and_two_approvals_still_gets_no_order(admin, as_role, settings, now):
     ex, staff = as_role("executor"), as_role("approver")
     rid = ready_for_order(admin, staff, account_id=3, ticket_id=3)
-    approve(staff, rid, "staff.petros")
+    approve(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "manual_only" and orders(admin) == 0
 
@@ -258,7 +258,7 @@ def test_stale_register_after_notice_stops_order(admin, as_role, settings, now):
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "notice_sent"
     back_date_notice(admin, rid, settings.occupier_wait_hours + 1)
-    approve(staff, rid, "staff.anna")
+    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     synced_at(admin, now - timedelta(hours=48))
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "manual_only" and orders(admin) == 0
@@ -307,13 +307,13 @@ def _credit_request_with_notice_and_approval(admin, staff):
         "VALUES (%s, 'SP-1001', now() - interval '73 hours')",
         (rid,),
     )
-    approve(staff, rid, "staff.anna")
+    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     return rid, "SP-1001"
 
 
 def _no_notice(admin, staff):
     rid = add_moveout(admin)
-    approve(staff, rid, "staff.anna")
+    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     return rid, "SP-1001"
 
 
@@ -479,11 +479,11 @@ def test_t2_move_out_needs_two_approvals_after_the_notice(admin, as_role, settin
     ex, staff = as_role("executor"), as_role("approver")
     rid = add_moveout(admin, tier="T2")
     notice_73_hours_ago(admin, rid)
-    approve_as(staff, rid, "staff.anna")
+    approve_as(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     process_moveouts(ex, settings, now)
     # Waiting for the second person, quietly: the trigger was never asked.
     assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve_as(staff, rid, "staff.petros")
+    approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "executed" and orders(admin) == 1
 
@@ -503,11 +503,11 @@ def test_hold_move_out_sends_no_notice_until_two_seniors_release_it(admin, as_ro
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "pending" and status(admin, control) == "notice_sent"
     assert notices(admin) == 1 and errors(admin) == []
-    approve_as(staff, rid, "senior.anna", "SeniorApprover")
-    approve_as(staff, rid, "staff.petros", "Approver")  # not a senior: does not count
+    approve_as(staff, rid, "dffe794f-3986-5ba6-80ef-1570ffa86be7", "SeniorApprover")
+    approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3", "Approver")  # not a senior: does not count
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "pending" and notices(admin) == 1 and errors(admin) == []
-    approve_as(staff, rid, "senior.ioanna", "SeniorApprover")
+    approve_as(staff, rid, "d4dc8207-56b5-50ef-9cbb-3407413c66d9", "SeniorApprover")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "notice_sent" and notices(admin) == 2 and errors(admin) == []
 
@@ -517,8 +517,8 @@ def test_released_hold_move_out_still_needs_two_seniors_after_the_notice(admin, 
 
     ex, staff = as_role("executor"), as_role("approver")
     rid = add_moveout(admin, tier="HOLD")
-    approve_as(staff, rid, "senior.anna", "SeniorApprover")
-    approve_as(staff, rid, "senior.ioanna", "SeniorApprover")
+    approve_as(staff, rid, "dffe794f-3986-5ba6-80ef-1570ffa86be7", "SeniorApprover")
+    approve_as(staff, rid, "d4dc8207-56b5-50ef-9cbb-3407413c66d9", "SeniorApprover")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "notice_sent"
     # 73 hours later. The release came before the notice, so it does not count for the order.
@@ -526,11 +526,11 @@ def test_released_hold_move_out_still_needs_two_seniors_after_the_notice(admin, 
     back_date_notice(admin, rid, 73)
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve_as(staff, rid, "senior.petros", "SeniorApprover")
-    approve_as(staff, rid, "staff.eleni", "Approver")
+    approve_as(staff, rid, "2d0319c5-aea3-5a3b-8bee-1f4ea4f544e6", "SeniorApprover")
+    approve_as(staff, rid, "138d7ff6-5130-585f-ba5c-7c080d2c53af", "Approver")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve_as(staff, rid, "senior.nikos", "SeniorApprover")
+    approve_as(staff, rid, "54db6a86-f76d-5d19-9b00-fa1d5fa2d2e4", "SeniorApprover")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "executed" and orders(admin) == 1
 
@@ -549,12 +549,12 @@ def test_database_refuses_notice_for_a_held_move_out_without_two_seniors(admin, 
     rid = add_moveout(admin, tier="HOLD")
     with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
         insert_notice(ex, rid)
-    approve_as(staff, rid, "senior.anna", "SeniorApprover")
-    approve_as(staff, rid, "staff.petros", "Approver")
+    approve_as(staff, rid, "dffe794f-3986-5ba6-80ef-1570ffa86be7", "SeniorApprover")
+    approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3", "Approver")
     with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
         insert_notice(ex, rid)
     assert notices(admin) == 0
-    approve_as(staff, rid, "senior.ioanna", "SeniorApprover")
+    approve_as(staff, rid, "d4dc8207-56b5-50ef-9cbb-3407413c66d9", "SeniorApprover")
     insert_notice(ex, rid)  # released
     insert_notice(ex, add_moveout(admin, ticket_id=2))  # control: T1 needs no release
     assert notices(admin) == 2
@@ -565,8 +565,8 @@ def test_release_given_before_the_assessment_does_not_count(admin, as_role):
 
     ex, staff = as_role("executor"), as_role("approver")
     rid = add_moveout(admin, tier=None)
-    approve_as(staff, rid, "senior.anna", "SeniorApprover")
-    approve_as(staff, rid, "senior.ioanna", "SeniorApprover")
+    approve_as(staff, rid, "dffe794f-3986-5ba6-80ef-1570ffa86be7", "SeniorApprover")
+    approve_as(staff, rid, "d4dc8207-56b5-50ef-9cbb-3407413c66d9", "SeniorApprover")
     assess(admin, rid, "HOLD")
     with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
         insert_notice(ex, rid)
@@ -575,7 +575,7 @@ def test_release_given_before_the_assessment_does_not_count(admin, as_role):
 def released_hold_notice_73_hours_ago(admin, rid, account_id=1):
     """A HOLD move-out whose two seniors released it and whose notice went out 73 hours ago. The
     release approvals are moved before the notice, so they do not count for the order."""
-    for who in ("senior.release.1", "senior.release.2"):
+    for who in ("cbade417-5d9d-5550-9ba6-6cd101563757", "18735c6a-f5e3-5fee-a53a-e57657e654fd"):
         admin.execute(
             "INSERT INTO approvals (request_id, approver, approver_role) VALUES (%s, %s, 'SeniorApprover')", (rid, who)
         )
@@ -626,7 +626,7 @@ def test_executor_calls_fake_dso_once_per_order(admin, as_role, settings, now, o
     notice = {"request_id": rid, "notice_id": row_id(admin, "occupier_notices", rid), "supply_point_id": "SP-1001"}
     assert [c["body"] for c in sms.calls()] == [notice] and dso.calls() == []
     back_date_notice(admin, rid, settings.occupier_wait_hours + 1)
-    approve(as_role("approver"), rid, "staff.anna")
+    approve(as_role("approver"), rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     for _ in range(3):  # the order run and two more: the call is made once, with the order
         process_moveouts(ex, settings, now, outside=outside)
     assert status(admin, rid) == "executed" and orders(admin) == 1

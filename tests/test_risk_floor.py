@@ -24,7 +24,7 @@ from tests.test_executor_moveouts import (
 )
 
 TIERS = ["T0", "T1", "T2", "HUMAN_ONLY", "HOLD", "REJECT"]
-ANNA, PETROS = "staff.anna", "staff.petros"
+ANNA, PETROS = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01", "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3"
 
 
 def _login_roles(admin, *, exclude=()):
@@ -124,11 +124,11 @@ FLOOR_CASES = {
     "T2, the same person twice": ("T2", [(ANNA, "Approver"), (ANNA, "Approver")], False),
     "T2, the same person as Approver and as SeniorApprover": (
         "T2", [(ANNA, "Approver"), (ANNA, "SeniorApprover")], False),
-    "T2, the same person in other case and spacing": ("T2", [(ANNA, "Approver"), (" Staff.Anna ", "Approver")], False),
+    "T2, the same person in alternative UUID spelling": ("T2", [(ANNA, "Approver"), ("EEAB6C5EF5BC5D16AF4B813D9B88BE01", "Approver")], False),
     "T2, two people": ("T2", [(ANNA, "Approver"), (PETROS, "Approver")], True),
     "HOLD, two Approvers": ("HOLD", [(ANNA, "Approver"), (PETROS, "Approver")], False),
     "HOLD, a SeniorApprover and an Approver": ("HOLD", [(ANNA, "SeniorApprover"), (PETROS, "Approver")], False),
-    "HOLD, one SeniorApprover twice": ("HOLD", [(ANNA, "SeniorApprover"), (" STAFF.ANNA", "SeniorApprover")], False),
+    "HOLD, one SeniorApprover twice": ("HOLD", [(ANNA, "SeniorApprover"), ("EEAB6C5EF5BC5D16AF4B813D9B88BE01", "SeniorApprover")], False),
     "HOLD, two SeniorApprovers": ("HOLD", [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")], True),
     "T0, no approval (credit only; an order always needs one)": ("T0", [], None),
 }
@@ -164,7 +164,7 @@ def test_order_approvals_count_only_after_the_notice(admin, as_role, ex):
     with pytest.raises(psycopg.errors.RaiseException, match="needs 2 distinct approvals"):
         write(ex)
     assert orders(admin) == 0
-    approve_as(staff, rid, "staff.ioanna")  # control: a second approval after the notice
+    approve_as(staff, rid, "0adc7093-4b20-5a09-b9ef-682eef8811b2")  # control: a second approval after the notice
     write(ex)
     assert orders(admin) == 1
 
@@ -182,10 +182,10 @@ def test_approvals_count_only_after_the_assessment(admin, as_role, ex, kind):
     with pytest.raises(psycopg.errors.RaiseException, match="needs 2 distinct approvals"):
         write(ex)
     assert written(admin) == 0
-    approve_as(staff, rid, "staff.ioanna")
+    approve_as(staff, rid, "0adc7093-4b20-5a09-b9ef-682eef8811b2")
     with pytest.raises(psycopg.errors.RaiseException, match="has 1"):
         write(ex)
-    approve_as(staff, rid, "staff.giorgos")  # control: two people after the assessment
+    approve_as(staff, rid, "aacecd35-e508-5dbb-814a-62b0b6762230")  # control: two people after the assessment
     write(ex)
     assert written(admin) == 1
 
@@ -254,7 +254,7 @@ def test_order_refused_for_human_only_even_with_two_seniors(admin, as_role, ex):
 def test_no_effect_for_a_tier_no_approval_allows(admin, as_role, ex, kind, tier):
     rid, write = EFFECTS[kind](admin, tier)
     approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover"),
-                                           ("staff.ioanna", "SeniorApprover")])
+                                           ("0adc7093-4b20-5a09-b9ef-682eef8811b2", "SeniorApprover")])
     with pytest.raises(psycopg.errors.RaiseException, match=f"tier {tier}"):
         write(ex)
     assert written(admin) == 0
@@ -522,8 +522,8 @@ def test_approver_role_is_on_the_closed_list_and_defaults_to_approver(admin, as_
     staff = as_role("approver")
     with pytest.raises(psycopg.errors.CheckViolation):
         approve_as(staff, rid, ANNA, "Admin")
-    for nobody in ("", "  ", "\t"):  # an empty name would count as one more person
-        with pytest.raises(psycopg.errors.CheckViolation):
+    for nobody in ("", "  ", "\t"):
+        with pytest.raises(psycopg.errors.InvalidTextRepresentation):
             approve_as(staff, rid, nobody)
     staff.execute("INSERT INTO approvals (request_id, approver) VALUES (%s, %s)", (rid, PETROS))
     assert admin.execute("SELECT approver_role FROM approvals").fetchall() == [{"approver_role": "Approver"}]

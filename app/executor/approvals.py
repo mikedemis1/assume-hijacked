@@ -42,7 +42,7 @@ def approvals_met(
     refused by the trigger on every poll. A tier no approval allows (HUMAN_ONLY, REJECT) is never
     met. `minimum` raises the number for effects that always need a person (an order)."""
     row = conn.execute(
-        r"SELECT q.n, (SELECT count(DISTINCT lower(btrim(a.approver, E' \t\r\n'))) FROM approvals a "
+        "SELECT q.n, (SELECT count(DISTINCT a.approver) FROM approvals a "
         "  WHERE a.request_id = %s AND a.created_at > %s "
         "    AND (NOT q.senior OR a.approver_role = 'SeniorApprover')) AS have "
         "FROM required_approvals(%s) q",

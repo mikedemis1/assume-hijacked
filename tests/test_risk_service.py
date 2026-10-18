@@ -26,7 +26,7 @@ from tests.conftest import TOOLS, open_lease
 from tests.test_executor_credits import add_credit, give_account_2_a_duplicate
 from tests.test_executor_moveouts import add_moveout
 
-ANNA = "staff.anna"
+ANNA = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01"
 
 
 @pytest.fixture

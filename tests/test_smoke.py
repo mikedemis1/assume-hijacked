@@ -6,12 +6,16 @@ network do.
 
 import collections
 import functools
+import http.cookiejar
 import itertools
 import json
 import os
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -318,6 +322,46 @@ def probe(service, script):
     if service == "agent":  # not running by itself: start a one-off container on its network
         return compose("run", "--rm", "agent", "python", "-c", script, timeout=120)
     return compose("exec", "-T", service, "python", "-c", script, timeout=60)
+
+
+def test_console_browser_login_and_csrf_boundary():
+    browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    base = "http://127.0.0.1:8084"
+    page = browser.open(base + "/login", timeout=5)
+    assert page.status == 200
+    csrf = re.search(r'name="csrf" value="([^"]+)"', page.read().decode()).group(1)
+    form = urllib.parse.urlencode({"csrf": csrf, "user": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}).encode()
+    queue = browser.open(base + "/login", form, timeout=5)
+    html = queue.read().decode()
+    assert queue.status == 200 and "Staff approvals" in html
+    csrf = re.search(r'name="csrf" value="([^"]+)"', html).group(1)
+    for data in ({"csrf": "forged"}, {"csrf": csrf, "role": "SeniorApprover"}):
+        with pytest.raises(urllib.error.HTTPError) as error:
+            browser.open(base + "/agents/resume", urllib.parse.urlencode(data).encode(), timeout=5)
+        assert error.value.code == 403
+
+
+def test_console_answers_ops_endpoints():
+    status, metrics = ops_of("console")
+    assert status == "200"
+    assert "csrf" not in metrics and "ah_session" not in metrics
+
+
+@pytest.mark.parametrize("source", ["agent", "tool-gateway", "executor", "dispatcher", "llm-gateway"])
+def test_nonstaff_services_cannot_reach_the_console(source):
+    script = """
+import socket,sys
+try:
+    socket.create_connection(('console',8084),timeout=2).close()
+except OSError:
+    print('BLOCKED')
+    sys.exit(3)
+print('REACHED')
+"""
+    control = probe("console", script)
+    assert control.returncode == 0 and "REACHED" in control.stdout
+    blocked = probe(source, script)
+    assert blocked.returncode == 3 and "BLOCKED" in blocked.stdout
 
 
 @pytest.mark.parametrize("service", WALLED_SERVICES)
@@ -634,7 +678,7 @@ def test_executor_calls_fake_dso_once_per_order():
             row = wait_for(conn, "SELECT status FROM action_requests WHERE id = %s", (rid,), lambda r: r[0] != "pending")
             assert row == ("notice_sent",), row
             conn.execute("UPDATE occupier_notices SET sent_at = now() - interval '73 hours' WHERE request_id = %s", (rid,))
-            for who in ("smoke.anna", "smoke.petros"):  # T1 needs one, T2 two
+            for who in ("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"):  # T1 needs one, T2 two
                 conn.execute("INSERT INTO approvals (request_id, approver) VALUES (%s, %s)", (rid, who))
             row = wait_for(conn, "SELECT status FROM action_requests WHERE id = %s", (rid,),
                            lambda r: r[0] != "notice_sent")

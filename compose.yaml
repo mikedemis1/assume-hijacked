@@ -58,7 +58,7 @@ secrets:
 #   edge_register_fakes    register-sync -> fake-register
 #   edge_executor_dso      executor -> fake-dso    } the matrix's executor -> fakes edge, one network
 #   edge_executor_sms      executor -> fake-sms    } per fake so the two fakes cannot reach each other
-# Later tasks add their services and their edges (edge_console_db).
+#   edge_console_db        console -> db          staff approvals and operational status
 # Which edges are NOT here is tested: tests/test_smoke.py (agent -> db, agent -> every tool, agent ->
 # risk engine, llm-gateway -> everything (it has no peer but the agent), dispatcher -> everything but the db,
 # tool -> tool, executor -> tools, risk-engine -> tools, register-sync -> tools, gateway -> the
@@ -68,7 +68,7 @@ secrets:
 # Docker does not publish a host port for a container that is only on an internal network
 # (checked on Docker Desktop for Windows: `docker port` shows nothing and 127.0.0.1:<port> refuses).
 # The tests and psql on this PC need the db port, so the db is also on `hostaccess`, a normal
-# network that nothing else joins. Only the db has a route out; nothing else is on hostaccess.
+# network also used by the console for its local browser port. These two services have a route out.
 networks:
   # The subnets of the agent's three edges are pinned because the gateway, the dispatcher and the LLM
   # gateway tell the agent from the other containers on their other edges by source address
@@ -105,6 +105,11 @@ networks:
   edge_executor_db: {internal: true}
   edge_risk_db: {internal: true}
   edge_register_db: {internal: true}
+  edge_console_db:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.250.4.0/24
   edge_register_fakes: {internal: true}
   edge_executor_dso: {internal: true}
   edge_executor_sms: {internal: true}
@@ -126,6 +131,7 @@ services:
       - edge_executor_db
       - edge_risk_db
       - edge_register_db
+      - edge_console_db
       - hostaccess
     environment:
       POSTGRES_DB: supplier
@@ -152,6 +158,22 @@ services:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d supplier"]
       interval: 2s
       retries: 30
+
+  console:
+    <<: *app
+    environment:
+      <<: *db-common
+      DB_PASSWORD_APPROVER: ${DB_PASSWORD_APPROVER:?set DB_PASSWORD_APPROVER in .env}
+      APP_ENV: local
+      AUTH_MODE: dev
+      CONSOLE_DEV_USERS: '{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa":["Approver"],"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb":["SeniorApprover"],"cccccccc-cccc-4ccc-8ccc-cccccccccccc":["SeniorApprover"]}'
+    restart: unless-stopped
+    networks:
+      - edge_console_db
+      - hostaccess
+    ports:
+      - "127.0.0.1:8084:8084"
+    command: ["python", "-m", "app.console.main"]
 
   tool-read-ticket:
     <<: *app

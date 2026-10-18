@@ -114,7 +114,7 @@ CREATE TRIGGER action_requests_check BEFORE INSERT ON action_requests
 -- counts once, whatever the role or spelling (check_approval_floor, 06-risk.sql).
 CREATE TABLE approvals (
     request_id    int NOT NULL REFERENCES action_requests,
-    approver      text NOT NULL CHECK (btrim(approver, E' \t\r\n') <> ''),
+    approver      uuid NOT NULL,
     approver_role text NOT NULL DEFAULT 'Approver' CHECK (approver_role IN ('Approver', 'SeniorApprover')),
     created_at    timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (request_id, approver)

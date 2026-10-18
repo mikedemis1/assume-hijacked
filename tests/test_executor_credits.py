@@ -348,7 +348,7 @@ def test_t1_credit_executes_after_one_approval(admin, as_role, settings, now):
     # Waits, quietly: still pending, nothing written, no trigger refusal.
     assert statuses(admin) == ["pending"] and credits_count(admin) == 0
     assert admin.execute("SELECT count(*) AS n FROM events").fetchone()["n"] == 0
-    approve_as(as_role("approver"), rid, "staff.anna")
+    approve_as(as_role("approver"), rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     process_credits(ex, settings, now)
     assert statuses(admin) == ["executed"] and credits_count(admin) == 1
 
@@ -358,13 +358,13 @@ def test_approval_given_before_the_assessment_does_not_release_a_credit(admin, a
 
     rid = add_credit(admin, 49, 2, tier=None)
     staff = as_role("approver")
-    approve_as(staff, rid, "staff.anna")  # approved before anyone knew how risky it was
+    approve_as(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")  # approved before anyone knew how risky it was
     assess(admin, rid, "T1")
     ex = as_role("executor")
     process_credits(ex, settings, now)
     assert statuses(admin) == ["pending"]
     assert admin.execute("SELECT count(*) AS n FROM events WHERE kind = 'executor_error'").fetchone()["n"] == 0
-    approve_as(staff, rid, "staff.petros")  # control: an approval after the assessment
+    approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")  # control: an approval after the assessment
     process_credits(ex, settings, now)
     assert statuses(admin) == ["executed"]
 
@@ -374,13 +374,14 @@ def test_t2_credit_needs_two_people(admin, as_role, settings, now):
 
     rid = add_credit(admin, 49, 2, tier="T2")
     staff, ex = as_role("approver"), as_role("executor")
-    approve_as(staff, rid, "staff.anna")
-    approve_as(staff, rid, " Staff.Anna ")  # the same person, spelled differently
+    approve_as(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        approve_as(staff, rid, "EEAB6C5EF5BC5D16AF4B813D9B88BE01")
     process_credits(ex, settings, now)
     # Still waiting, and the executor knew it: it did not try and get refused by the floor.
     assert statuses(admin) == ["pending"]
     assert admin.execute("SELECT count(*) AS n FROM events WHERE kind = 'executor_error'").fetchone()["n"] == 0
-    approve_as(staff, rid, "staff.petros")
+    approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")
     process_credits(ex, settings, now)
     assert statuses(admin) == ["executed"]
 
@@ -392,8 +393,8 @@ def test_staff_approval_lifts_the_automatic_limits_but_not_the_evidence(admin, a
     above_limit = add_credit(admin, 80, 9, tier="T1")  # T0 would send this to staff
     no_evidence = add_credit(admin, 30, 999, tier="T1")  # no such charge
     staff = as_role("approver")
-    approve_as(staff, above_limit, "staff.anna")
-    approve_as(staff, no_evidence, "staff.anna")
+    approve_as(staff, above_limit, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
+    approve_as(staff, no_evidence, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     process_credits(as_role("executor"), settings, now)
     assert risk_why(admin, above_limit) == {"status": "executed", "decision_reason": "approved by staff, evidence confirmed"}
     # The database would refuse a credit no charge backs, approval or not; the executor sends it on.
@@ -410,7 +411,7 @@ def test_tiers_no_approval_allows_end_the_credit(admin, as_role, settings, now, 
 
     rid = add_credit(admin, 49, 2, tier=None)
     assess(admin, rid, tier, 100, (reason.removeprefix("risk: "),))
-    approve_as(as_role("approver"), rid, "staff.anna")
+    approve_as(as_role("approver"), rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
     process_credits(as_role("executor"), settings, now)
     assert risk_why(admin, rid) == {"status": status, "decision_reason": reason}
     assert credits_count(admin) == 0
