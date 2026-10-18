@@ -211,8 +211,12 @@ def test_a_tool_container_accepts_one_good_token_and_refuses_everything_else(too
 
 
 def secret_files(service):
-    done = compose("exec", "-T", service, "ls", "/run/secrets", timeout=60)
-    return sorted(done.stdout.split()) if done.returncode == 0 else []
+    """The names under /run/secrets in the running container; none if the folder does not exist
+    (Docker makes it only for a container that has a secret). A container that cannot be reached
+    fails the test: it must not read as "no secrets"."""
+    done = compose("exec", "-T", service, "sh", "-c", "[ -d /run/secrets ] && ls /run/secrets; exit 0", timeout=60)
+    assert done.returncode == 0, f"could not look inside {service}\nstdout: {done.stdout}\nstderr: {done.stderr}"
+    return sorted(done.stdout.split())
 
 
 @pytest.mark.parametrize("host", TOOL_HOSTS)

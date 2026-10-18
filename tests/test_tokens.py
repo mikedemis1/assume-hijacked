@@ -26,6 +26,7 @@ from app.security.tokens import ISSUER, JtiCache, TokenError, mint_tool_token, v
 from app.tools import serve
 from tests.conftest import open_lease
 from tests.toolhttp import (  # noqa: F401  (the key fixtures are used by name)
+    CALL_READ_TICKET,
     AppToolGateway,
     MCP_HEADERS,
     ConnectSpy,
@@ -211,10 +212,13 @@ def test_tool_rejects_wrong_audience_expired_and_replayed_tokens(keypair, caplog
     expired = mint_tool_token(private, "read_ticket", LEASE, NOW - 120)
     valid = mint_tool_token(private, "read_ticket", LEASE, NOW)
 
-    # The valid token is the control: it is let through (tools/list needs no database), once.
-    answers = run(post_each(app, bearer(wrong_audience), bearer(expired), bearer(valid), bearer(valid)))
-    assert [a.status_code == 401 for a in answers] == [True, True, False, True]
-    assert spy.calls == 0
+    # Every request is a read_ticket call, which asks for a database connection when it runs. The
+    # valid token is the control: its call runs (the spy is asked once); each refused request
+    # leaves the count where it was.
+    sent = run(post_each(app, bearer(wrong_audience), bearer(expired), bearer(valid), bearer(valid),
+                         body=CALL_READ_TICKET, spy=spy))
+    assert [r.status_code for r, _ in sent] == [401, 401, 200, 401]
+    assert [calls for _, calls in sent] == [0, 0, 1, 1]
 
     reasons = [json.loads(r.getMessage())["reason"] for r in caplog.records
                if r.name == "assume_hijacked.security"]
@@ -222,10 +226,10 @@ def test_tool_rejects_wrong_audience_expired_and_replayed_tokens(keypair, caplog
 
 
 def test_tool_rejects_missing_bearer_before_db(keypair):
-    _, public = keypair
+    private, public = keypair
     spy = ConnectSpy()
     app = tool_app("read_ticket", public, spy)
-    for headers in (
+    refused = [
         MCP_HEADERS,                                              # no Authorization at all
         {**MCP_HEADERS, "Authorization": ""},
         {**MCP_HEADERS, "Authorization": "Bearer"},
@@ -233,12 +237,16 @@ def test_tool_rejects_missing_bearer_before_db(keypair):
         {**MCP_HEADERS, "Authorization": "Basic dXNlcjpwYXNz"},
         {**MCP_HEADERS, "Authorization": "Bearer not.a.token"},
         {**MCP_HEADERS, "Authorization": "Bearer " + "a" * 5000},
-    ):
-        answer = run(post(app, headers))
+    ]
+    control = bearer(mint_tool_token(private, "read_ticket", LEASE, NOW))
+    sent = run(post_each(app, *refused, control, body=CALL_READ_TICKET, spy=spy))
+    for (answer, calls), headers in zip(sent[:-1], refused):
         assert answer.status_code == 401, headers
         assert answer.headers["www-authenticate"] == "Bearer"
         assert answer.json() == {"error": "unauthorized"}     # no reason in the answer
-    assert spy.calls == 0
+        assert calls == 0, headers
+    # The control: a good token on the same call reaches the database connection.
+    assert sent[-1][0].status_code == 200 and sent[-1][1] == 1
 
 
 def test_tool_rejects_two_authorization_headers(keypair):
@@ -302,19 +310,24 @@ def test_lease_comes_from_token_not_arguments(settings, admin, keypair):
     private, public = keypair
     mine, theirs = open_lease(admin, 1), open_lease(admin, 2)    # tickets 1 (Eleni) and 2 (Nikos)
 
-    async def call(args):
-        auth = ToolTokenAuth(private, "lookup_account", mine, time.time)
+    async def call(args, token_lease):
+        auth = ToolTokenAuth(private, "lookup_account", token_lease, time.time)
         async with mcp_client(serve.build_app("lookup_account", settings, public), auth) as client:
             return await client.call_tool("lookup_account", args)
 
     # The token carries ticket 1's lease. Arguments named lease, ticket_id or customer_id are not
     # parameters of the tool: they change nothing, even when they hold a live lease of ticket 2.
     for forged in ({}, {"lease": theirs}, {"ticket_id": 2}, {"lease": theirs, "ticket_id": 2, "customer_id": 1002}):
-        result = run(call(forged))
+        result = run(call(forged, mine))
         assert not result.is_error, forged
         text = result.content[0].text
         assert json.loads(text)["name"] == "Eleni Papadopoulou", forged
         assert "Nikos" not in text
+    # The control: the lease in the token is what picks the account. The same call, with ticket 2's
+    # lease in the token and ticket 1's lease in the arguments, returns the other customer.
+    result = run(call({"lease": mine, "ticket_id": 1}, theirs))
+    assert not result.is_error
+    assert json.loads(result.content[0].text)["name"] == "Nikos Georgiou"
 
 
 def test_lease_in_the_token_is_what_the_database_checks(settings, admin, keypair):

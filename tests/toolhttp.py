@@ -23,6 +23,9 @@ from app.tools import serve
 URL = "http://tool.test/mcp"
 MCP_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 TOOLS_LIST = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+# A call that makes read_ticket ask for its database connection (tools/list never does).
+CALL_READ_TICKET = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "read_ticket", "arguments": {}}}
 
 
 def make_keypair() -> tuple[bytes, bytes]:
@@ -76,12 +79,14 @@ async def post(app, headers: dict[str, str], body: dict | None = None) -> httpx2
         return await http.post("/mcp", headers=headers, content=json.dumps(body or TOOLS_LIST))
 
 
-async def post_each(app, *header_sets: dict[str, str]) -> list[httpx2.Response]:
-    """Raw POSTs one after another to one running app (so a token let through can be answered)."""
+async def post_each(app, *header_sets: dict[str, str], body: dict | None = None, spy=None) -> list:
+    """Raw POSTs one after another to one running app (so a token let through can be answered).
+    Returns (response, connections the spy had been asked for after that request) per request."""
     answers = []
     async with running(app):
         for headers in header_sets:
-            answers.append(await post(app, headers))
+            response = await post(app, headers, body)
+            answers.append((response, spy.calls if spy is not None else None))
     return answers
 
 

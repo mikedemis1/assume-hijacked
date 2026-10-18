@@ -5,12 +5,14 @@ These tests check the manifests against the application itself: the fingerprint 
 descriptor, the database role and function of every tool, and who holds the gateway's keys.
 """
 
+import asyncio
 import copy
 import dataclasses
 import hashlib
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,7 @@ from app import config
 from app.security import descriptors
 from app.security.tokens import JtiCache, load_private_key, load_public_key, mint_tool_token, verify_tool_token
 from app.tools import serve
+from tests.toolhttp import KEYS, bearer, post_each
 
 ROOT = Path(__file__).resolve().parent.parent
 CAPABILITIES = ROOT / "security" / "capabilities"
@@ -59,6 +62,19 @@ def test_manifest_descriptor_hashes_match_the_live_tools():
         assert listed == descriptors.manifest_tools(tool), component
         assert [t["name"] for t in listed] == [tool]
         assert all(len(t["descriptor_sha256"]) == 64 for t in listed)
+
+
+def test_manifest_hashes_match_a_tools_list_answer_read_over_http():
+    # The fingerprint the gateway will check is of the wire entry. Read it the way a client does:
+    # a signed tools/list request to the tool's app, and hash the entry in the JSON answer.
+    private, public = KEYS
+    for tool, component in TOOL_COMPONENTS.items():
+        app = serve.build_app(tool, descriptors.safe_settings(), public)
+        token = mint_tool_token(private, tool, "ab" * 32, time.time())
+        (answer, _), = asyncio.run(post_each(app, bearer(token)))
+        assert answer.status_code == 200, component
+        (wire,) = answer.json()["result"]["tools"]
+        assert descriptors.descriptor_sha256(wire) == manifests()[component]["mcp"]["tools"][0]["descriptor_sha256"]
 
 
 def test_every_fingerprint_differs():
