@@ -1,0 +1,72 @@
+{
+ "component": "tool-issue-bill-credit",
+ "description": "This branch's compose.yaml puts every service on one network, so every pair of services is an edge.",
+ "db": {
+  "role": "tool_issue_bill_credit",
+  "connection_limit": 5,
+  "schemas": {
+   "public": [
+    "USAGE"
+   ]
+  },
+  "tables": {
+   "tickets": [
+    "SELECT (id, customer_id)"
+   ],
+   "accounts": [
+    "SELECT (id, customer_id)"
+   ],
+   "action_requests": [
+    "INSERT (kind, ticket_id, account_id, amount_eur, reason, evidence_ref, move_out_date)"
+   ],
+   "action_requests_id_seq": [
+    "USAGE"
+   ],
+   "events": [
+    "INSERT (kind, detail)"
+   ],
+   "events_id_seq": [
+    "USAGE"
+   ]
+  },
+  "execute": []
+ },
+ "network": {
+  "ingress_from": [
+   "agent"
+  ],
+  "egress_to": [
+   "db",
+   "tool-read-ticket",
+   "tool-lookup-account",
+   "tool-request-disconnection",
+   "tool-set-temp-protection"
+  ],
+  "dns": [
+   "cluster"
+  ]
+ },
+ "k8s": {
+  "service_account": "tool-issue-bill-credit",
+  "rbac": []
+ },
+ "azure": {
+  "identity": "id-tool-issue-bill-credit",
+  "roles": [
+   {
+    "role": "Key Vault Secrets User",
+    "scope": "kv-tool-issue-bill-credit"
+   }
+  ]
+ },
+ "runtime_class": "kata-vm-isolation",
+ "mcp": {
+  "tools": [
+   {
+    "name": "issue_bill_credit",
+    "args": {},
+    "descriptor_sha256": "fixture"
+   }
+  ]
+ }
+}

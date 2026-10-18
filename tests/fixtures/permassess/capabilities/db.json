@@ -1,0 +1,34 @@
+{"component": "db",
+ "description": "The database itself: the NOLOGIN role that owns set_temp_protection, what PUBLIC holds, and the one host-facing network. Matches db/sql on this branch.",
+ "db": {
+   "role": null,
+   "roles": [
+     {"role": "flags_writer", "login": false,
+      "schemas": {"public": ["USAGE"]},
+      "tables": {"tickets": ["SELECT (id, customer_id)"],
+                 "accounts": ["SELECT (customer_id, supply_point_id)"],
+                 "flags": ["SELECT", "INSERT"],
+                 "events": ["INSERT (kind, actor, detail)"],
+                 "events_id_seq": ["USAGE"]},
+      "execute": ["pg_catalog.pg_advisory_lock(bigint)", "pg_catalog.pg_advisory_lock(int, int)",
+                  "pg_catalog.pg_advisory_lock_shared(bigint)", "pg_catalog.pg_advisory_lock_shared(int, int)",
+                  "pg_catalog.pg_try_advisory_lock(bigint)", "pg_catalog.pg_try_advisory_lock(int, int)",
+                  "pg_catalog.pg_try_advisory_lock_shared(bigint)", "pg_catalog.pg_try_advisory_lock_shared(int, int)",
+                  "pg_catalog.pg_advisory_xact_lock(bigint)", "pg_catalog.pg_advisory_xact_lock(int, int)",
+                  "pg_catalog.pg_advisory_xact_lock_shared(bigint)", "pg_catalog.pg_advisory_xact_lock_shared(int, int)",
+                  "pg_catalog.pg_try_advisory_xact_lock(bigint)", "pg_catalog.pg_try_advisory_xact_lock(int, int)",
+                  "pg_catalog.pg_try_advisory_xact_lock_shared(bigint)", "pg_catalog.pg_try_advisory_xact_lock_shared(int, int)"],
+      "owns": ["FUNCTION set_temp_protection(int) SECURITY DEFINER"]},
+     {"role": "postgres", "bootstrap_superuser": true}
+   ],
+   "public": {
+     "database": ["CONNECT"],
+     "schemas": {"public": ["USAGE"]},
+     "execute": ["check_action_request()", "check_credit()", "check_disconnection_order()"]
+   }
+ },
+ "network": {"ingress_from": [], "egress_to": ["internet"], "dns": []},
+ "k8s": {"service_account": null, "rbac": []},
+ "azure": {"identity": null, "roles": []},
+ "runtime_class": "runc",
+ "mcp": {"tools": []}}

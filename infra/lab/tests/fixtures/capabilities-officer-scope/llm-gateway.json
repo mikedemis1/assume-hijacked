@@ -1,0 +1,9 @@
+{"component": "llm-gateway",
+ "db": {"role": null, "execute": [], "tables": {}},
+ "network": {"ingress_from": ["agent"], "egress_to": ["foundry"], "dns": ["cluster"]},
+ "k8s": {"service_account": "llm-gateway", "rbac": []},
+ "azure": {"identity": "id-llm-gateway", "roles": [
+   {"role": "Key Vault Secrets User", "scope": "kv-llm-gateway"},
+   {"role": "Foundry User", "scope": "foundry-resource"}]},
+ "runtime_class": "runc",
+ "mcp": {"tools": []}}

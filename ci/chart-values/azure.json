@@ -1,0 +1,48 @@
+{
+  "gateway": {
+    "publicKeyPem": "-----BEGIN PUBLIC KEY-----\ntest-only\n-----END PUBLIC KEY-----\n"
+  },
+  "db": {
+    "host": "psql-ah.privatelink.postgres.database.azure.com"
+  },
+  "console": {
+    "entra": {
+      "tenantId": "t-1",
+      "clientId": "c-console-app"
+    }
+  },
+  "azure": {
+    "tenantId": "t-1",
+    "dbAdmin": "id-db-migrate",
+    "clientIds": {
+      "tool-read-ticket": "client-tool-read-ticket",
+      "tool-lookup-account": "client-tool-lookup-account",
+      "tool-request-disconnection": "client-tool-request-disconnection",
+      "tool-issue-bill-credit": "client-tool-issue-bill-credit",
+      "tool-set-temp-protection": "client-tool-set-temp-protection",
+      "tool-gateway": "client-tool-gateway",
+      "risk-engine": "client-risk-engine",
+      "dispatcher": "client-dispatcher",
+      "executor": "client-executor",
+      "register-sync": "client-register-sync",
+      "console": "client-console",
+      "db-migrate": "client-db-migrate",
+      "llm-gateway": "client-llm-gateway"
+    },
+    "keyVaults": {
+      "tool-read-ticket": "kv-tool-read--abc123",
+      "tool-lookup-account": "kv-tool-looku-abc123",
+      "tool-request-disconnection": "kv-tool-reque-abc123",
+      "tool-issue-bill-credit": "kv-tool-issue-abc123",
+      "tool-set-temp-protection": "kv-tool-set-t-abc123",
+      "tool-gateway": "kv-tool-gatew-abc123",
+      "risk-engine": "kv-risk-engin-abc123",
+      "dispatcher": "kv-dispatcher-abc123",
+      "executor": "kv-executor-abc123",
+      "register-sync": "kv-register-s-abc123",
+      "console": "kv-console-abc123",
+      "db-migrate": "kv-db-migrate-abc123",
+      "llm-gateway": "kv-llm-gatewa-abc123"
+    }
+  }
+}

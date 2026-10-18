@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (git-ignored) and fill in. Nothing here is a secret,
+# but the IDs identify the owner, so they stay out of the repo.
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+
+# Defaults are fine unless they clash with another network.
+# hub_address_space   = "10.10.0.0/24" # must be a /24
+# spoke_address_space = "10.20.0.0/16" # must be a /16
+
+# false (default): the DNS catch-all rule only raises alerts, everything resolves.
+# true: everything not on dns_allowed_domains is blocked. Check the DNS query log first.
+# dns_block_mode = false
+
+# Workspace for the DNS query log: output `log_analytics_workspace_id` of infra/base.
+# log_analytics_workspace_id = "/subscriptions/.../workspaces/..."

@@ -1,0 +1,7 @@
+{"component": "tool-lookup-account",
+ "db": {"role": "tool_lookup_account", "execute": ["api_lookup_account(text)"], "tables": {}},
+ "network": {"ingress_from": ["tool-gateway"], "egress_to": ["db"], "dns": ["cluster"]},
+ "k8s": {"service_account": "tool-lookup-account", "rbac": []},
+ "azure": {"identity": "id-tool-lookup-account", "roles": [{"role": "Key Vault Secrets User", "scope": "kv-tool-lookup-account"}]},
+ "runtime_class": "kata-vm-isolation",
+ "mcp": {"tools": [{"name": "lookup_account", "args": {}, "descriptor_sha256": "fixture"}]}}

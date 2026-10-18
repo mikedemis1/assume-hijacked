@@ -1,0 +1,11 @@
+{"component": "agent",
+ "description": "This branch's compose.yaml puts every service on one network, so every pair of services is an edge.",
+ "db": {"role": null, "execute": [], "tables": {}},
+ "network": {"ingress_from": [],
+             "egress_to": ["tool-read-ticket", "tool-lookup-account", "tool-request-disconnection",
+                           "tool-issue-bill-credit", "tool-set-temp-protection", "executor", "db"],
+             "dns": ["cluster"]},
+ "k8s": {"service_account": "agent", "rbac": []},
+ "azure": {"identity": null, "roles": []},
+ "runtime_class": "kata-vm-isolation",
+ "mcp": {"tools": []}}

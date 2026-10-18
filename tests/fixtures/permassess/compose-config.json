@@ -1,0 +1,55 @@
+{
+ "name": "assume-hijacked",
+ "networks": {
+  "backend": {
+   "internal": true,
+   "name": "assume-hijacked_backend"
+  },
+  "hostaccess": {
+   "name": "assume-hijacked_hostaccess"
+  }
+ },
+ "services": {
+  "agent": {
+   "networks": {
+    "backend": null
+   }
+  },
+  "db": {
+   "networks": {
+    "backend": null,
+    "hostaccess": null
+   }
+  },
+  "executor": {
+   "networks": {
+    "backend": null
+   }
+  },
+  "tool-issue-bill-credit": {
+   "networks": {
+    "backend": null
+   }
+  },
+  "tool-lookup-account": {
+   "networks": {
+    "backend": null
+   }
+  },
+  "tool-read-ticket": {
+   "networks": {
+    "backend": null
+   }
+  },
+  "tool-request-disconnection": {
+   "networks": {
+    "backend": null
+   }
+  },
+  "tool-set-temp-protection": {
+   "networks": {
+    "backend": null
+   }
+  }
+ }
+}

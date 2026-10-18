@@ -1,0 +1,42 @@
+{
+ "component": "db-migrate",
+ "db": {
+  "role": null,
+  "execute": [],
+  "tables": {}
+ },
+ "network": {
+  "ingress_from": [],
+  "egress_to": [
+   "db"
+  ],
+  "dns": [
+   "cluster"
+  ]
+ },
+ "k8s": {
+  "service_account": "db-migrate",
+  "rbac": []
+ },
+ "azure": {
+  "identity": "id-db-migrate",
+  "roles": [
+   {
+    "role": "Key Vault Secrets User",
+    "scope": "kv-db-migrate"
+   },
+   {
+    "role": "Key Vault Secrets Officer",
+    "scope": "kv-tool-lookup-account"
+   },
+   {
+    "role": "Key Vault Secrets Officer",
+    "scope": "kv-llm-gateway"
+   }
+  ]
+ },
+ "runtime_class": "runc",
+ "mcp": {
+  "tools": []
+ }
+}

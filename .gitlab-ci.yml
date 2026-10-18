@@ -18,8 +18,10 @@ workflow:
 
 stages:
   - static    # secrets, sast, deps, lock-check, lint-container-*: no database, no Docker daemon
+  - iac       # iac-terraform, iac-tflint, iac-checkov, chart-tests: no Azure, no cluster, no cost
   - test      # unit and attack tests against a PostgreSQL service
   - build     # build-scan (image + trivy) and smoke (the whole stack), Docker-in-Docker
+  - azure     # tf-plan, tf-apply, tf-destroy, leftover-check: by hand, and only if AZURE_ENABLED
   - mutation  # mutmut, schedules and by hand only
 
 default:
@@ -105,6 +107,68 @@ lint-container-checkov:
   script:
     - sh ci/checkov.sh
 
+# --- iac ----------------------------------------------------------------------------------
+
+# ci/iac.sh runs three steps. They are three jobs because each tool has its own image (the
+# Terraform image has no tflint and the reverse); IAC_STEP picks the step. None of them talks to
+# Azure. Terraform tags are in ci/lib.sh as well (tests/test_ci.py checks both).
+
+iac-terraform:
+  # fmt -check, init -backend=false, validate and `terraform test` (mock providers) for
+  # infra/base, net, lab and modules/workload-identity. The provider plugins are downloaded
+  # from the registry; the committed .terraform.lock.hcl decides their versions and hashes.
+  stage: iac
+  image:
+    name: hashicorp/terraform:1.15.9@sha256:fd5debae63188975d6febc6aa5bd1a982a588f55e4a4ddb7de28be923f250456
+    entrypoint: [""]
+  variables:
+    IAC_STEP: terraform
+  script:
+    - sh ci/iac.sh
+
+iac-tflint:
+  # https://github.com/terraform-linters/tflint ; rules in .tflint.hcl
+  stage: iac
+  image:
+    name: ghcr.io/terraform-linters/tflint:v0.64.0@sha256:1c595f42d794c32c45a6ea8b58655fd66433d4ca3b1bc631c574a48d120bd19f
+    entrypoint: [""]
+  variables:
+    IAC_STEP: tflint
+  script:
+    - sh ci/iac.sh
+
+iac-checkov:
+  # checkov on infra/ and on the Helm chart in deploy/ (rendered for kind and Azure first).
+  # IAC_REQUIRE_DEPLOY: a pipeline without deploy/ fails here instead of scanning nothing.
+  stage: iac
+  image:
+    name: bridgecrew/checkov:3.3.21@sha256:9aefe56582004ebdac112fe85c3268dc4d3658231a8f023fb714ba9d29539d53
+    entrypoint: [""]
+  variables:
+    IAC_STEP: checkov
+    IAC_REQUIRE_DEPLOY: "true"
+  script:
+    - sh ci/iac.sh
+
+chart-tests:
+  # tests/k8s/test_chart.py: helm lint and helm template of deploy/helm/assume-hijacked, read
+  # back as YAML. The tests skip themselves without helm; ci/chart.sh turns a
+  # skip into a failure, so they cannot pass by not running. The helm image has no Python:
+  # the script adds python3 from Alpine and pytest + PyYAML from requirements-dev.lock.
+  stage: iac
+  image:
+    name: alpine/helm:4.3.0@sha256:a6cf54599ccb99d90cf0712b30f03fdb3cab062e6b94e0418cc4db7e8a1464b2
+    entrypoint: [""]
+  script:
+    - sh ci/chart.sh
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - reports/chart-junit.xml
+    reports:
+      junit: reports/chart-junit.xml
+
 # --- test ---------------------------------------------------------------------------------
 
 # A throwaway PostgreSQL for the job: https://docs.gitlab.com/ci/services/
@@ -139,6 +203,23 @@ test:
       - reports/junit.xml
     reports:
       junit: reports/junit.xml
+
+permissions:
+  # python -m secops.permassess (ci/permissions.sh): the roles and grants that db/sql builds and
+  # the networks of compose.yaml, compared with security/expected-permissions.json. Any extra or
+  # missing line fails the job; docs/permission-matrix.md must match the expected file too.
+  extends:
+    - .postgres-service
+    - .pip-cache
+  stage: test
+  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  script:
+    - sh ci/permissions.sh
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - reports/permissions/
 
 # --- build --------------------------------------------------------------------------------
 
@@ -200,6 +281,136 @@ smoke:
       - reports/smoke-junit.xml
     reports:
       junit: reports/smoke-junit.xml
+
+evidence:
+  # python -m secops.evidence (ci/evidence.sh): one static HTML page from the reports of this
+  # pipeline, kept as an artifact. The permission assessment comes from the permissions job; the
+  # probe matrix and the attack replay run against a cluster, not in this pipeline, so here they
+  # show as "not run" and the page says INCOMPLETE. The page is evidence, not a gate.
+  # when: always, so a failed assessment still gets its page.
+  extends: .pip-cache
+  stage: build
+  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  needs:
+    - job: permissions
+      artifacts: true
+  when: always
+  script:
+    - sh ci/evidence.sh
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - reports/evidence.html
+      - reports/image-digests.json
+
+# --- azure --------------------------------------------------------------------------------
+
+# Defined, switched off. Nothing here is created until the project variable AZURE_ENABLED is
+# "true", and then every job still waits for a click (when: manual). No secret is stored: each
+# job asks GitLab for an ID token (id_tokens) and Entra trades it for an Azure token through the
+# federated credentials of infra/base/ci-identities.tf. Details: ci/tf-common.sh and
+# docs/pipeline.md ("Azure jobs"). infra/base is not part of these jobs, on purpose.
+# https://docs.gitlab.com/ci/secrets/id_token_authentication/
+# Project variables (none is a secret): AZURE_ENABLED, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+# AZURE_CI_PLAN_CLIENT_ID, AZURE_CI_APPLY_CLIENT_ID, TF_STATE_STORAGE_ACCOUNT, and optionally the
+# File variables TFVARS_NET and TFVARS_LAB with the values that stay out of git.
+.azure-terraform:
+  stage: azure
+  image:
+    name: hashicorp/terraform:1.15.9@sha256:fd5debae63188975d6febc6aa5bd1a982a588f55e4a4ddb7de28be923f250456
+    entrypoint: [""]
+  id_tokens:
+    AZURE_ID_TOKEN:
+      aud: api://AzureADTokenExchange
+
+tf-plan:
+  # Reader identity (ci-plan), any branch: net and lab. -lock=false, nothing is written to Azure.
+  # The plan files and a readable copy are kept for tf-apply of this pipeline. They can hold
+  # resource values, so they expire after a day.
+  extends: .azure-terraform
+  rules:
+    - if: $AZURE_ENABLED == "true"
+      when: manual
+      allow_failure: true
+  script:
+    - sh ci/tf-plan.sh
+  artifacts:
+    when: always
+    expire_in: 1 day
+    # The project is public: only members with the Developer role or above may download the
+    # plans. Jobs of the pipeline still get them. https://docs.gitlab.com/ci/yaml/#artifactsaccess
+    access: developer
+    paths:
+      - plans/apply/
+
+tf-apply:
+  # ci-apply, main only: runs the plan files of tf-plan in this pipeline, net then lab. It never
+  # plans. Without those files (tf-plan not run, or expired) the job fails.
+  # https://docs.gitlab.com/ci/yaml/#needs
+  extends: .azure-terraform
+  needs:
+    - job: tf-plan
+      artifacts: true
+  resource_group: azure-lab
+  interruptible: false
+  rules:
+    - if: $AZURE_ENABLED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  script:
+    - sh ci/tf-apply.sh
+
+tf-destroy-plan:
+  # Reader identity: what tf-destroy would remove (plan -destroy), lab then net, kept for
+  # tf-destroy of this pipeline. Stops if a state manages a resource group.
+  extends: .azure-terraform
+  rules:
+    - if: $AZURE_ENABLED == "true"
+      when: manual
+      allow_failure: true
+  script:
+    - sh ci/tf-destroy-plan.sh
+  artifacts:
+    when: always
+    expire_in: 1 day
+    # The project is public: only members with the Developer role or above may download the
+    # plans. Jobs of the pipeline still get them. https://docs.gitlab.com/ci/yaml/#artifactsaccess
+    access: developer
+    paths:
+      - plans/destroy/
+
+tf-destroy:
+  # ci-apply, main only: runs the destroy plans of tf-destroy-plan in this pipeline, lab then
+  # net. The contents only, never the resource groups or infra/base. It never plans.
+  extends: .azure-terraform
+  needs:
+    - job: tf-destroy-plan
+      artifacts: true
+  resource_group: azure-lab
+  interruptible: false
+  rules:
+    - if: $AZURE_ENABLED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+  script:
+    - sh ci/tf-destroy.sh
+
+leftover-check:
+  # Reader identity: is any billable resource left after tf-destroy? Fails with the list.
+  stage: azure
+  image:
+    name: mcr.microsoft.com/azure-cli:2.90.0@sha256:e3768dde8142efa45d8f356a317aaac77abd7da15ba3719b0a150e9453f251db
+    entrypoint: [""]
+  id_tokens:
+    AZURE_ID_TOKEN:
+      aud: api://AzureADTokenExchange
+  rules:
+    - if: $AZURE_ENABLED == "true"
+      when: manual
+      allow_failure: true
+  script:
+    - sh ci/leftover-check.sh
 
 # --- mutation -----------------------------------------------------------------------------
 
