@@ -842,6 +842,18 @@ def test_mutmut_does_not_run_the_permission_assessment_tests():
     one test file that fails to collect stops the whole mutation job."""
     scope = tomllib.loads(_text("pyproject.toml"))["tool"]["mutmut"]
     assert "--ignore=tests/test_permassess.py" in scope["pytest_add_cli_args_test_selection"]
+    assert "--ignore=tests/test_evidence.py" in scope["pytest_add_cli_args_test_selection"]
+
+
+def test_evidence_job_builds_the_page_from_the_assessment_even_when_it_failed():
+    job = _jobs()["evidence"]
+    assert job["needs"] == [{"job": "permissions", "artifacts": True}]
+    assert job["when"] == "always", "a failed assessment still gets its page"
+    assert job["artifacts"]["when"] == "always"
+    assert "reports/evidence.html" in job["artifacts"]["paths"]
+    script = _text("ci/evidence.sh")
+    assert "-m secops.evidence --reports reports --out reports/evidence.html" in script
+    assert "--collect-images ." in script and "install_python_tools" not in script
 
 
 @pytest.mark.parametrize("job", ["tf-plan", "tf-destroy-plan"])
