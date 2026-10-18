@@ -67,6 +67,13 @@
       "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
       "then": {"required": ["image"], "properties": {"image": {"$ref": "#/definitions/pinnedImage"}}}
     },
+    "dbPasswords": {
+      "type": "object",
+      "properties": {
+        "rotationJob": {"type": "boolean"},
+        "rotationJobName": {"type": "string", "pattern": "^$|^db-passwords-rotate-[0-9]{14}$"}
+      }
+    },
     "stubs": {
       "description": "kind only, temporary: components that run the ops stand-in instead of their entry point.",
       "type": "array",

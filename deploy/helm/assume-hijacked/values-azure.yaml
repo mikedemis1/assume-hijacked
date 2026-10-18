@@ -2,6 +2,12 @@
 # image digests in ACR, db.host, azure.tenantId, azure.dbAdmin, azure.clientIds, azure.keyVaults,
 # console.entra and gateway.publicKeyPem. No secret material here: the schema refuses
 # secrets.* with env=azure; every secret comes from the component's Key Vault.
+#
+# Database passwords: db-migrate (a post-install hook) creates the roles and writes each workload's
+# password into its vault; until then those pods wait in ContainerCreating (the CSI mount is
+# retried). Deploy with --wait=hookOnly and wait for the rollouts afterwards: with --wait, Helm
+# would wait for those pods before running the hook they wait for. A helm upgrade never changes the
+# passwords; rotate them with scripts/azure-rotate-db-passwords.sh (templates/db-migrate.yaml).
 env: azure
 
 # The ACR login server (infra/base output). Admission accepts images only from here.

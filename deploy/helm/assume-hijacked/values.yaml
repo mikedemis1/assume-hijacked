@@ -78,6 +78,13 @@ azure:
   clientIds: {}              # component -> client ID of its user-assigned managed identity
   keyVaults: {}              # component -> physical Key Vault name (infra/base key_vaults output)
 
+# azure only. Workload database passwords are set at install (db-migrate) and changed only by
+# scripts/azure-rotate-db-passwords.sh, which renders the rotation Job with these two values set;
+# never set them in a deploy (templates/db-passwords-rotate.yaml refuses an upgrade).
+dbPasswords:
+  rotationJob: false
+  rotationJobName: ""
+
 # The attack suite (attacks/, image built from attacks/Dockerfile and pushed to the registry):
 # `helm test` runs one probe pod per component that tries every forbidden edge and the allowed
 # ones (templates/attack-suite-job.yaml). Off by default.

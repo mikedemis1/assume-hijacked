@@ -399,7 +399,7 @@ def test_database_objects_per_environment():
     for env, job in (("kind", "postgres-init"), ("azure", "db-migrate")):
         annotations = find(env, "Job", job)["metadata"]["annotations"]
         assert annotations["helm.sh/hook"] == "post-install", "init.sh is not idempotent: run once"
-    assert ("Job", "db-passwords") in azure_names and ("Job", "db-passwords") not in kind_names
+    assert not {n for _, n in azure_names | kind_names if n.startswith("db-passwords")}
 
 
 @pytest.mark.parametrize("env", ENVS)
@@ -1014,21 +1014,34 @@ def hooks(env: str) -> dict[str, str]:
             for o in rendered(env) if o["kind"] == "Job"}
 
 
-def test_database_setup_runs_where_it_cannot_deadlock_an_install():
-    """No setup Job waits for the release's pods: kind sets the database up once after the
-    install (the server is in the release; the Job waits for it); Azure sets it up after the
-    install and rotates the passwords before every upgrade (the server is outside the cluster).
-    The deploy runs helm without waiting for pods (test_deploy.py)."""
+ROTATION_JOB = "db-passwords-rotate-20261018060000"
+ROTATION_SETS = ("dbPasswords.rotationJob=true", f"dbPasswords.rotationJobName={ROTATION_JOB}")
+
+
+def test_database_setup_runs_once_at_install_and_never_on_an_upgrade():
+    """No setup Job waits for the release's pods, and no Job runs on an upgrade: kind sets the
+    database up once after the install (the server is in the release; the Job waits for it);
+    Azure sets it up and writes the passwords once after the install. A plain upgrade changes no
+    password. The deploy runs helm without waiting for pods (test_deploy.py)."""
     assert hooks("kind") == {"postgres-init": "post-install"}
-    assert hooks("azure") == {"db-migrate": "post-install", "db-passwords": "pre-upgrade"}
+    assert hooks("azure") == {"db-migrate": "post-install"}
     for env in ENVS:
         for o in rendered(env):
-            hook = o["metadata"].get("annotations", {}).get("helm.sh/hook")
-            assert hook is None or o["kind"] == "Job", (o["kind"], o["metadata"]["name"])
+            hook = o["metadata"].get("annotations", {}).get("helm.sh/hook", "")
+            assert "upgrade" not in hook and "rollback" not in hook, (o["kind"], o["metadata"]["name"])
+            assert not hook or o["kind"] == "Job", (o["kind"], o["metadata"]["name"])
 
 
 def azure_jobs() -> dict[str, dict]:
-    return {o["metadata"]["name"]: o for o in objects("azure", "Job")}
+    """db-migrate (the install) and the rotation Job (rendered the way the rotation script does)."""
+    jobs = {o["metadata"]["name"]: o for o in objects("azure", "Job")}
+    result = helm("template", "azure", *[a for s in ROTATION_SETS for a in ("--set", s)],
+                  "--show-only", "templates/db-passwords-rotate.yaml")
+    assert result.returncode == 0, result.stderr
+    [rotation] = [d for d in yaml.safe_load_all(result.stdout) if d]
+    jobs[rotation["metadata"]["name"]] = rotation
+    assert set(jobs) == {"db-migrate", ROTATION_JOB}
+    return jobs
 
 
 def test_azure_db_passwords_go_to_the_vault_each_workload_reads():
@@ -1072,21 +1085,68 @@ def test_azure_migration_creates_roles_with_throwaway_passwords_then_rotates():
         assert f'DB_PASSWORD_{role.upper()}="$(head -c 24 /dev/urandom' in script, role
         assert f"export DB_PASSWORD_{role.upper()}" in script, role
     assert script.rstrip().endswith("exec sh /db/init/init.sh")
-    # The upgrade Job only rotates: init.sh is not idempotent.
-    rotate = jobs["db-passwords"]["spec"]["template"]["spec"]
+    # The rotation Job only rotates (init.sh is not idempotent) and is no Helm hook.
+    rotation = jobs[ROTATION_JOB]
+    assert "annotations" not in rotation["metadata"]
+    rotate = rotation["spec"]["template"]["spec"]
     assert [c["name"] for c in rotate["initContainers"]] == ["entra-token"]
     assert "init.sh" not in json.dumps(rotate)
 
 
-def test_azure_pods_with_a_database_role_restart_on_every_deploy():
-    """A pod reads its password at start; the passwords change on every Azure deploy."""
+def test_rotation_job_is_never_part_of_a_deploy():
+    """Not in a normal render, refused on an upgrade and on kind."""
+    assert not [o for o in rendered("azure") if o["metadata"]["name"].startswith("db-passwords")]
+    sets = [a for s in ROTATION_SETS for a in ("--set", s)]
+    result = helm("template", "azure", *sets, "--is-upgrade")
+    assert result.returncode != 0
+    assert "never deployed with helm upgrade" in result.stderr
+    result = helm("template", "kind", *sets)
+    assert result.returncode != 0
+    assert "for env=azure only" in result.stderr
+    # The name is the rotation script's timestamped one.
+    assert helm("template", "azure", "--set", "dbPasswords.rotationJob=true",
+                "--set", "dbPasswords.rotationJobName=db-migrate").returncode != 0
+
+
+ROTATE = ROOT / "scripts" / "azure-rotate-db-passwords.sh"
+
+
+def test_rotation_script_restarts_the_pods_only_after_the_csi_driver_synced():
+    """Run the passwords Job, wait for it, wait longer than the CSI driver's rotation poll, then
+    restart every Deployment with a database role and wait for them."""
+    text = ROTATE.read_text(encoding="utf-8")
+    assert subprocess.run(["sh", "-n", str(ROTATE)], capture_output=True, check=False).returncode == 0
+    assert "--set dbPasswords.rotationJob=true" in text and "--show-only templates/db-passwords-rotate.yaml" in text
+    assert "get values \"$RELEASE\" --all" in text
+    steps = ['k create -f "$work/job.yaml"', "1/*) break ;;", 'sleep "$WAIT_SECONDS"',
+             "rollout restart", "rollout status"]
+    positions = [text.index(s) for s in steps]
+    assert positions == sorted(positions), steps
+    interval = int(re.search(r"CSI_ROTATION_SECONDS=\$\{CSI_ROTATION_SECONDS:-(\d+)\}", text).group(1))
+    margin = int(re.search(r"WAIT_SECONDS=\$\(\(CSI_ROTATION_SECONDS \+ (\d+)\)\)", text).group(1))
+    assert interval >= 120 and margin > 0
+    # It restarts exactly the Deployments that log in to the database.
+    assert "get deployments --all-namespaces -l ah/db-role" in text
     for env in ENVS:
-        for name, d in deployments(env).items():
-            annotations = d["spec"]["template"]["metadata"].get("annotations", {})
-            rotated = env == "azure" and bool(COMPONENTS[name][1])
-            assert ("ah/db-password-revision" in annotations) == rotated, (env, name)
-    assert deployments("azure")["executor"]["spec"]["template"]["metadata"]["annotations"] == {
-        "ah/db-password-revision": "1"}
+        labelled = {n for n, d in deployments(env).items() if "ah/db-role" in d["metadata"]["labels"]}
+        assert labelled == {n for n, (_, role) in COMPONENTS.items() if role}
+        assert all(deployments(env)[n]["metadata"]["labels"]["ah/db-role"] == COMPONENTS[n][1] for n in labelled)
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_a_deploy_does_not_restart_pods_for_passwords(env):
+    """Nothing in a pod template changes from one release revision to the next by itself."""
+    for name, d in deployments(env).items():
+        assert "ah/db-password-revision" not in d["spec"]["template"]["metadata"].get("annotations", {}), name
+    result = helm("template", env, "--is-upgrade")
+    assert result.returncode == 0, result.stderr
+    upgraded = {o["metadata"]["name"]: o["spec"]["template"] for o in yaml.safe_load_all(result.stdout)
+                if o and o["kind"] == "Deployment"}
+    assert upgraded == {n: d["spec"]["template"] for n, d in deployments(env).items()}
+    # helm template always renders revision 1, so also: no template reads the revision.
+    for path in (CHART / "templates").rglob("*"):
+        if path.is_file():
+            assert ".Release.Revision" not in path.read_text(encoding="utf-8"), path.name
 
 
 def test_kind_keeps_role_passwords_in_kubernetes_secrets():

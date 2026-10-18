@@ -294,12 +294,6 @@ no pod label: its process holds no Azure token. Only a component that calls Azur
 {{- $command = list "python" "-c" ($root.Files.Get "files/ops-stub.py") $name -}}
 {{- end -}}
 
-{{- /*
-Azure: db-migrate sets a new password for every database role on each deploy (pre-upgrade hook,
-db-migrate.yaml). A pod reads its password once, at start, so the pods with a database role are
-replaced on every deploy, after the new passwords are in the vaults.
-*/ -}}
-{{- $rotated := and (eq $v.env "azure") .dbRole -}}
 
 {{- include "ah.serviceAccount" (dict "root" $root "name" $name "namespace" .namespace "workloadIdentity" $wi) }}
 {{- if $hasSecrets }}
@@ -314,6 +308,10 @@ metadata:
   namespace: {{ .namespace }}
   labels:
     {{- include "ah.labels" (dict "root" $root "name" $name) | nindent 4 }}
+    {{- with .dbRole }}
+    {{- /* The database role it logs in as: scripts/azure-rotate-db-passwords.sh restarts these. */}}
+    ah/db-role: {{ . }}
+    {{- end }}
 spec:
   replicas: 1
   revisionHistoryLimit: 3
@@ -331,10 +329,6 @@ spec:
         {{- if $podIdentity }}
         azure.workload.identity/use: "true"
         {{- end }}
-      {{- if $rotated }}
-      annotations:
-        ah/db-password-revision: {{ $root.Release.Revision | quote }}
-      {{- end }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false

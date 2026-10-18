@@ -16,7 +16,11 @@
 #
 # Secrets: the passwords of the database roles and the gateway's signing key are generated here
 # on the first install (random, never written to the repository) and read back from the cluster's
-# Secrets on every later run, because the database keeps the passwords it was set up with.
+# Secrets on every later run, because the database keeps the passwords it was set up with. While
+# the release exists every read must succeed: a failed read never turns into new passwords.
+# Helm keeps each revision's values, these secrets included, in a Secret
+# sh.helm.release.v1.<release>.v<n> in the release namespace (default), readable by anyone who can
+# read Secrets there; --history-max keeps only the last few revisions.
 #
 # Order: helm runs with --wait=hookOnly. It waits for the database setup Job (a post-install
 # hook) but not for the pods, and this script then waits for every rollout. With --wait, Helm
@@ -47,16 +51,43 @@ h() {
     helm --kube-context "$CONTEXT" --namespace "$RELEASE_NAMESPACE" "$@"
 }
 
-release_exists() {
-    h status "$RELEASE" >/dev/null 2>&1
+# What the release is: "deployed" (a revision completed, so the database is set up),
+# "failed-install" (it exists, but no revision ever completed: the first install's database setup
+# failed or was cut off) or "none". Any other answer from helm stops the script.
+release_state() {
+    if out=$(h history "$RELEASE" -o json 2>&1); then
+        case "$out" in
+            *'"status":"deployed"'* | *'"status":"superseded"'*) echo deployed ;;
+            *) echo failed-install ;;
+        esac
+    else
+        case "$out" in
+            *"release: not found"*) echo none ;;
+            *)
+                echo "helm cannot read release $RELEASE: $out" >&2
+                return 1
+                ;;
+        esac
+    fi
 }
 
+# Whether the database volume exists. Any error but NotFound stops the script.
 database_volume_exists() {
-    k --namespace ah-data get pvc data-postgres-0 >/dev/null 2>&1
+    if out=$(k --namespace ah-data get pvc data-postgres-0 -o name 2>&1); then
+        return 0
+    fi
+    case "$out" in
+        *NotFound* | *"not found"*) return 1 ;;
+    esac
+    echo "kubectl cannot check the database volume: $out" >&2
+    exit 1
 }
+
+k get --raw /version >/dev/null
+state=$(release_state)
 
 if [ "${1:-}" = "reset" ]; then
-    if release_exists; then
+    if [ "$state" != none ]; then
         h uninstall "$RELEASE" --wait --timeout 5m
     fi
     k --namespace ah-data delete pvc data-postgres-0 --ignore-not-found --wait=true
@@ -67,16 +98,22 @@ elif [ -n "${1:-}" ]; then
     exit 2
 fi
 
-# The database setup runs on the first install only (db/init/init.sh is not idempotent). A
-# database volume left from an earlier release would make it fail on roles that exist, with
-# passwords this run does not know.
-if ! release_exists && database_volume_exists; then
+# The database setup runs on the first install only (db/init/init.sh is not idempotent), so:
+#   - a first install whose setup failed is never upgraded (the pods would crash-loop on a
+#     database that was never set up), and
+#   - a database volume left from an earlier release would make the setup fail on roles that
+#     exist, with passwords this run does not know.
+if [ "$state" = failed-install ]; then
+    echo "release $RELEASE never completed its first install (the database setup failed or was" \
+         "cut off): run sh scripts/kind-deploy.sh reset, then deploy again" >&2
+    exit 1
+fi
+if [ "$state" = none ] && database_volume_exists; then
     echo "a database volume from an earlier release exists (ah-data/data-postgres-0) but release" \
          "$RELEASE does not: run sh scripts/kind-deploy.sh reset first" >&2
     exit 1
 fi
 
-k get --raw /version >/dev/null
 sh scripts/kind-registry.sh >/dev/null
 
 work=$(mktemp -d)
@@ -116,35 +153,49 @@ image="$PULL@$digest"
 echo "image $image"
 
 # --- the secrets ---------------------------------------------------------------------------------
-# One value of a Secret the chart created, or nothing.
+# One value of a Secret of the deployed release. It must be there: a failed or empty read stops
+# the script (in a command substitution the exit ends the subshell, and set -e the script).
 secret_value() {  # secret_value <namespace> <secret> <key>
     key=$(printf '%s' "$3" | sed 's/\./\\./g')
-    k --namespace "$1" get secret "$2" -o "jsonpath={.data.$key}" 2>/dev/null | base64 -d 2>/dev/null || true
+    if ! encoded=$(k --namespace "$1" get secret "$2" -o "jsonpath={.data.$key}" 2>&1); then
+        echo "cannot read $3 from $1/$2 of release $RELEASE: $encoded" >&2
+        exit 1
+    fi
+    if [ -z "$encoded" ]; then
+        echo "$1/$2 of release $RELEASE has no $3 (a role added after the database was set up?" \
+             "sh scripts/kind-deploy.sh reset starts over)" >&2
+        exit 1
+    fi
+    printf '%s' "$encoded" | base64 -d
 }
 
-new_password() {
-    openssl rand -hex 24
+# A new random value on the first install, else the deployed one.
+setting() {  # setting <namespace> <secret> <key>
+    if [ "$state" = none ]; then
+        openssl rand -hex 24
+    else
+        secret_value "$@"
+    fi
 }
 
-postgres_password=$(secret_value ah-data postgres-secrets POSTGRES_PASSWORD)
-[ -n "$postgres_password" ] || postgres_password=$(new_password)
+postgres_password=$(setting ah-data postgres-secrets POSTGRES_PASSWORD)
 {
     echo "secrets:"
     echo "  postgresPassword: \"$postgres_password\""
     echo "  dbPasswords:"
     for role in $DB_ROLES; do
         upper=$(printf '%s' "$role" | tr '[:lower:]' '[:upper:]')
-        password=$(secret_value ah-data postgres-secrets "DB_PASSWORD_$upper")
-        [ -n "$password" ] || password=$(new_password)
+        password=$(setting ah-data postgres-secrets "DB_PASSWORD_$upper")
         echo "    $role: \"$password\""
     done
 } > "$work/secrets.yaml"
 
 # The gateway's ES256 key pair (EC P-256): the private half signs the per-tool tokens, the public
-# half goes to the tools. Generated once, then read back.
-secret_value ah-gateway tool-gateway-secrets signing-key.pem > "$work/signing-key.pem"
-if [ ! -s "$work/signing-key.pem" ]; then
+# half goes to the tools. Generated on the first install, then read back.
+if [ "$state" = none ]; then
     openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$native_work/signing-key.pem"
+else
+    secret_value ah-gateway tool-gateway-secrets signing-key.pem > "$work/signing-key.pem"
 fi
 openssl pkey -in "$native_work/signing-key.pem" -pubout -out "$native_work/public-key.pem"
 
@@ -166,7 +217,7 @@ h upgrade --install "$RELEASE" "$CHART" \
     --set-file "gateway.publicKeyPem=$native_work/public-key.pem" \
     --set "images.app=$image" \
     "$@" \
-    --wait=hookOnly --timeout 10m
+    --history-max 3 --wait=hookOnly --timeout 10m
 
 # --- wait for every pod --------------------------------------------------------------------------
 k --namespace ah-data rollout status statefulset/postgres --timeout=300s

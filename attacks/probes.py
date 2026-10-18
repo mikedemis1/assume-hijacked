@@ -261,6 +261,10 @@ def matrix() -> list[Probe]:
     # Each fake checks its caller's token with a TokenReview: the API server, and nothing else.
     for fake in FAKES:
         m.append(tcp(fake, KUBE_API, ALLOW, "edge-tokenreview fake -> API (TokenReview of its caller)"))
+    m += [
+        tcp("fake-dso", "executor", DENY, "the outside systems never call back", 9000),
+        tcp("fake-register", "register-sync", DENY, "the outside systems never call back", 9000),
+    ]
     for fake in ("fake-register", "fake-dso"):
         m += [
             tcp(fake, "postgres", DENY, "the outside systems never reach in"),
@@ -291,6 +295,7 @@ def matrix() -> list[Probe]:
         tcp("monitoring", "console", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
         tcp("monitoring", "fake-dso", ALLOW, "edge-21 ah-monitoring -> ops port of a fake", 9000),
         tcp("monitoring", "executor", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
+        tcp("monitoring", "register-sync", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
         tcp("monitoring", "fake-dso", DENY, "ah-monitoring reaches the ops port only", 8091),
         tcp("outside", "stray", DENY, "default-deny: a pod no edge names takes no connection", 8092),
         tcp("stray", INTERNET, DENY, "default-deny: a pod no edge names opens no connection"),
