@@ -1,0 +1,287 @@
+{{- /*
+Admission walls (ValidatingAdmissionPolicy + Pod Security "restricted", no Kyverno,
+no Gatekeeper). admissionregistration.k8s.io/v1, GA since Kubernetes 1.30
+(https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/).
+Each policy is matched by namespace name (the kubernetes.io/metadata.name label, which the API
+server sets), so relabelling a namespace does not take it out of scope; each binding denies.
+
+  ah-images-pinned       every image comes from the allowed registry and is pinned by digest
+                         (a local build has no registry digest, so kind pushes to its own
+                         registry first), or is one of the pinned upstream images in values (kind
+                         only: the Postgres image keeps its public digest)
+  ah-no-host-access      no privileged container, privilege escalation, added capability,
+                         host namespace, host port or hostPath (repeats Pod Security
+                         "restricted" for these, so dropping the namespace labels is not enough)
+  ah-sandbox-runtime     pods in ah-agent and ah-tools run under the sandbox RuntimeClass. The
+                         one exception is the LLM gateway's own pods (ServiceAccount llm-gateway,
+                         not created by a Job): it lives in ah-agent but is not sandboxed
+  ah-agent-job-template  a Job in ah-agent is exactly the agent Job template (templates/
+                         agent.yaml): only metadata.name and the ah/ticket label may differ. So
+                         the dispatcher, which may create Jobs there, cannot run a pod as the
+                         LLM gateway, mount its Secret, add a token for another audience, change
+                         the image or command, or place the pod outside the sandbox.
+*/ -}}
+{{- $root := . -}}
+{{- $v := .Values -}}
+{{- $registry := required "registry is required" $v.registry -}}
+{{- /* Also in values.schema.json; here too because --skip-schema-validation skips the schema and
+these values are what the policies below enforce. */ -}}
+{{- if eq $v.env "azure" -}}
+{{- if not (regexMatch `^[a-z0-9]{5,50}\.azurecr\.io/$` $registry) -}}
+{{- fail (printf "registry must be the ACR login server (<name>.azurecr.io/) with env=azure, got %s" $registry) -}}
+{{- end -}}
+{{- if ne $v.sandbox.runtimeClass "kata-vm-isolation" -}}
+{{- fail (printf "sandbox.runtimeClass must be kata-vm-isolation (AKS Pod Sandboxing) with env=azure, got %s" $v.sandbox.runtimeClass) -}}
+{{- end -}}
+{{- else if ne $registry "localhost:5001/" -}}
+{{- fail (printf "registry must be localhost:5001/ (the kind-registry container) with env=kind, got %s" $registry) -}}
+{{- end -}}
+{{- /* Pinned images outside the registry: allowed exactly as written, and only on kind. */ -}}
+{{- $upstream := list -}}
+{{- range $key, $image := $v.images -}}
+{{- if not (hasPrefix $registry $image) -}}
+{{- if eq $v.env "azure" -}}
+{{- fail (printf "images.%s must come from the registry %s on Azure (import upstream images into ACR)" $key $registry) -}}
+{{- end -}}
+{{- $upstream = append $upstream $image -}}
+{{- end -}}
+{{- end -}}
+{{- $namespaces := include "ah.namespaces" . | fromJsonArray -}}
+{{- $podRules := list (dict "apiGroups" (list "") "apiVersions" (list "v1") "operations" (list "CREATE" "UPDATE") "resources" (list "pods" "pods/ephemeralcontainers")) -}}
+{{- $job := include "ah.agentJob" . | fromYaml -}}
+{{- $agent := index $job.spec.template.spec.containers 0 -}}
+{{- $agentEnv := list -}}
+{{- range $agent.env }}{{ $agentEnv = append $agentEnv (printf "%s=%s" .name .value) }}{{ end -}}
+{{- $runtime := $v.sandbox.runtimeClass -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ah-images-pinned
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "admission-walls") | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - {key: kubernetes.io/metadata.name, operator: In, values: {{ toJson $namespaces }}}
+    resourceRules: {{ toJson $podRules }}
+  variables:
+    - name: images
+      expression: >-
+        object.spec.containers.map(c, c.image)
+        + (has(object.spec.initContainers) ? object.spec.initContainers.map(c, c.image) : [])
+        + (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers.map(c, c.image) : [])
+    - name: refused
+      expression: >-
+        variables.images.filter(i, !(i in {{ toJson $upstream }})
+        && !(i.startsWith({{ $registry | squote }}) && i.matches('^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$')))
+  validations:
+    - expression: size(variables.refused) == 0
+      messageExpression: >-
+        'images must come from {{ $registry }} and be pinned by digest (name@sha256:...): '
+        + variables.refused.join(', ')
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ah-no-host-access
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "admission-walls") | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - {key: kubernetes.io/metadata.name, operator: In, values: {{ toJson $namespaces }}}
+    resourceRules: {{ toJson $podRules }}
+  validations:
+    - expression: >-
+        !(has(object.spec.hostNetwork) && object.spec.hostNetwork)
+        && !(has(object.spec.hostPID) && object.spec.hostPID)
+        && !(has(object.spec.hostIPC) && object.spec.hostIPC)
+      message: host namespaces (hostNetwork, hostPID, hostIPC) are not allowed
+      reason: Forbidden
+    - expression: "!has(object.spec.volumes) || object.spec.volumes.all(v, !has(v.hostPath))"
+      message: hostPath volumes are not allowed
+      reason: Forbidden
+    {{- range $list := list "containers" "initContainers" "ephemeralContainers" }}
+    - expression: >-
+        !has(object.spec.{{ $list }}) || object.spec.{{ $list }}.all(c, !has(c.securityContext)
+        || ((!has(c.securityContext.privileged) || !c.securityContext.privileged)
+        && (!has(c.securityContext.allowPrivilegeEscalation) || !c.securityContext.allowPrivilegeEscalation)
+        && (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add)
+        || size(c.securityContext.capabilities.add) == 0)))
+      message: privileged containers, privilege escalation and added capabilities are not allowed ({{ $list }})
+      reason: Forbidden
+    {{- end }}
+    {{- range $list := list "containers" "initContainers" }}
+    - expression: >-
+        !has(object.spec.{{ $list }}) || object.spec.{{ $list }}.all(c, !has(c.ports)
+        || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0))
+      message: host ports are not allowed ({{ $list }})
+      reason: Forbidden
+    {{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ah-sandbox-runtime
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "admission-walls") | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - {key: kubernetes.io/metadata.name, operator: In, values: ["ah-agent", "ah-tools"]}
+    resourceRules:
+      # runtimeClassName cannot change after creation.
+      - {apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE"], resources: ["pods"]}
+  variables:
+    - name: createdByJob
+      expression: >-
+        has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(o, o.kind == 'Job')
+    - name: llmGateway
+      expression: >-
+        request.namespace == 'ah-agent' && !variables.createdByJob
+        && has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'llm-gateway'
+  validations:
+    - expression: >-
+        variables.llmGateway
+        || (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == {{ $runtime | squote }})
+      message: pods in ah-agent and ah-tools must run with runtimeClassName {{ $runtime }}
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ah-agent-job-template
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "admission-walls") | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - {key: kubernetes.io/metadata.name, operator: In, values: ["ah-agent"]}
+    resourceRules:
+      # The dispatcher may only create Jobs (Role dispatcher-create-agent-jobs), and a Job's pod
+      # template cannot change after creation.
+      - {apiGroups: ["batch"], apiVersions: ["v1"], operations: ["CREATE"], resources: ["jobs"]}
+  variables:
+    - name: labels
+      expression: "has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: podLabels
+      expression: "has(object.spec.template.metadata.labels) ? object.spec.template.metadata.labels : {}"
+    - name: pod
+      expression: object.spec.template.spec
+    - name: c
+      expression: object.spec.template.spec.containers[0]
+    - name: tokens
+      expression: >-
+        has(variables.pod.volumes) && size(variables.pod.volumes) == 1 && has(variables.pod.volumes[0].projected)
+        && variables.pod.volumes[0].projected.sources.all(s, has(s.serviceAccountToken))
+        ? variables.pod.volumes[0].projected.sources.map(s,
+            (has(s.serviceAccountToken.audience) ? s.serviceAccountToken.audience : '<api server>') + ' '
+            + string(has(s.serviceAccountToken.expirationSeconds) ? s.serviceAccountToken.expirationSeconds : 0) + ' '
+            + s.serviceAccountToken.path)
+        : ['<a volume other than the projected agent tokens>']
+  validations:
+    - expression: >-
+        'app.kubernetes.io/name' in variables.labels && variables.labels['app.kubernetes.io/name'] == 'agent'
+        && 'ah/ticket' in variables.labels && variables.labels['ah/ticket'].matches('^[0-9]{1,18}$')
+        && 'app.kubernetes.io/name' in variables.podLabels && variables.podLabels['app.kubernetes.io/name'] == 'agent'
+        && 'ah/ticket' in variables.podLabels && variables.podLabels['ah/ticket'] == variables.labels['ah/ticket']
+      message: >-
+        agent Job: labels app.kubernetes.io/name=agent and ah/ticket=<ticket id> on the Job and its pod template
+      reason: Forbidden
+    - expression: >-
+        has(object.spec.backoffLimit) && object.spec.backoffLimit == 0
+        && has(object.spec.activeDeadlineSeconds) && object.spec.activeDeadlineSeconds == 300
+        && has(object.spec.ttlSecondsAfterFinished) && object.spec.ttlSecondsAfterFinished == 600
+        && !(has(object.spec.manualSelector) && object.spec.manualSelector)
+      message: "agent Job: backoffLimit 0, activeDeadlineSeconds 300, ttlSecondsAfterFinished 600, no manual selector"
+      reason: Forbidden
+    - expression: >-
+        has(variables.pod.serviceAccountName) && variables.pod.serviceAccountName == 'agent'
+        && has(variables.pod.automountServiceAccountToken) && !variables.pod.automountServiceAccountToken
+      message: "agent Job: serviceAccountName agent, automountServiceAccountToken false"
+      reason: Forbidden
+    - expression: >-
+        has(variables.pod.runtimeClassName) && variables.pod.runtimeClassName == {{ $runtime | squote }}
+        && has(variables.pod.restartPolicy) && variables.pod.restartPolicy == 'Never'
+        && !has(variables.pod.nodeName) && !has(variables.pod.nodeSelector) && !has(variables.pod.affinity)
+        && !has(variables.pod.tolerations) && !has(variables.pod.priorityClassName)
+      message: "agent Job: runtimeClassName {{ $runtime }}, restartPolicy Never, placement only through the RuntimeClass"
+      reason: Forbidden
+    - expression: >-
+        !has(variables.pod.initContainers) && !has(variables.pod.ephemeralContainers)
+        && !has(variables.pod.hostAliases) && !has(variables.pod.dnsConfig)
+        && (!has(variables.pod.dnsPolicy) || variables.pod.dnsPolicy == 'ClusterFirst')
+        && !(has(variables.pod.hostNetwork) && variables.pod.hostNetwork)
+        && !(has(variables.pod.hostPID) && variables.pod.hostPID)
+        && !(has(variables.pod.hostIPC) && variables.pod.hostIPC)
+        && !(has(variables.pod.shareProcessNamespace) && variables.pod.shareProcessNamespace)
+      message: "agent Job: no init or ephemeral containers, host aliases, custom DNS or host namespaces"
+      reason: Forbidden
+    - expression: >-
+        size(variables.pod.containers) == 1 && variables.c.name == 'agent'
+        && variables.c.image == {{ $agent.image | squote }}
+        && has(variables.c.command) && variables.c.command == {{ toJson $agent.command }}
+        && !has(variables.c.args) && !has(variables.c.workingDir) && !has(variables.c.lifecycle)
+        && !has(variables.c.livenessProbe) && !has(variables.c.readinessProbe) && !has(variables.c.startupProbe)
+      message: "agent Job: one container agent, the pinned app image, command python -m app.agent.main, nothing that runs another command"
+      reason: Forbidden
+    - expression: >-
+        !has(variables.c.envFrom) && (!has(variables.c.env) || variables.c.env.all(e, !has(e.valueFrom)))
+      message: "agent Job: no environment from Secrets or other objects (envFrom, valueFrom)"
+      reason: Forbidden
+    - expression: >-
+        (has(variables.c.env) ? variables.c.env.map(e, e.name + '=' + (has(e.value) ? e.value : '')) : [])
+        == {{ toJson $agentEnv }}
+      message: "agent Job: environment must be the template's"
+      reason: Forbidden
+    - expression: >-
+        variables.tokens == ['tool-gateway 600 tool-gateway/token', 'llm-gateway 600 llm-gateway/token',
+        'dispatcher 600 dispatcher/token']
+      messageExpression: >-
+        'agent Job: one projected volume with exactly the tokens for tool-gateway, llm-gateway and dispatcher (600 s); got: '
+        + variables.tokens.join(', ')
+      reason: Forbidden
+    - expression: >-
+        has(variables.c.volumeMounts) && size(variables.c.volumeMounts) == 1
+        && variables.c.volumeMounts[0].name == variables.pod.volumes[0].name
+        && variables.c.volumeMounts[0].mountPath == '/var/run/secrets/ah'
+        && has(variables.c.volumeMounts[0].readOnly) && variables.c.volumeMounts[0].readOnly
+        && !has(variables.c.volumeMounts[0].subPath) && !has(variables.c.volumeMounts[0].subPathExpr)
+      message: "agent Job: the token volume mounted read-only at /var/run/secrets/ah, nothing else"
+      reason: Forbidden
+    - expression: >-
+        has(variables.pod.securityContext) && has(variables.pod.securityContext.runAsNonRoot)
+        && variables.pod.securityContext.runAsNonRoot
+        && has(variables.pod.securityContext.runAsUser) && variables.pod.securityContext.runAsUser == {{ include "ah.appUid" . }}
+        && has(variables.pod.securityContext.seccompProfile) && variables.pod.securityContext.seccompProfile.type == 'RuntimeDefault'
+        && has(variables.c.securityContext)
+        && has(variables.c.securityContext.allowPrivilegeEscalation) && !variables.c.securityContext.allowPrivilegeEscalation
+        && has(variables.c.securityContext.readOnlyRootFilesystem) && variables.c.securityContext.readOnlyRootFilesystem
+        && has(variables.c.securityContext.runAsNonRoot) && variables.c.securityContext.runAsNonRoot
+        && (!has(variables.c.securityContext.runAsUser) || variables.c.securityContext.runAsUser == {{ include "ah.appUid" . }})
+        && !(has(variables.c.securityContext.privileged) && variables.c.securityContext.privileged)
+        && has(variables.c.securityContext.capabilities) && has(variables.c.securityContext.capabilities.drop)
+        && variables.c.securityContext.capabilities.drop == ['ALL'] && !has(variables.c.securityContext.capabilities.add)
+      message: "agent Job: restricted security context (non-root {{ include "ah.appUid" . }}, read-only root, no escalation, drop ALL, RuntimeDefault seccomp)"
+      reason: Forbidden
+{{- range $name := list "ah-images-pinned" "ah-no-host-access" "ah-sandbox-runtime" "ah-agent-job-template" }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "admission-walls") | nindent 4 }}
+spec:
+  policyName: {{ $name }}
+  validationActions: [Deny]
+{{- end }}

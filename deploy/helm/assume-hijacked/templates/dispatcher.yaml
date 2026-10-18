@@ -1,0 +1,46 @@
+{{- /*
+Dispatcher (ah-intake): hands out tickets (POST /claim), takes replies (POST /reply) and, in k8s
+mode, starts one agent Job per ticket in ah-agent from the template in agent.yaml. Its only
+Kubernetes right besides TokenReview is creating Jobs, and only in ah-agent.
+*/ -}}
+{{ include "ah.workload" (dict
+    "root" .
+    "name" "dispatcher"
+    "namespace" "ah-intake"
+    "command" (list "python" "-m" "app.dispatcher.main")
+    "ports" (list (dict "name" "http" "port" 8081))
+    "ops" true
+    "env" (list
+      (dict "name" "DISPATCH_MODE" "value" "k8s")
+      (dict "name" "CALLER_AUTH" "value" "k8s"))
+    "dbRole" "dispatcher"
+    "configMaps" (list (dict "name" "agent-job-template" "mountPath" "/etc/ah/agent-job-template"))
+    "apiToken" true) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dispatcher-create-agent-jobs
+  namespace: ah-agent
+  labels:
+    {{- include "ah.labels" (dict "root" . "name" "dispatcher") | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dispatcher-create-agent-jobs
+  namespace: ah-agent
+  labels:
+    {{- include "ah.labels" (dict "root" . "name" "dispatcher") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dispatcher-create-agent-jobs
+subjects:
+  - kind: ServiceAccount
+    name: dispatcher
+    namespace: ah-intake

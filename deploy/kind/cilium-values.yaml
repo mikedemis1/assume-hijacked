@@ -1,0 +1,30 @@
+# Cilium for the kind cluster "ah". Chart 1.20.2 from https://helm.cilium.io (scripts/kind-up.sh
+# pins the chart file by sha256). Everything not set here keeps the chart default, including
+# the image digests: the chart pins every Cilium image by sha256 (image.useDigest: true).
+#
+# Lean on purpose: Docker has 6 GB and Compose runs next to the cluster.
+ipam:
+  mode: kubernetes
+
+# One operator replica (the default is two).
+operator:
+  replicas: 1
+
+# Restart the agents when this configuration changes: they read it only at start, and the Hubble
+# metrics below are switched on in it.
+rollOutCiliumPods: true
+
+# Hubble: flows for the evidence and the Walls dashboard. Relay and UI on.
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+  # One metric: hubble_drop_total, the packets the network walls dropped, with the source and
+  # destination namespace as labels (names only, no pod names or addresses). The chart adds the
+  # headless Service hubble-metrics (port 9965) that Prometheus scrapes
+  # (deploy/monitoring/kube-prometheus-values.yaml). No other Hubble metric: each one costs memory.
+  metrics:
+    enabled:
+      - "drop:labelsContext=source_namespace,destination_namespace"

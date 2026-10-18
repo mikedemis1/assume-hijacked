@@ -1,0 +1,31 @@
+{{- /*
+The five MCP tools (ah-tools). Each reaches PostgreSQL only as its own tool_* role and accepts
+only requests that carry a gateway token, checked with the gateway's public key. They handle
+text that came from the customer, so they run in the sandbox.
+*/ -}}
+{{- $root := . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-public-key
+  namespace: ah-tools
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "gateway-public-key") | nindent 4 }}
+data:
+  gateway-public.pem: {{ required "gateway.publicKeyPem is required" .Values.gateway.publicKeyPem | quote }}
+{{- range $tool := include "ah.tools" . | fromJsonArray }}
+---
+{{ include "ah.workload" (dict
+    "root" $root
+    "name" (printf "tool-%s" (replace "_" "-" $tool))
+    "namespace" "ah-tools"
+    "command" (list "python" "-m" "app.tools.serve" $tool)
+    "ports" (list (dict "name" "mcp" "port" 8000))
+    "ops" true
+    "env" (list
+      (dict "name" "TOOL_NAME" "value" $tool)
+      (dict "name" "GATEWAY_PUBLIC_KEY_FILE" "value" "/etc/ah/gateway-public-key/gateway-public.pem"))
+    "dbRole" (printf "tool_%s" $tool)
+    "configMaps" (list (dict "name" "gateway-public-key" "mountPath" "/etc/ah/gateway-public-key"))
+    "sandbox" true) }}
+{{- end }}

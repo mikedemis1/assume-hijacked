@@ -31,8 +31,11 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["smoke: needs the full docker compose stack running"]
-addopts = "-m 'not smoke' -rs"
+markers = [
+    "smoke: needs the full docker compose stack running",
+    "k8s: needs the kind cluster ah running (sh scripts/kind-up.sh)",
+]
+addopts = "-m 'not smoke and not k8s' -rs"
 
 # bandit reads this only with `-c pyproject.toml` (ci/sast.sh passes it):
 # https://bandit.readthedocs.io/en/latest/config.html

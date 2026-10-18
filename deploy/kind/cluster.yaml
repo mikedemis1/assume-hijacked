@@ -1,0 +1,51 @@
+# Local Kubernetes for the walls: kind cluster "ah" (kubectl context kind-ah).
+# Two nodes only, because Docker Desktop has 6 GB and the Compose stack runs next to it:
+#   control-plane  untainted, label ah/pool=system   stands in for the AKS system pool
+#   worker         label ah/pool=sandbox, taint ah/sandbox=true:NoSchedule
+#                  stands in for the AKS Kata sandbox pool (agent Jobs land here)
+# The default CNI is off: Cilium (deploy/kind/cilium-values.yaml) enforces the network walls,
+# the same engine as AKS with Azure CNI powered by Cilium.
+# Node image: the default image of kind v0.33.0, with its digest from the release notes
+# https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0 (checked 2026-10-17).
+# The kubeadm patches use the v1beta4 API, where kubelet flags are a list of name/value pairs.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ah
+# containerd reads registry settings from /etc/containerd/certs.d, where scripts/kind-registry.sh
+# points localhost:5001 at the local registry container kind-registry. From the kind
+# docs, "Local Registry" (https://kind.sigs.k8s.io/docs/user/local-registry/). Applied only when
+# the cluster is created.
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+networking:
+  disableDefaultCNI: true
+  # A fixed port, so the kubeconfig stays valid after the node containers are stopped and started
+  # (with a random port Docker assigns a new one at every start).
+  apiServerAddress: "127.0.0.1"
+  apiServerPort: 16443
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        apiVersion: kubeadm.k8s.io/v1beta4
+        nodeRegistration:
+          taints: []
+          kubeletExtraArgs:
+            - name: node-labels
+              value: "ah/pool=system"
+  - role: worker
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        apiVersion: kubeadm.k8s.io/v1beta4
+        nodeRegistration:
+          kubeletExtraArgs:
+            - name: node-labels
+              value: "ah/pool=sandbox"
+            - name: register-with-taints
+              value: "ah/sandbox=true:NoSchedule"

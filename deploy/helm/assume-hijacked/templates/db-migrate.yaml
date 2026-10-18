@@ -1,0 +1,179 @@
+{{- /*
+azure only: database setup of the flexible server. The Jobs log in as an Entra admin, so no
+PostgreSQL password exists for them: an init container trades the pod's workload identity token
+for Entra access tokens (one for PostgreSQL, one for Key Vault) that the next containers read
+from a memory-backed volume.
+
+  db-migrate           post-install, so once: runs db/init/init.sh (the same file as kind, Compose
+                       and CI; not idempotent). init.sh creates each role with a random password
+                       nobody keeps; the passwords step right after replaces it.
+  db-passwords-rotate  the passwords step alone (db-passwords-rotate.yaml). Never part of a
+                       deploy: scripts/azure-rotate-db-passwords.sh renders and runs it.
+
+The passwords step (python -m app.dbsetup.passwords, app image) gives every workload role a new
+password (ALTER ROLE ... PASSWORD) and writes it as secret db-password-<role> into the vault of
+the workload that logs in as that role, the vault and secret its SecretProviderClass reads
+(DB_PASSWORD_VAULTS).
+
+Passwords are set at install only. A plain helm upgrade never changes them: the pods read
+DB_PASSWORD_<ROLE> from the Secret the Secrets Store CSI driver syncs from the vault, and the
+driver refreshes an existing synced Secret only on its rotation poll, so a pod started right after
+a rotation would still get the old password while the old pods lose new connections. Rotation is
+its own step: run the passwords Job, wait longer than the driver's rotation interval, then restart
+the pods with a database role (the script does exactly that).
+
+Install order, and why there is no --wait: Helm creates the release's objects (network policies
+included), then runs db-migrate. Until db-migrate has written a workload's secret, that pod's CSI
+volume cannot mount; the kubelet retries the mount and the pod starts once the secret exists. With
+--wait, Helm would wait for those pods before it runs the hook that lets them start, so the deploy
+runs helm with --wait=hookOnly (Helm waits for the hook Job only) and then waits for the rollouts.
+
+Network policies: db-migrate runs after the install has applied the policies. The rotation Job
+runs against the deployed release, under its policies: a workload vault added to values reaches
+the db-migrate egress rule only with a helm upgrade, so upgrade first, then rotate. (A pre-upgrade
+hook would run under the previous release's policies; this chart has none.)
+*/ -}}
+{{- if eq .Values.env "azure" }}
+{{- $root := . -}}
+{{ include "ah.serviceAccount" (dict "root" $root "name" "db-migrate" "namespace" "ah-core" "workloadIdentity" true) }}
+---
+{{ include "ah.dbFiles" (dict "root" $root "namespace" "ah-core" "name" "db-migrate") }}
+---
+{{ include "ah.dbSetupJob" (dict "root" $root "name" "db-migrate" "hook" "post-install" "migrate" true) }}
+{{- end }}
+
+{{- /*
+One database setup Job. Call with (dict "root" $ "name" ... "hook" <helm hook or ""> "migrate" bool):
+migrate runs init.sh before the passwords step.
+*/ -}}
+{{- define "ah.dbSetupJob" -}}
+{{- $root := .root -}}
+{{- $v := $root.Values -}}
+{{- $job := . -}}
+{{- $uid := include "ah.appUid" $root | int -}}
+{{- $vaults := dict -}}
+{{- range $role, $component := include "ah.dbRoleComponents" $root | fromJson -}}
+{{- $_ := set $vaults $role (dict
+    "vault" (required (printf "azure.keyVaults.%s is required with env=azure" $component) (index $v.azure.keyVaults $component))
+    "secret" (printf "db-password-%s" (replace "_" "-" $role))) -}}
+{{- end -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $job.name }}
+  namespace: ah-core
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "db-migrate") | nindent 4 }}
+  {{- with $job.hook }}
+  annotations:
+    helm.sh/hook: {{ . }}
+    helm.sh/hook-delete-policy: before-hook-creation
+  {{- end }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- /* The same pod name label for both Jobs: the network policies of db-migrate apply. */}}
+        {{- include "ah.labels" (dict "root" $root "name" "db-migrate") | nindent 8 }}
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: db-migrate
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      restartPolicy: Never
+      {{- with include "ah.systemPlacement" $root }}{{ . | nindent 6 }}{{ end }}
+      securityContext:
+        {{- include "ah.podSecurityContext" $uid | nindent 8 }}
+      initContainers:
+        - name: entra-token
+          image: {{ $v.images.azureCli }}
+          imagePullPolicy: IfNotPresent
+          # AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_FEDERATED_TOKEN_FILE come from the
+          # workload identity webhook.
+          command:
+            - sh
+            - -c
+            - >-
+              az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID"
+              --federated-token "$(cat "$AZURE_FEDERATED_TOKEN_FILE")" --allow-no-subscriptions --output none
+              && az account get-access-token --resource-type oss-rdbms --query accessToken --output tsv
+              > /run/ah-token/postgres
+              && az account get-access-token --resource https://vault.azure.net --query accessToken --output tsv
+              > /run/ah-token/key-vault
+          env:
+            - {name: AZURE_CONFIG_DIR, value: /tmp/azure}
+            - {name: HOME, value: /tmp}
+          volumeMounts:
+            - {name: ah-token, mountPath: /run/ah-token}
+            - {name: tmp, mountPath: /tmp}
+          securityContext:
+            {{- include "ah.containerSecurityContext" $uid | nindent 12 }}
+          resources:
+            {{- toYaml $v.resources.job | nindent 12 }}
+        {{- if $job.migrate }}
+        - name: migrate
+          image: {{ $v.images.postgres }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              # A random password per role for CREATE ROLE; replaced by the passwords step.
+              {{- range $role := include "ah.dbRoles" $root | fromJsonArray }}
+              DB_PASSWORD_{{ upper $role }}="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+              export DB_PASSWORD_{{ upper $role }}
+              {{- end }}
+              PGPASSWORD="$(cat /run/ah-token/postgres)"
+              export PGPASSWORD
+              exec sh /db/init/init.sh
+          env:
+            - {name: PGHOST, value: {{ required "db.host is required with env=azure" $v.db.host | quote }}}
+            - {name: PGSSLMODE, value: require}
+            - {name: POSTGRES_USER, value: {{ required "azure.dbAdmin is required with env=azure" $v.azure.dbAdmin | quote }}}
+            - {name: POSTGRES_DB, value: {{ $v.db.name | quote }}}
+            - {name: SQL_DIR, value: /db/sql}
+            - {name: DEMO_VULNERABLE, value: {{ ternary "1" "0" $v.db.demoVulnerable | quote }}}
+          volumeMounts:
+            {{- include "ah.dbFilesMounts" $root | nindent 12 }}
+            - {name: ah-token, mountPath: /run/ah-token, readOnly: true}
+          securityContext:
+            {{- include "ah.containerSecurityContext" $uid | nindent 12 }}
+          resources:
+            {{- toYaml $v.resources.job | nindent 12 }}
+        {{- end }}
+      containers:
+        - name: passwords
+          image: {{ $v.images.app }}
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.dbsetup.passwords"]
+          env:
+            - {name: APP_ENV, value: azure}
+            - {name: DB_HOST, value: {{ $v.db.host | quote }}}
+            - {name: DB_PORT, value: {{ $v.db.port | toString | quote }}}
+            - {name: DB_NAME, value: {{ $v.db.name | quote }}}
+            - {name: DB_ADMIN_USER, value: {{ $v.azure.dbAdmin | quote }}}
+            - {name: DB_ACCESS_TOKEN_FILE, value: /run/ah-token/postgres}
+            - {name: KEY_VAULT_ACCESS_TOKEN_FILE, value: /run/ah-token/key-vault}
+            # role -> {vault, secret}: where each workload's SecretProviderClass reads its password.
+            - {name: DB_PASSWORD_VAULTS, value: {{ toJson $vaults | quote }}}
+          volumeMounts:
+            - {name: ah-token, mountPath: /run/ah-token, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+          securityContext:
+            {{- include "ah.containerSecurityContext" $uid | nindent 12 }}
+          resources:
+            {{- toYaml $v.resources.job | nindent 12 }}
+      volumes:
+        {{- if $job.migrate }}
+        {{- include "ah.dbFilesVolumes" $root | nindent 8 }}
+        {{- else }}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        {{- end }}
+        - name: ah-token
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+{{- end }}

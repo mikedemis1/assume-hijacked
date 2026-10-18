@@ -1,0 +1,16 @@
+{{- /*
+Risk engine (ah-core): POST /decide for every tool call, plus the async effect loop.
+Exactly one process: /decide keeps per-lease state in memory (calls and denials so far), so a
+second replica would judge half the calls without the other half's history. The Deployment is
+pinned to one replica (no value to change it), and Recreate stops the old pod before the new one
+starts, so not even a rollout runs two at once.
+*/ -}}
+{{ include "ah.workload" (dict
+    "root" .
+    "name" "risk-engine"
+    "namespace" "ah-core"
+    "command" (list "python" "-m" "app.risk.main")
+    "ports" (list (dict "name" "http" "port" 8082))
+    "ops" true
+    "dbRole" "risk_engine"
+    "strategy" "Recreate") }}

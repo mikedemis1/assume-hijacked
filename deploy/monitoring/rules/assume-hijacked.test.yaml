@@ -1,0 +1,114 @@
+# Unit tests for assume-hijacked.yaml, run by promtool (`promtool test rules`). promtool wants a
+# plain rule file, so tests/k8s/test_monitoring.py copies the spec of the PrometheusRule next to
+# this file as assume-hijacked.rules.yaml first.
+#
+# Series are written so that a gauge holding "the time of the last poll" equals the test clock
+# while the executor is alive: one sample every 15 s, value 15 * step.
+rule_files:
+  - assume-hijacked.rules.yaml
+
+evaluation_interval: 15s
+
+tests:
+  - name: executor polling normally gives no alert
+    interval: 15s
+    input_series:
+      - series: 'executor_last_poll_timestamp_seconds{job="executor"}'
+        values: '0+15x80'
+    alert_rule_test:
+      - {eval_time: 5m, alertname: ExecutorHeartbeatStale, exp_alerts: []}
+      - {eval_time: 15m, alertname: ExecutorHeartbeatStale, exp_alerts: []}
+
+  # The loop is stuck but the process still answers /metrics: the value stops moving at 120 s.
+  # Stale after 180 s, pending for the 1 minute of `for`, firing from 240 s.
+  - name: heartbeat stuck in the past fires after a minute
+    interval: 15s
+    input_series:
+      - series: 'executor_last_poll_timestamp_seconds{job="executor"}'
+        values: '0+15x8 120x60'
+    alert_rule_test:
+      - {eval_time: 2m, alertname: ExecutorHeartbeatStale, exp_alerts: []}
+      - {eval_time: 3m30s, alertname: ExecutorHeartbeatStale, exp_alerts: []}
+      - eval_time: 5m
+        alertname: ExecutorHeartbeatStale
+        exp_alerts:
+          - exp_labels: {severity: critical, job: executor}
+            exp_annotations:
+              summary: The executor has not polled for more than a minute
+              description: >-
+                executor_last_poll_timestamp_seconds is older than 60 seconds or missing.
+                Approved requests are not being carried out.
+
+  # Scaled to zero: the target goes away and Prometheus writes a staleness marker, so the series
+  # is gone and only absent() can see it.
+  - name: executor gone fires through absent
+    interval: 15s
+    input_series:
+      - series: 'executor_last_poll_timestamp_seconds{job="executor"}'
+        values: '0+15x8 stale _x60'
+    alert_rule_test:
+      - {eval_time: 2m, alertname: ExecutorHeartbeatStale, exp_alerts: []}
+      - eval_time: 5m
+        alertname: ExecutorHeartbeatStale
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: The executor has not polled for more than a minute
+              description: >-
+                executor_last_poll_timestamp_seconds is older than 60 seconds or missing.
+                Approved requests are not being carried out.
+
+  - name: risk engine scraped fine gives no alert, scrape failing fires
+    interval: 15s
+    input_series:
+      - series: 'up{job="risk-engine", namespace="ah-core"}'
+        values: '1x20 0x40'
+    alert_rule_test:
+      - {eval_time: 4m, alertname: RiskEngineDown, exp_alerts: []}
+      # The scrape fails from 5 min on, the alert waits one minute and fires from 6 min.
+      - {eval_time: 5m30s, alertname: RiskEngineDown, exp_alerts: []}
+      - eval_time: 8m
+        alertname: RiskEngineDown
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: The risk engine is not answering its metrics scrape
+              description: >-
+                No risk-engine pod has been scraped successfully for a minute. The tool gateway
+                denies every call while the risk engine is unreachable (fail closed).
+
+  - name: risk engine pod gone fires, another component being up does not hide it
+    interval: 15s
+    input_series:
+      - series: 'up{job="risk-engine", namespace="ah-core"}'
+        values: '1x8 stale _x60'
+      - series: 'up{job="executor", namespace="ah-core"}'
+        values: '1x70'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RiskEngineDown
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: The risk engine is not answering its metrics scrape
+              description: >-
+                No risk-engine pod has been scraped successfully for a minute. The tool gateway
+                denies every call while the risk engine is unreachable (fail closed).
+
+  - name: denials burst fires, a quiet gateway does not
+    interval: 15s
+    input_series:
+      - series: 'gateway_denials_total{reason="tool_not_in_lease", job="tool-gateway"}'
+        values: '0+3x40'
+      - series: 'gateway_denials_total{reason="lease", job="tool-gateway"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: GatewayDenialsBurst
+        exp_alerts:
+          - exp_labels: {severity: warning, reason: tool_not_in_lease}
+            exp_annotations:
+              summary: The tool gateway denied more than 10 calls in 5 minutes
+              description: >-
+                Look at the reason label: lease, tool_not_in_lease, paused, call_budget and the
+                others each name the wall that refused.

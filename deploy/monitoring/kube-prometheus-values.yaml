@@ -1,0 +1,168 @@
+# kube-prometheus-stack for the kind cluster "ah", namespace ah-monitoring.
+#
+# Chart kube-prometheus-stack 91.9.0 (created 2026-10-02, so more than 14 days old when pinned).
+# scripts/kind-monitoring.sh pulls it from https://prometheus-community.github.io/helm-charts and
+# refuses a file whose sha256 differs from the digest in that repository's index.yaml
+# (checked 2026-10-17). Every image it renders is pinned below by the digest of the multi-arch
+# index, looked up with `docker buildx imagetools inspect` on 2026-10-17. tests/k8s/test_monitoring.py
+# renders the chart with these values and fails when an image has no digest.
+#
+# Lean on purpose (Docker has 6 GB): only what the Walls need. Prometheus, the operator,
+# Alertmanager and Grafana. No node exporter (it needs host access that the namespace's Pod
+# Security profile refuses), no kube-state-metrics, no scraping of the control plane, no default
+# rules or dashboards. The admission webhook of the operator is off, so no certificate job runs:
+# the rules are checked before install with promtool (tests/k8s/test_monitoring.py).
+fullnameOverride: kps
+
+crds:
+  enabled: true
+defaultRules:
+  create: false
+kubernetesServiceMonitors:
+  enabled: false
+kubeApiServer: {enabled: false}
+kubelet: {enabled: false}
+kubeControllerManager: {enabled: false}
+coreDns: {enabled: false}
+kubeDns: {enabled: false}
+kubeEtcd: {enabled: false}
+kubeScheduler: {enabled: false}
+kubeProxy: {enabled: false}
+kubeStateMetrics: {enabled: false}
+nodeExporter: {enabled: false}
+windowsMonitoring: {enabled: false}
+
+prometheusOperator:
+  admissionWebhooks:
+    enabled: false
+  tls:
+    enabled: false
+  image:
+    tag: v0.94.1
+    sha: 7c88d4e7bae63bd8d0f8da986054337c23b4472fa8d3c6817f5bc4b8407a2d6a
+  prometheusConfigReloader:
+    image:
+      tag: v0.94.1
+      sha: 06b52bd4dbe3ed6dd5905aadaf8b9987d9da4c31d37bb86deaadae68cee2d26b
+  # Only used for a Thanos sidecar, which is not configured. Pinned so that no tag is rendered.
+  thanosImage:
+    tag: v0.42.4
+    sha: b567818fe608067eb0f1d7c2c4fe361e7ad83c8a256234c97685f1d0bf670cc8
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+
+alertmanager:
+  alertmanagerSpec:
+    image:
+      tag: v0.34.1
+      sha: e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
+    replicas: 1
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+      limits: {cpu: 100m, memory: 64Mi}
+  # Every alert goes to Mailpit (deploy/monitoring/mailpit.yaml), the local mail catcher, over
+  # plain SMTP inside the namespace. Nothing leaves the cluster. group_wait is short so that the
+  # demo does not wait; the rule's own `for` is what delays an alert.
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: mailpit
+      group_by: [alertname]
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+    receivers:
+      - name: mailpit
+        email_configs:
+          - to: security@assume-hijacked.local
+            from: alertmanager@assume-hijacked.local
+            smarthost: mailpit.ah-monitoring.svc.cluster.local:1025
+            require_tls: false
+            send_resolved: true
+
+prometheus:
+  prometheusSpec:
+    image:
+      tag: v3.15.0-distroless
+      sha: b2a413d5a03ea6a76782a508d1c7947440bba3b973931a25676e278431891b01
+    replicas: 1
+    # No volume: a demo cluster does not keep metrics, and a few hours are enough.
+    retention: 6h
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    # Take every PodMonitor, ServiceMonitor and PrometheusRule in the cluster, not only the ones
+    # labelled with the Helm release.
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {cpu: "1", memory: 512Mi}
+  # Every component of the application serves /metrics on its port 9000 ("ops", named in the
+  # chart's pod spec). One PodMonitor for all of them; the job label is the component name
+  # (app.kubernetes.io/name), so the alert rules can say job="risk-engine". The network walls
+  # allow ah-monitoring to reach port 9000 and nothing else (edge-21-monitoring-to-metrics).
+  additionalPodMonitors:
+    - name: assume-hijacked
+      jobLabel: app.kubernetes.io/name
+      namespaceSelector:
+        matchNames: [ah-intake, ah-agent, ah-gateway, ah-tools, ah-core, ah-staff, ah-fakes]
+      selector:
+        matchLabels:
+          app.kubernetes.io/part-of: assume-hijacked
+      podMetricsEndpoints:
+        - port: ops
+          path: /metrics
+          interval: 15s
+          relabelings:
+            - action: replace
+              sourceLabels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+              targetLabel: component
+  # Hubble's drop counter (deploy/kind/cilium-values.yaml enables it), served by the headless
+  # Service hubble-metrics of the Cilium chart.
+  additionalServiceMonitors:
+    - name: hubble
+      namespaceSelector:
+        matchNames: [kube-system]
+      selector:
+        matchLabels:
+          k8s-app: hubble
+      endpoints:
+        - port: hubble-metrics
+          interval: 30s
+
+grafana:
+  # The admin login comes from the Secret grafana-admin, created by scripts/kind-monitoring.sh
+  # with a random password (the chart's default password is public).
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  defaultDashboardsEnabled: false
+  testFramework:
+    enabled: false
+  image:
+    tag: 13.2.3-distroless
+    sha: 202e5d5b3f8499e70ccac7991eea6d7da72d2790eb2e0597e7987acf724e7180
+  # Reads dashboards from ConfigMaps labelled grafana_dashboard=1 (deploy/monitoring/dashboards)
+  # and the Prometheus data source from the stack's own ConfigMap.
+  sidecar:
+    image:
+      tag: 2.11.2
+      sha: 2912be006f62f9ea080194cf6d3afcd90daead8d101d0ba686a137a849f6a4f6
+    resources:
+      requests: {cpu: 10m, memory: 48Mi}
+      limits: {cpu: 100m, memory: 96Mi}
+  grafana.ini:
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+      check_for_plugin_updates: false
+    users:
+      allow_sign_up: false
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 256Mi}

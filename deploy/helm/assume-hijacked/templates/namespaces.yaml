@@ -1,0 +1,26 @@
+{{- /*
+One namespace per trust zone: intake, agent, gateway, tools, core, staff and the fakes of the
+outside systems. ah-data exists only on kind, where
+the chart runs PostgreSQL itself. ah-monitoring belongs to the monitoring stack (deploy/monitoring), not here.
+
+Pod Security Admission enforces the "restricted" profile in every one of them: no privileged
+or host access, non-root, no privilege escalation, all capabilities dropped, a seccomp profile
+(https://kubernetes.io/docs/concepts/security/pod-security-standards/). The admission policies in
+templates/policies/admission.yaml repeat the host-access part, so removing these labels alone
+does not open the door.
+*/ -}}
+{{- range include "ah.namespaces" . | fromJsonArray }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ . }}
+  labels:
+    app.kubernetes.io/part-of: assume-hijacked
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+{{- end }}

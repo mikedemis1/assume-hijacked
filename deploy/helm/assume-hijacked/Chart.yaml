@@ -1,0 +1,10 @@
+apiVersion: v2
+name: assume-hijacked
+description: >-
+  The support agent and every wall around it: tool gateway, risk engine, dispatcher,
+  LLM gateway, the five tools, executor, register sync, approval console and the fakes.
+  One chart for kind (values-kind.yaml) and AKS (values-azure.yaml).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0"

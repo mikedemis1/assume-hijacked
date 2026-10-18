@@ -1,0 +1,28 @@
+{{- /*
+Tool gateway (ah-gateway): the only way from the agent to a tool. Checks the agent's projected
+token with TokenReview, asks the risk engine, and signs a short per-tool token.
+*/ -}}
+{{- $env := list
+    (dict "name" "CALLER_AUTH" "value" "k8s")
+    (dict "name" "RISK_URL" "value" (printf "http://%s:8082" (include "ah.host" (list "risk-engine" "ah-core")))) -}}
+{{- range $tool := include "ah.tools" . | fromJsonArray -}}
+{{- $env = append $env (dict
+    "name" (printf "TOOL_URL_%s" (upper $tool))
+    "value" (printf "http://%s:8000/mcp" (include "ah.host" (list (printf "tool-%s" (replace "_" "-" $tool)) "ah-tools")))) -}}
+{{- end -}}
+{{ include "ah.workload" (dict
+    "root" .
+    "name" "tool-gateway"
+    "namespace" "ah-gateway"
+    "command" (list "python" "-m" "app.gateway.main")
+    "ports" (list (dict "name" "mcp" "port" 8080))
+    "ops" true
+    "env" $env
+    "dbRole" "gateway"
+    "files" (list (dict
+      "key" "signing-key.pem"
+      "env" "GATEWAY_SIGNING_KEY_FILE"
+      "value" .Values.secrets.gatewaySigningKeyPem
+      "kvObject" "gateway-signing-key"
+      "what" "secrets.gatewaySigningKeyPem"))
+    "apiToken" true) }}

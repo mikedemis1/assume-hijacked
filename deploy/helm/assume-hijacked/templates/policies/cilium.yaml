@@ -1,0 +1,151 @@
+{{- /*
+Network walls, part 2: what plain NetworkPolicy cannot express (CiliumNetworkPolicy, cilium.io/v2;
+kind: Cilium OSS 1.20, AKS: Advanced Container Networking Services). Cilium enforces these next
+to the NetworkPolicies in networkpolicies.yaml: allows add up, a deny wins over any allow.
+Docs (Cilium 1.20): https://docs.cilium.io/en/v1.20/security/policy/layer7/ (DNS rules),
+https://docs.cilium.io/en/v1.20/security/policy/layer3/ (toFQDNs, toEntities, toCIDR),
+https://docs.cilium.io/en/v1.20/security/policy/deny/ (egressDeny).
+
+1. DNS (matrix row 22). Every pod may send DNS only to CoreDNS, and Cilium's DNS proxy answers
+   REFUSED for any name outside cluster.local, so a name like <secret>.attacker.example never
+   leaves the pod (DNS exfiltration). CoreDNS is authoritative for cluster.local and does not
+   forward those names. `*` matches one label only, and names the resolver builds from the
+   search list must be allowed whole (the Kubernetes note on the page above); with ndots:5 a
+   service name a.b.svc.cluster.local is first tried with each search suffix, and glibc stops
+   at the first REFUSED, so the patterns list those forms too. A short name a.b (service.
+   namespace) is first tried as a.b.<own namespace>.svc.cluster.local: the last pattern (the
+   attack suite found that form refused, so `kubernetes.default` did not resolve). All of them
+   end in cluster.local.
+2. Names outside the cluster (rows 19, 20): only the components in helper ah.externalNames, only
+   their own names (an extra DNS rule plus toFQDNs), only on 443. On Azure the database callers
+   (helper ah.dbCallers) may also resolve db.host, DNS only: the connection is the ipBlock edge.
+   Each such name is allowed with its search-list forms (helper ah.searchNames).
+3. The Kubernetes API (rows 3, 10): only the dispatcher, the tool gateway and the LLM gateway
+   (TokenReview of the caller's token; the dispatcher also creates agent Jobs), and the three
+   fakes of the outside systems (TokenReview of the executor's and register sync's tokens). 443 is the service port
+   and what AKS uses; 6443 is the API server's port on kind (policy sees the backend port).
+4. The instance metadata endpoint 169.254.169.254 (Azure IMDS: managed identity tokens) is
+   denied in every namespace, whatever any allow says.
+*/ -}}
+{{- $root := . -}}
+{{- $dnsPeer := dict "matchLabels" (dict "k8s:io.kubernetes.pod.namespace" "kube-system" "k8s:k8s-app" "kube-dns") -}}
+{{- range $ns := include "ah.namespaces" . | fromJsonArray }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: edge-22-dns-cluster-names-only
+  namespace: {{ $ns }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - {{ toJson $dnsPeer }}
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+          rules:
+            dns:
+              - matchPattern: "*.*.svc.cluster.local."
+              - matchPattern: "*.*.svc.cluster.local.*.svc.cluster.local."
+              - matchPattern: "*.*.svc.cluster.local.svc.cluster.local."
+              - matchPattern: "*.*.svc.cluster.local.cluster.local."
+              - matchPattern: "*.*.{{ $ns }}.svc.cluster.local."
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: deny-instance-metadata
+  namespace: {{ $ns }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  endpointSelector: {}
+  egressDeny:
+    - toCIDR:
+        - 169.254.169.254/32
+{{- end }}
+{{- range $x := include "ah.externalNames" . | fromJsonArray }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: edge-19-20-{{ $x.name }}-to-external-names
+  namespace: {{ $x.ns }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $x.name }}
+  egress:
+    - toEndpoints:
+        - {{ toJson $dnsPeer }}
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+          rules:
+            dns:
+              {{- range $host := $x.hosts }}
+              {{- range include "ah.searchNames" (dict "host" $host "ns" $x.ns) | fromJsonArray }}
+              - matchName: {{ . | quote }}
+              {{- end }}
+              {{- end }}
+    - toFQDNs:
+        {{- range $x.hosts }}
+        - matchName: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}
+{{- end }}
+{{- range $ns, $pods := include "ah.dbCallers" . | fromJson }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: edge-22-db-host-dns
+  namespace: {{ $ns }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  endpointSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: {{ toJson $pods }}}
+  egress:
+    - toEndpoints:
+        - {{ toJson $dnsPeer }}
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+          rules:
+            dns:
+              {{- range include "ah.searchNames" (dict "host" (required "db.host is required" $root.Values.db.host) "ns" $ns) | fromJsonArray }}
+              - matchName: {{ . | quote }}
+              {{- end }}
+{{- end }}
+{{- $apiCallers := list (list "edge-03" "dispatcher" "ah-intake") (list "edge-10" "tool-gateway" "ah-gateway") (list "edge-10" "llm-gateway" "ah-agent") -}}
+{{- range $fake := list "fake-register" "fake-dso" "fake-sms" }}{{ $apiCallers = append $apiCallers (list "edge-tokenreview" $fake "ah-fakes") }}{{ end -}}
+{{- range $c := $apiCallers }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ index $c 0 }}-{{ index $c 1 }}-to-kube-apiserver
+  namespace: {{ index $c 2 }}
+  labels:
+    {{- include "ah.labels" (dict "root" $root "name" "network-walls") | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ index $c 1 }}
+  egress:
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}
+            - {port: "6443", protocol: TCP}
+{{- end }}
