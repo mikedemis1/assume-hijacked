@@ -222,8 +222,8 @@ CREATE TRIGGER disconnection_orders_no_update BEFORE UPDATE ON disconnection_ord
 --                                 call_assessments row with decision deny or pause, for a lease of
 --                                 that ticket, except denials whose only cause was that every agent
 --                                 was paused (reasons = {paused}); those say nothing about this
---                                 ticket. Calls the gateway blocks itself (tool_calls, task A8) can
---                                 join this count once they exist.
+--                                 ticket. Calls the gateway blocks itself (tool_calls, 05-lease.sql)
+--                                 do not count yet.
 --   home_protection(request)      YES, NO or UNKNOWN for the home of one move-out request. The
 --                                 flags say which homes have life-support equipment (health data);
 --                                 the engine learns one category per move-out it assesses, not the

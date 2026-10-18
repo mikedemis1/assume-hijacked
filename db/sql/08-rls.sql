@@ -16,13 +16,16 @@
 -- Heartbeats (06-risk.sql) too: a row a tool could write would keep a stopped component looking
 -- alive. And the register tables (07-register.sql): the flags are health data, and a tool that
 -- could write register_sync or a removal request could make an unprotected home look checked.
+-- And tool_calls (05-lease.sql), the gateway's record of every call: a tool must not be able to
+-- read what was refused or write a row that makes a refusal look like an answer.
 DO $$
 DECLARE
     t text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['tickets', 'customers', 'accounts', 'supply_points', 'action_requests', 'leases',
                             'risk_assessments', 'call_assessments', 'agent_control', 'heartbeats',
-                            'flags', 'register_sync', 'flag_removal_requests', 'flag_removal_approvals']
+                            'flags', 'register_sync', 'flag_removal_requests', 'flag_removal_approvals',
+                            'tool_calls']
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);

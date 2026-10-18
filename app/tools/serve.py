@@ -18,6 +18,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 
 from app import config, db
+from app.common.ops import Heartbeat, Metrics, start_ops_server
 from app.config import Settings
 from app.security.middleware import LEASE_SCOPE_KEY, RequireToolToken
 from app.security.tokens import JtiCache, load_public_key
@@ -26,7 +27,7 @@ from app.tools import lookup_account as lookup_mod
 from app.tools import read_ticket as read_mod
 from app.tools import request_disconnection as moveout_mod
 from app.tools import set_temp_protection as protect_mod
-from app.tools.common import LEASE_INVALID, LeaseError
+from app.tools.common import LEASE_INVALID, LeaseError, checked_arguments
 
 ROLES = {
     "read_ticket": "tool_read_ticket",
@@ -37,6 +38,7 @@ ROLES = {
 }
 TOOLS = tuple(ROLES)
 PORT = 8000
+OPS_PORT = 9000
 
 
 def lease_of(ctx: Context) -> str:
@@ -76,7 +78,7 @@ def build_server(tool: str, settings: Settings, connect: Callable | None = None)
         def lookup_account(ctx: Context, customer_id: int | None = None) -> dict:
             """Return the ticket owner's account: name, tariff, status, address."""
             lease = lease_of(ctx)
-            with connect() as conn:
+            with checked_arguments(), connect() as conn:
                 return lookup_mod.lookup_account(conn, lease, customer_id, vulnerable=True)
 
     elif tool == "lookup_account":
@@ -95,7 +97,7 @@ def build_server(tool: str, settings: Settings, connect: Callable | None = None)
         def request_disconnection(ctx: Context, move_out_date: str) -> dict:
             """Ask to close the account on a move-out date (YYYY-MM-DD). Staff check it."""
             lease = lease_of(ctx)
-            with connect() as conn:
+            with checked_arguments(), connect() as conn:
                 return moveout_mod.request_disconnection(conn, lease, move_out_date)
 
     elif tool == "issue_bill_credit":
@@ -104,7 +106,7 @@ def build_server(tool: str, settings: Settings, connect: Callable | None = None)
         def issue_bill_credit(ctx: Context, amount_eur: float, reason: str, evidence_ref: int) -> dict:
             """Ask for a bill credit. reason: duplicate_charge, outage or late_technician."""
             lease = lease_of(ctx)
-            with connect() as conn:
+            with checked_arguments(), connect() as conn:
                 return credit_mod.issue_bill_credit(conn, lease, amount_eur, reason, evidence_ref)
 
     elif tool == "set_temp_protection":
@@ -159,6 +161,10 @@ def main() -> None:
         # No key, no way to tell a gateway call from any other: do not start.
         raise SystemExit("GATEWAY_PUBLIC_KEY_FILE is not set: a tool does not serve without the gateway's key")
     app = build_app(tool, config.load(), load_public_key(key_file))
+    # /healthz on port 9000 for the platform's probes. A tool has no loop to watch: it is alive
+    # while this process serves, and if the server below stops the process ends, so the heartbeat
+    # never goes stale on its own.
+    start_ops_server(OPS_PORT, Metrics(), Heartbeat(max_age_s=float("inf")))
     # All interfaces of the container: the gateway reaches the tool from another container. Each
     # tool container is only on internal edge networks (compose.yaml), none with a route out; the
     # network and the token, not the bind address, are the wall (tests/test_smoke.py).

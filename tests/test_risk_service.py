@@ -9,7 +9,9 @@ gathers the right facts from the database, writes what it decided, and fails clo
 
 import dataclasses
 import hashlib
+import json
 import logging
+import time
 from datetime import timedelta
 
 import psycopg
@@ -288,6 +290,110 @@ def test_decider_reconnects_after_a_lost_connection(admin, settings):
     finally:
         decider.close()
     assert len(opened) == 2
+
+
+# --- /decide is bounded: a body, a connection and a statement each have a limit ---
+
+async def raw_decide(headers, chunks):
+    """POST /decide straight to the app with the given header lines and body chunks. Returns the
+    status, the answer and how many chunks the app asked for."""
+    asked, sent = [0], {}
+    queue = list(chunks)
+
+    async def receive():
+        asked[0] += 1
+        body = queue.pop(0) if queue else b""
+        return {"type": "http.request", "body": body, "more_body": bool(queue)}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            sent["status"] = message["status"]
+        elif message["type"] == "http.response.body":
+            sent["body"] = sent.get("body", b"") + message.get("body", b"")
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "path": "/decide",
+        "raw_path": b"/decide", "query_string": b"", "scheme": "http", "server": ("risk", 8082),
+        "client": ("1.2.3.4", 1), "headers": [(b"host", b"risk"), *headers],
+    }
+    await service.build_app(FakeDecider())(scope, receive, send)
+    return sent["status"], sent["body"], asked[0]
+
+
+def test_decide_refuses_a_declared_body_over_the_cap_with_413_without_reading_it():
+    import asyncio
+
+    status, body, asked = asyncio.run(raw_decide([(b"content-length", b"10000000")], [b"x" * 100]))
+    assert status == 413
+    assert json.loads(body) == {"decision": "deny", "reasons": ["bad_request"]}
+    assert asked == 0                                  # not one byte of the body was taken in
+    # The control: a declared length at the cap is read and judged on its content.
+    ok = json.dumps({"lease": "a" * 64, "tool": "read_ticket"}).encode()
+    status, body, asked = asyncio.run(raw_decide([(b"content-length", str(len(ok)).encode())], [ok]))
+    assert status == 200 and json.loads(body)["decision"] == "allow" and asked >= 1
+
+
+def test_decide_stops_reading_a_body_with_no_length_once_it_passes_the_cap():
+    import asyncio
+
+    chunks = [b"x" * 600 for _ in range(50)]          # chunked: no content-length header
+    status, body, asked = asyncio.run(raw_decide([], chunks))
+    assert status == 413 and json.loads(body)["reasons"] == ["bad_request"]
+    assert asked <= 3                                  # 600 + 600 passes 1024; it did not read 50 chunks
+
+
+def test_decide_refuses_a_content_length_that_is_not_a_number():
+    import asyncio
+
+    status, _, asked = asyncio.run(raw_decide([(b"content-length", b"lots")], [b"{}"]))
+    assert status == 400 and asked == 0
+
+
+def test_the_connection_decide_uses_has_a_connect_timeout_and_a_statement_timeout(settings):
+    conn = service.connect_for_decide(settings)
+    try:
+        assert conn.info.get_parameters()["connect_timeout"] == "2"
+        assert conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "1500ms"
+        started = time.monotonic()
+        with pytest.raises(psycopg.errors.QueryCanceled):
+            conn.execute("SELECT pg_sleep(10)")
+        assert time.monotonic() - started < 4
+    finally:
+        conn.close()
+    # The effect loop's connection is not cut short: it does batches of work.
+    loop = service.connect(settings)
+    try:
+        assert loop.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "0"
+    finally:
+        loop.close()
+
+
+def test_decide_answers_deny_when_a_statement_runs_too_long(admin, settings, monkeypatch):
+    lease = open_lease(admin, 1)
+    real = service.call_facts
+
+    def slow(conn, h, tool):
+        conn.execute("SELECT pg_sleep(10)")
+        return real(conn, h, tool)
+
+    monkeypatch.setattr(service, "call_facts", slow)
+    decider = service.Decider(lambda: service.connect_for_decide(settings), Metrics())
+    try:
+        started = time.monotonic()
+        response = post(decider, {"lease": lease, "tool": "read_ticket"})
+        elapsed = time.monotonic() - started
+    finally:
+        decider.close()
+    assert response.status_code == 503 and response.json() == {"decision": "deny", "reasons": ["risk_unavailable"]}
+    assert elapsed < 3, elapsed                        # the gateway gives up at 2 s; the engine at ~1.5 s
+    assert calls(admin) == []                          # nothing was written for a decision it did not make
+    # The control: without the slow statement the same lease is allowed.
+    monkeypatch.setattr(service, "call_facts", real)
+    decider = service.Decider(lambda: service.connect_for_decide(settings), Metrics())
+    try:
+        assert post(decider, {"lease": lease, "tool": "read_ticket"}).json()["decision"] == "allow"
+    finally:
+        decider.close()
 
 
 # --- assess_pending: a tier for every pending effect request ---

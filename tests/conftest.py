@@ -77,7 +77,7 @@ SEED_SQL = (ROOT / "db" / "sql" / "04-seed.sql").read_text(encoding="utf-8")
 VULNERABLE_SQL = (ROOT / "db" / "sql" / "90-vulnerable-demo.sql").read_text(encoding="utf-8")
 ALL_TABLES = (
     "events, disconnection_orders, occupier_notices, credits, approvals, risk_assessments, "
-    "call_assessments, agent_control, heartbeats, action_requests, "
+    "call_assessments, tool_calls, agent_control, heartbeats, action_requests, "
     "leases, flag_removal_approvals, flag_removal_requests, register_sync, flags, charges, tickets, "
     "accounts, supply_points, customers"
 )

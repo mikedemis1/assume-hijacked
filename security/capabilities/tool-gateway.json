@@ -1,0 +1,65 @@
+{
+  "component": "tool-gateway",
+  "description": "The one way from the agent to a tool. Checks the lease, the stop switch and the arguments, asks the risk engine about every call, compares the tool's description with the reviewed one and signs the token a tool accepts once. Holds the signing key; its database role can read a lease's scope and the stop switch and add rows to the record of calls, nothing else.",
+  "db": {
+    "role": "gateway",
+    "login": true,
+    "connection_limit": 5,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {
+      "agent_control": [
+        "SELECT"
+      ],
+      "tool_calls": [
+        "INSERT (arg_names, dropped_args, lease_hash, outcome, reason, tool)"
+      ],
+      "tool_calls_id_seq": [
+        "USAGE"
+      ]
+    },
+    "execute": [
+      "beat(text)",
+      "lease_scope(text)"
+    ]
+  },
+  "network": {
+    "ingress_from": [
+      "agent"
+    ],
+    "egress_to": [
+      "db",
+      "risk-engine",
+      "tool-read-ticket",
+      "tool-lookup-account",
+      "tool-request-disconnection",
+      "tool-issue-bill-credit",
+      "tool-set-temp-protection"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "tool-gateway",
+    "rbac": [
+      "create tokenreviews.authentication.k8s.io"
+    ]
+  },
+  "azure": {
+    "identity": "id-tool-gateway",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-tool-gateway"
+      }
+    ]
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}

@@ -4,6 +4,7 @@ middleware and the same MCP server as the container does."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Callable
@@ -16,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
-from app.agent.gateway import ToolGateway
+from app.gateway.proxy import ToolClient, ToolUnavailable
 from app.security.tokens import JtiCache
 from app.tools import serve
 
@@ -118,12 +119,22 @@ class RecordingTransport(httpx2.AsyncBaseTransport):
         return await self._inner.handle_async_request(request)
 
 
-class AppToolGateway(ToolGateway):
-    """The agent's tool client (the production class), with the tools as apps in this process.
+class AppToolClient(ToolClient):
+    """The gateway's tool client (the production class), with the tools as apps in this process.
     Every call builds the app again (an MCP session manager runs once), all of them sharing one
-    replay cache like one server. `sent` collects every request that left the client."""
+    replay cache like one server. `sent` collects every request that left the client; `apps` swaps
+    the app of a tool (a tool whose description was changed, say)."""
 
-    def __init__(self, settings, private_pem: bytes, public_pem: bytes, tools=serve.TOOLS, clock=time.time):
+    def __init__(
+        self,
+        settings,
+        private_pem: bytes,
+        public_pem: bytes,
+        tools=serve.TOOLS,
+        clock=time.time,
+        apps: dict[str, Callable] | None = None,
+        transports: dict[str, Callable] | None = None,
+    ):
         super().__init__({tool: URL for tool in tools}, private_pem, clock)
         seen = JtiCache()
         self.sent: list = []
@@ -131,9 +142,38 @@ class AppToolGateway(ToolGateway):
             tool: (lambda tool=tool: serve.build_app(tool, settings, public_pem, seen=seen, clock=clock))
             for tool in tools
         }
+        self._apps.update(apps or {})
+        self._transports = transports or {}   # name -> factory of a raw transport (a tool that is down)
 
     @asynccontextmanager
     async def _transport(self, name: str):
+        if name in self._transports:
+            yield self._transports[name]()
+            return
         app = self._apps[name]()
         async with running(app):
             yield RecordingTransport(httpx2.ASGITransport(app=app), self.sent)
+
+    def forwarded(self) -> list[tuple[str, dict]]:
+        """The tool calls that left the client, read off the wire: (tool, arguments) each."""
+        calls = []
+        for _, body in self.sent:
+            message = json.loads(body)
+            if message.get("method") == "tools/call":
+                calls.append((message["params"]["name"], message["params"].get("arguments", {})))
+        return calls
+
+
+class AppToolCaller(AppToolClient):
+    """A caller of the tools that is not the gateway pipeline: it signs and sends, nothing else.
+    `call(name, {"lease": ..., **arguments})` returns what the tool answered as text, `ERROR: ...`
+    for an error, so a test can look at the tool wall by itself."""
+
+    def call(self, name: str, args: dict) -> str:
+        args = dict(args)
+        lease = args.pop("lease", None)
+        try:
+            reply = asyncio.run(self.call_tool(name, args, lease))
+        except ToolUnavailable:
+            return "ERROR: unavailable"
+        return ("ERROR: " if reply.is_error else "") + reply.text

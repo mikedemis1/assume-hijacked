@@ -1,6 +1,6 @@
 {
   "component": "agent",
-  "description": "One run per ticket. Calls the tools and nothing else: no database, no outside system.",
+  "description": "One run per ticket. Calls the tool gateway and nothing else: no database, no tool, no key, no outside system.",
   "db": {
     "role": null,
     "execute": [],
@@ -9,11 +9,7 @@
   "network": {
     "ingress_from": [],
     "egress_to": [
-      "tool-read-ticket",
-      "tool-lookup-account",
-      "tool-request-disconnection",
-      "tool-issue-bill-credit",
-      "tool-set-temp-protection"
+      "tool-gateway"
     ],
     "dns": [
       "cluster"

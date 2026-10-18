@@ -45,7 +45,9 @@
     ]
   },
   "network": {
-    "ingress_from": [],
+    "ingress_from": [
+      "tool-gateway"
+    ],
     "egress_to": [
       "db"
     ],

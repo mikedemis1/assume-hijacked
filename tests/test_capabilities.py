@@ -48,7 +48,7 @@ def test_manifests_are_named_after_their_component_and_use_known_keys():
 def test_every_tool_and_the_database_has_a_manifest():
     found = manifests()
     assert set(TOOL_COMPONENTS.values()) <= set(found)
-    assert {"db", "agent", "executor", "risk-engine", "register-sync"} <= set(found)
+    assert {"db", "agent", "executor", "risk-engine", "register-sync", "tool-gateway"} <= set(found)
 
 
 # --- the descriptor fingerprint ---------------------------------------------------------------
@@ -59,7 +59,7 @@ def test_manifest_descriptor_hashes_match_the_live_tools():
     # tool, run `python -m app.security.descriptors --write`, and review the diff.
     for tool, component in TOOL_COMPONENTS.items():
         listed = manifests()[component]["mcp"]["tools"]
-        assert listed == descriptors.manifest_tools(tool), component
+        assert listed == descriptors.reviewed_tools(tool), component
         assert [t["name"] for t in listed] == [tool]
         assert all(len(t["descriptor_sha256"]) == 64 for t in listed)
 
@@ -168,8 +168,9 @@ def test_a_tool_manifest_names_its_role_and_its_one_function(admin, tool, compon
     # What the database lets the role execute is exactly the one function the manifest names.
     granted = [f.removeprefix("public.") for f in granted_functions(admin, manifest["role"])]
     assert granted == [f.replace(" ", "") for f in manifest["execute"]]  # regprocedure prints no spaces
+    # A tool is called by the gateway and by nothing else (the agent has no edge to it).
     assert manifests()[component]["network"] == {
-        "ingress_from": ["agent"], "egress_to": ["db"], "dns": ["cluster"]
+        "ingress_from": ["tool-gateway"], "egress_to": ["db"], "dns": ["cluster"]
     }
 
 
@@ -193,7 +194,7 @@ def compose():
     return yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
 
 
-def test_every_tool_gets_the_public_key_and_only_the_agent_gets_the_private_key():
+def test_every_tool_gets_the_public_key_and_only_the_gateway_gets_the_private_key():
     services = compose()["services"]
     for tool, component in TOOL_COMPONENTS.items():
         service = services[component]
@@ -202,8 +203,12 @@ def test_every_tool_gets_the_public_key_and_only_the_agent_gets_the_private_key(
         assert service["environment"]["GATEWAY_PUBLIC_KEY_FILE"] == "/run/secrets/gateway_public_key"
         assert service["command"][-1] == tool
     holders = [name for name, service in services.items() if "gateway_signing_key" in service.get("secrets", [])]
-    assert holders == ["agent"]
-    assert services["agent"]["environment"]["GATEWAY_SIGNING_KEY_FILE"] == "/run/secrets/gateway_signing_key"
+    assert holders == ["tool-gateway"]
+    assert services["tool-gateway"]["environment"]["GATEWAY_SIGNING_KEY_FILE"] == "/run/secrets/gateway_signing_key"
+    # The agent, the component a hijacked model can reach, has no key and is not told where one is.
+    agent = services["agent"]
+    assert "secrets" not in agent
+    assert not any("KEY" in name or name.startswith("TOOL_URL") for name in agent["environment"])
     # The public key is for the tools only; nothing else needs to check a token.
     users = [name for name, service in services.items() if "gateway_public_key" in service.get("secrets", [])]
     assert sorted(users) == sorted(TOOL_COMPONENTS.values())
@@ -273,3 +278,120 @@ def test_serve_refuses_a_public_key_of_the_wrong_kind(monkeypatch, tmp_path):
     junk.write_bytes(rsa_public)
     with pytest.raises(ValueError, match="EC P-256"):
         serve.main()
+
+
+# --- the tool gateway: its manifest, its edges, its key ---------------------------------------
+
+def test_the_gateway_manifest_matches_its_database_role(admin):
+    manifest = manifests()["tool-gateway"]["db"]
+    role = admin.execute(
+        "SELECT rolcanlogin, rolconnlimit FROM pg_roles WHERE rolname = %s", (manifest["role"],)
+    ).fetchone()
+    assert role == {"rolcanlogin": True, "rolconnlimit": manifest["connection_limit"]}
+    granted = [f.removeprefix("public.") for f in granted_functions(admin, manifest["role"])]
+    assert granted == [f.replace(" ", "") for f in manifest["execute"]]
+    # Its table rights, read from the catalog: the stop switch (read), the record of calls (add rows).
+    rows = admin.execute(
+        "SELECT table_name, privilege_type FROM information_schema.role_table_grants "
+        "WHERE grantee = %s AND table_schema = 'public' ORDER BY 1, 2",
+        (manifest["role"],),
+    ).fetchall()
+    assert {(r["table_name"], r["privilege_type"]) for r in rows} == {("agent_control", "SELECT")}
+    columns = admin.execute(
+        "SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges "
+        "WHERE grantee = %s AND table_schema = 'public' AND privilege_type <> 'SELECT' ORDER BY 2",
+        (manifest["role"],),
+    ).fetchall()
+    assert {(r["table_name"], r["privilege_type"]) for r in columns} == {("tool_calls", "INSERT")}
+    assert sorted(r["column_name"] for r in columns) == sorted(
+        ["arg_names", "dropped_args", "lease_hash", "outcome", "reason", "tool"]
+    )
+
+
+def edges_of_manifests() -> set[frozenset]:
+    edges = set()
+    for name, manifest in manifests().items():
+        for peer in manifest["network"]["egress_to"] + manifest["network"]["ingress_from"]:
+            if peer != "internet":   # hostaccess, the db's published port: not an edge between two services
+                edges.add(frozenset({name, peer}))
+    return edges
+
+
+def edges_of_compose() -> set[frozenset]:
+    """Every pair of services that share a network (undirected, like the permission assessment)."""
+    config = compose()
+    members: dict[str, set[str]] = {}
+    for name, service in config["services"].items():
+        for network in service.get("networks", []):
+            members.setdefault(network, set()).add(name)
+    edges = set()
+    for network, services in members.items():
+        ordered = sorted(services)
+        edges |= {frozenset({a, b}) for i, a in enumerate(ordered) for b in ordered[i + 1:]}
+    return edges
+
+
+def test_the_edges_the_manifests_name_are_the_edges_compose_builds():
+    # The permission assessment checks this on the running stack; this catches a drift at once.
+    assert edges_of_compose() == edges_of_manifests()
+
+
+def test_the_agent_has_one_edge_and_it_leads_to_the_gateway():
+    services = compose()["services"]
+    assert services["agent"]["networks"] == ["edge_agent_gateway"]
+    assert manifests()["agent"]["network"]["egress_to"] == ["tool-gateway"]
+    sharing = [name for name, service in services.items() if "edge_agent_gateway" in service.get("networks", [])]
+    assert sorted(sharing) == ["agent", "tool-gateway"]
+    # No tool is on a network the agent is on.
+    agent_networks = set(services["agent"]["networks"])
+    for component in TOOL_COMPONENTS.values():
+        assert not agent_networks & set(services[component]["networks"]), component
+
+
+def test_the_gateway_is_the_only_service_on_a_tools_gateway_edge():
+    services = compose()["services"]
+    for tool, component in TOOL_COMPONENTS.items():
+        edge = f"edge_gateway_{tool}"
+        on_edge = sorted(name for name, service in services.items() if edge in service.get("networks", []))
+        assert on_edge == sorted([component, "tool-gateway"]), edge
+
+
+def test_the_gateway_asks_the_risk_engine_and_reaches_the_database_and_nothing_else():
+    services = compose()["services"]
+    assert sorted(services["tool-gateway"]["networks"]) == sorted(
+        ["edge_agent_gateway", "edge_gateway_risk", "edge_gateway_db",
+         *(f"edge_gateway_{tool}" for tool in TOOL_COMPONENTS)]
+    )
+    assert services["risk-engine"]["networks"] == ["edge_risk_db", "edge_gateway_risk"]
+    assert services["tool-gateway"]["environment"]["RISK_URL"] == "http://risk-engine:8082"
+    assert services["tool-gateway"]["environment"]["CALLER_AUTH"] == "compose"
+    for tool in TOOL_COMPONENTS:
+        url = services["tool-gateway"]["environment"][f"TOOL_URL_{tool.upper()}"]
+        assert url == f"http://{TOOL_COMPONENTS[tool]}:8000/mcp"
+
+
+def test_a_tool_serves_healthz_on_9000_while_it_runs(monkeypatch, tmp_path):
+    import urllib.request
+
+    _, public = KEYS
+    key = tmp_path / "gateway.pub"
+    key.write_bytes(public)
+    monkeypatch.setattr("sys.argv", ["serve", "read_ticket"])
+    monkeypatch.delenv("TOOL_NAME", raising=False)
+    monkeypatch.setenv("GATEWAY_PUBLIC_KEY_FILE", str(key))
+    started = {}
+    real = serve.start_ops_server
+    monkeypatch.setattr(
+        serve, "start_ops_server",
+        lambda port, metrics, heartbeat: started.update(port=port, heartbeat=heartbeat, server=real(0, metrics, heartbeat)),
+    )
+    monkeypatch.setattr(serve.uvicorn, "run", lambda *args, **kwargs: started.update(run=kwargs))
+    serve.main()
+    try:
+        assert started["port"] == 9000 and started["run"]["port"] == 8000
+        url = f"http://127.0.0.1:{started['server'].port}/healthz"
+        assert urllib.request.urlopen(url, timeout=5).status == 200
+        # A tool has no loop to age: even a very late clock does not make the probe fail.
+        assert started["heartbeat"].alive(started["heartbeat"].clock() + 10 ** 9)
+    finally:
+        started["server"].shutdown()

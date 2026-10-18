@@ -33,7 +33,7 @@ def poll(conn, settings, now: datetime, metrics: Metrics, heartbeat: Heartbeat) 
 
 def serve_decide(app, port: int = DECIDE_PORT) -> threading.Thread:
     # All interfaces of the container: the gateway calls it from another container. The network is
-    # the wall (edge_gateway_risk, task A8; NetworkPolicy in Kubernetes). No access log: the body
+    # the wall (edge_gateway_risk in compose.yaml; NetworkPolicy in Kubernetes). No access log: the body
     # carries the lease, and the path alone tells nobody anything.
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=port, access_log=False, log_level="warning")  # nosec B104
@@ -48,7 +48,7 @@ def main() -> None:
     metrics = Metrics()
     heartbeat = Heartbeat()
     start_ops_server(OPS_PORT, metrics, heartbeat)
-    decide = serve_decide(service.build_app(service.Decider(lambda: service.connect(settings), metrics), metrics))
+    decide = serve_decide(service.build_app(service.Decider(lambda: service.connect_for_decide(settings), metrics), metrics))
     with service.connect(settings) as conn:
         while True:
             if not decide.is_alive():  # exit, so the process is restarted with /decide up again

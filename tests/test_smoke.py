@@ -1,6 +1,7 @@
 """Smoke tests against the running Compose stack (`docker compose up -d`, then `pytest -m smoke`).
 
-They run the real agent container and look at what the real tool containers and network do.
+They run the real agent container and look at what the real tool gateway, tool containers and
+network do.
 """
 
 import functools
@@ -42,14 +43,15 @@ TOOL_HOSTS = [
     "tool-set-temp-protection",
 ]
 
-# Runs inside the agent container: wait (at most 30 s) until every tool accepts connections.
+# Runs inside the gateway container, the one that reaches every tool: wait (at most 30 s) until every
+# tool accepts connections, then until the gateway itself does.
 WAIT_FOR_TOOLS = """
 import socket, sys, time
 deadline = time.monotonic() + 30
-for host in {hosts!r}:
+for host, port in {targets!r}:
     while True:
         try:
-            socket.create_connection((host, 8000), timeout=2).close()
+            socket.create_connection((host, port), timeout=2).close()
             break
         except OSError as err:
             if time.monotonic() > deadline:
@@ -107,11 +109,14 @@ with ThreadPoolExecutor(8) as pool:
 FAKE_PORTS = {"fake-register": 8090, "fake-dso": 8091, "fake-sms": 8092}
 
 # Every service on an internal network except the db (which is also on hostaccess on purpose).
-WALLED_SERVICES = [*TOOL_HOSTS, "executor", "risk-engine", "register-sync", *FAKE_PORTS, "agent"]
+WALLED_SERVICES = [*TOOL_HOSTS, "tool-gateway", "executor", "risk-engine", "register-sync", *FAKE_PORTS, "agent"]
 
 DB_PORT = 5432  # inside the stack; the published host port is DB_HOST_PORT
 DB_HOST_PORT = int(os.environ.get("DB_PORT", "5432"))
 TOOL_PORT = 8000
+GATEWAY_PORT = 8080
+RISK_PORT = 8082
+OPS_PORT = 9000
 
 
 def compose(*args, timeout=300, env=None):
@@ -135,12 +140,14 @@ def open_stack_lease(ticket_id):
         return conn.execute("SELECT open_lease(%s, %s, NULL)", (ticket_id, list(TOOLS))).fetchone()[0]
 
 
-def run_agent(ticket_id):
+def run_agent(ticket_id, start_dependencies=True):
     # `-e AGENT_LEASE` with no value: Compose takes it from this process's environment, so the
-    # lease is not on any command line.
+    # lease is not on any command line. `run` starts the services the agent depends on, so a test
+    # that has stopped one of them passes --no-deps, or the run would start it again.
     env = {**os.environ, "AGENT_LEASE": open_stack_lease(ticket_id)}
+    deps = [] if start_dependencies else ["--no-deps"]
     done = compose(
-        "run", "--rm", "-e", "AGENT_LEASE", "agent", "python", "-m", "app.agent.main", str(ticket_id), env=env
+        "run", "--rm", *deps, "-e", "AGENT_LEASE", "agent", "python", "-m", "app.agent.main", str(ticket_id), env=env
     )
     assert done.returncode == 0, f"agent exited {done.returncode}\nstdout: {done.stdout}\nstderr: {done.stderr}"
     return done
@@ -148,7 +155,8 @@ def run_agent(ticket_id):
 
 @pytest.fixture(scope="module", autouse=True)
 def tools_are_up():
-    done = compose("run", "--rm", "agent", "python", "-c", WAIT_FOR_TOOLS.format(hosts=TOOL_HOSTS))
+    targets = [*((host, TOOL_PORT) for host in TOOL_HOSTS), ("127.0.0.1", GATEWAY_PORT)]
+    done = compose("exec", "-T", "tool-gateway", "python", "-c", WAIT_FOR_TOOLS.format(targets=targets))
     assert done.returncode == 0, f"tools not ready\nstdout: {done.stdout}\nstderr: {done.stderr}"
 
 
@@ -165,8 +173,8 @@ def test_attack_ticket_through_the_real_stack_leaks_nothing_and_is_logged():
     assert "customer_id" in json.dumps(dropped), dropped
 
 
-# Runs inside the agent container, which holds the signing key for now and reaches every tool: send
-# the tool one request each way and print the status codes as JSON.
+# Runs inside the gateway container, which holds the signing key and reaches every tool: send the
+# tool one request each way and print the status codes as JSON.
 TOKEN_CHECKS = """
 import json, os, time, urllib.error, urllib.request
 from app.security.tokens import load_private_key, mint_tool_token
@@ -203,7 +211,7 @@ print(json.dumps({{
 
 @pytest.mark.parametrize("tool, host", list(zip(TOOLS, TOOL_HOSTS)))
 def test_a_tool_container_accepts_one_good_token_and_refuses_everything_else(tool, host):
-    done = compose("run", "--rm", "agent", "python", "-c", TOKEN_CHECKS.format(host=host, tool=tool), timeout=120)
+    done = compose("exec", "-T", "tool-gateway", "python", "-c", TOKEN_CHECKS.format(host=host, tool=tool), timeout=120)
     assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
     assert json.loads(done.stdout.strip().splitlines()[-1]) == {
         "no_token": 401, "garbage": 401, "wrong_audience": 401, "expired": 401, "good": 200, "replay": 401,
@@ -224,9 +232,26 @@ def test_a_tool_container_holds_the_public_key_and_not_the_signing_key(host):
     assert secret_files(host) == ["gateway_public_key"]
 
 
+def test_the_gateway_holds_the_signing_key_and_not_the_public_one():
+    assert secret_files("tool-gateway") == ["gateway_signing_key"]
+
+
 @pytest.mark.parametrize("service", ["executor", "risk-engine", "register-sync", "db", *FAKE_PORTS])
 def test_no_other_container_holds_a_gateway_key(service):
     assert secret_files(service) == []
+
+
+def test_the_agent_holds_no_key_and_is_told_no_tool_address():
+    # A one-off agent container, like the one that answers a ticket: no secret mounted, and no
+    # variable that names a key or a tool.
+    done = compose("run", "--rm", "agent", "sh", "-c", "[ -d /run/secrets ] && ls /run/secrets; env", timeout=120)
+    assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
+    names = {line.split("=", 1)[0] for line in done.stdout.splitlines() if "=" in line}
+    assert "GATEWAY_URL" in names                                   # the control: the env is the agent's
+    # GPG_KEY is the Python image's public key id for its own download, not a secret of ours.
+    held = [n for n in names if ("KEY" in n and n != "GPG_KEY") or n.startswith("TOOL_URL") or n.startswith("DB_PASSWORD")]
+    assert not held, names
+    assert "gateway_signing_key" not in done.stdout and "gateway_public_key" not in done.stdout
 
 
 def security_events(stderr):
@@ -340,7 +365,7 @@ def assert_blocked(source, targets):
 
 
 def test_agent_cannot_reach_db_on_any_ip():
-    # The db is on eight networks, so eight IPs. The agent shares none of them.
+    # The db is on nine networks, so nine IPs. The agent shares none of them.
     targets = [*service_targets("db", DB_PORT), ("host.docker.internal", DB_HOST_PORT)]
     assert len(targets) > 3, targets
     assert_blocked("agent", targets)
@@ -355,14 +380,41 @@ def test_tool_cannot_reach_other_tools(source, target):
 
 
 @pytest.mark.parametrize("tool", TOOL_HOSTS)
+def test_agent_cannot_reach_any_tool(tool):
+    # The agent calls a tool only through the gateway: no network in common with a tool, so no
+    # route by name and none by address.
+    assert_blocked("agent", service_targets(tool, TOOL_PORT))
+
+
+@pytest.mark.parametrize("tool", TOOL_HOSTS)
 def test_executor_cannot_reach_tools(tool):
     assert_blocked("executor", service_targets(tool, TOOL_PORT))
 
 
 @pytest.mark.parametrize("tool", TOOL_HOSTS)
 def test_risk_engine_cannot_reach_tools(tool):
-    # Its only edge today is the db (edge_risk_db); the gateway edge comes with task A8.
+    # Its edges are the db and the gateway's; a tool is neither.
     assert_blocked("risk-engine", service_targets(tool, TOOL_PORT))
+
+
+def test_agent_cannot_reach_the_risk_engine():
+    # Only the gateway asks the risk engine; an agent that could would ask for allows, or flood it.
+    assert_blocked("agent", service_targets("risk-engine", RISK_PORT))
+
+
+@pytest.mark.parametrize("source", ["executor", "register-sync", *FAKE_PORTS])
+def test_only_the_agent_reaches_the_gateways_port(source):
+    # In Compose the network is the agent check, so the gateway's port is open to the agent and to
+    # nothing else except its own peers: the five tools and the risk engine share an edge with the
+    # gateway and can open that port too (documented in docs/attacks.md, closed in Kubernetes by
+    # the agent's service account token).
+    assert_blocked(source, service_targets("tool-gateway", GATEWAY_PORT))
+
+
+@pytest.mark.parametrize("target", ["executor", "register-sync", "fake-dso", "fake-sms", "fake-register"])
+def test_the_gateway_cannot_reach_what_is_not_its_peer(target):
+    port = FAKE_PORTS.get(target, OPS_PORT)
+    assert_blocked("tool-gateway", service_targets(target, port))
 
 
 @pytest.mark.parametrize("tool", TOOL_HOSTS)
@@ -380,7 +432,7 @@ def test_fakes_cannot_reach_db(fake):
 FAKE_TARGETS = [(fake, port) for fake, port in FAKE_PORTS.items()]
 
 
-@pytest.mark.parametrize("source", ["agent", *TOOL_HOSTS, "risk-engine"])
+@pytest.mark.parametrize("source", ["agent", *TOOL_HOSTS, "tool-gateway", "risk-engine"])
 def test_only_their_callers_reach_the_fakes(source):
     # A hijacked agent or tool cannot send an order to the grid operator or a text to an occupier
     # by itself: only the executor reaches the DSO and SMS fakes, only register-sync the register.
@@ -398,7 +450,8 @@ def test_fakes_cannot_reach_each_other(source, target):
 # The controls: the same ports on the edges that ARE allowed. Without these, "blocked" above could
 # just mean the service was down or the probe was broken.
 ALLOWED_EDGES = {
-    "agent": [(tool, TOOL_PORT) for tool in TOOL_HOSTS],
+    "agent": [("tool-gateway", GATEWAY_PORT)],
+    "tool-gateway": [*((tool, TOOL_PORT) for tool in TOOL_HOSTS), ("risk-engine", RISK_PORT), ("db", DB_PORT)],
     **{tool: [("db", DB_PORT)] for tool in TOOL_HOSTS},
     "executor": [("db", DB_PORT), ("fake-dso", FAKE_PORTS["fake-dso"]), ("fake-sms", FAKE_PORTS["fake-sms"])],
     "risk-engine": [("db", DB_PORT)],
@@ -470,7 +523,7 @@ print(urllib.request.urlopen("http://127.0.0.1:9000/healthz", timeout=5).status)
 
 
 def test_risk_engine_serves_decide_and_healthz():
-    # Nothing can reach it yet (the gateway edge is task A8), so the probe runs inside its container.
+    # The probe runs inside its container; the gateway's call to it is tested through the gateway.
     done = compose("exec", "-T", "risk-engine", "python", "-c", DECIDE_FROM_INSIDE, timeout=60)
     assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
     answer, health = done.stdout.strip().splitlines()
@@ -580,3 +633,81 @@ def test_executor_calls_fake_dso_once_per_order():
     assert len(to_sms) == 1, to_sms
     assert events == [(kind, f"{target} move_out request={rid}") for target in ("sms", "dso")
                       for kind in ("outside_call_due", "outside_call_sent")]
+
+
+# --- The tool gateway in the stack ---
+
+OPS_FROM_INSIDE = """
+import urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:9000/healthz", timeout=5).status)
+print(urllib.request.urlopen("http://127.0.0.1:9000/metrics", timeout=5).read().decode())
+"""
+
+
+def ops_of(service):
+    done = compose("exec", "-T", service, "python", "-c", OPS_FROM_INSIDE, timeout=60)
+    assert done.returncode == 0, f"{service}\nstdout: {done.stdout}\nstderr: {done.stderr}"
+    status, _, metrics = done.stdout.partition("\n")
+    return status, metrics
+
+
+@pytest.mark.parametrize("service", TOOL_HOSTS)
+def test_a_tool_answers_healthz(service):
+    status, _ = ops_of(service)
+    assert status == "200"
+
+
+def test_the_gateway_answers_healthz_and_publishes_its_metrics_from_the_start():
+    status, metrics = ops_of("tool-gateway")
+    assert status == "200"
+    for tool in ("read_ticket", "lookup_account", "request_disconnection", "issue_bill_credit", "set_temp_protection"):
+        assert f'gateway_calls_total{{outcome="ok",tool="{tool}"}} ' in metrics, tool
+        assert f'gateway_denials_total{{reason="lease",tool="{tool}"}} ' in metrics, tool
+    assert 'gateway_denials_total{reason="risk_timeout",tool="read_ticket"} ' in metrics
+
+
+def stack_calls(after):
+    with stack_db() as conn:
+        return conn.execute(
+            "SELECT tool, arg_names, dropped_args, outcome, reason, actor FROM tool_calls WHERE id > %s ORDER BY id",
+            (after,),
+        ).fetchall()
+
+
+def last_call_id():
+    with stack_db() as conn:
+        return conn.execute("SELECT coalesce(max(id), 0) FROM tool_calls").fetchone()[0]
+
+
+def test_a_ticket_through_the_gateway_leaves_a_record_of_names_only():
+    after = last_call_id()
+    done = run_agent(4)  # ticket 4 asks for customer 1002 with a customer_id argument
+    assert "Nikos" not in done.stdout, done.stderr
+    rows = stack_calls(after)
+    assert [(r[0], r[3], r[5]) for r in rows] == [("read_ticket", "ok", "gateway"), ("lookup_account", "ok", "gateway")]
+    # The agent's own code already dropped customer_id, so the gateway had nothing left to drop here.
+    assert all(r[2] == [] for r in rows)
+    assert "gateway_denied" not in done.stderr
+
+
+def test_the_gateway_denies_while_the_risk_engine_is_stopped_and_works_again_after():
+    # The wall that matters most when something is down: no verdict, no tool call.
+    after = last_call_id()
+    stopped = compose("stop", "risk-engine", timeout=120)
+    assert stopped.returncode == 0, stopped.stderr
+    try:
+        done = run_agent(1, start_dependencies=False)
+        assert "Eleni" not in done.stdout and "colleague" in done.stdout, done.stdout   # the agent gave up
+        rows = stack_calls(after)
+        assert rows and {(r[0], r[3]) for r in rows} == {("read_ticket", "denied")}, rows
+        assert rows[0][4] in ("risk_unavailable", "risk_timeout")
+    finally:
+        started = compose("start", "risk-engine", timeout=120)
+        assert started.returncode == 0, started.stderr
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            probe_done = compose("exec", "-T", "risk-engine", "python", "-c", DECIDE_FROM_INSIDE, timeout=60)
+            if probe_done.returncode == 0:
+                break
+            time.sleep(1)
+    assert "Eleni Papadopoulou" in run_agent(1).stdout                          # the control

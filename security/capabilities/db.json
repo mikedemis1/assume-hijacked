@@ -638,6 +638,32 @@
             "check": "true"
           }
         ]
+      },
+      "tool_calls": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
       }
     }
   },

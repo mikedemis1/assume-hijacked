@@ -17,7 +17,7 @@
   },
   "network": {
     "ingress_from": [
-      "agent"
+      "tool-gateway"
     ],
     "egress_to": [
       "db"

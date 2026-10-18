@@ -1,13 +1,16 @@
+import asyncio
 import json
 
-from app.agent.gateway import ToolGateway
+import pytest
+
+from app.gateway.proxy import ToolClient, ToolUnavailable
 from app.tools import serve
 from tests.conftest import open_lease
-from tests.toolhttp import KEYS, AppToolGateway
+from tests.toolhttp import KEYS, AppToolCaller
 
 
 def gateway(settings, *tools):
-    return AppToolGateway(settings, *KEYS, tools=tools)
+    return AppToolCaller(settings, *KEYS, tools=tools)
 
 
 def test_lookup_account_over_mcp(settings, admin):
@@ -32,5 +35,19 @@ def test_each_tool_server_exists(settings):
 
 
 def test_unreachable_tool_comes_back_as_error_text():
-    out = ToolGateway({"read_ticket": "http://127.0.0.1:9/mcp"}, KEYS[0]).call("read_ticket", {"lease": "0" * 64})
-    assert out.startswith("ERROR:")
+    client = ToolClient({"read_ticket": "http://127.0.0.1:9/mcp"}, KEYS[0])
+    with pytest.raises(ToolUnavailable):
+        asyncio.run(client.call_tool("read_ticket", {}, "0" * 64))
+    assert AppToolCaller(None, *KEYS, tools=("read_ticket",), transports={"read_ticket": _down}).call(
+        "read_ticket", {"lease": "0" * 64}
+    ) == "ERROR: unavailable"
+
+
+def _down():
+    import httpx2
+
+    class Down(httpx2.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            raise httpx2.ConnectError("refused")
+
+    return Down()

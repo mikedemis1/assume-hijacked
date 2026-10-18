@@ -252,3 +252,50 @@ GRANT EXECUTE ON FUNCTION api_lookup_account(text) TO tool_lookup_account;
 GRANT EXECUTE ON FUNCTION api_request_moveout(text, date) TO tool_request_disconnection;
 GRANT EXECUTE ON FUNCTION api_request_credit(text, numeric, text, int) TO tool_issue_bill_credit;
 GRANT EXECUTE ON FUNCTION api_set_temp_protection(text) TO tool_set_temp_protection;
+
+
+-- ---------------------------------------------------------------------------------------------
+-- What the tool gateway records about every call (app/gateway/proxy.py).
+--
+-- One row per call that reached the gateway with a lease header, allowed or not. The row holds
+-- names and categories only: sha256(lease) as everywhere (never the lease), the tool name, the
+-- names of the arguments that were forwarded and of those that were dropped (never a value), and
+-- how the call ended:
+--
+--   ok            the tool answered
+--   tool_error    the tool answered with an error (reason: the category the agent was told)
+--   denied        a wall refused it (reason: lease, pod_mismatch, paused, descriptor_changed, or
+--                 the risk engine's own reason)
+--   unavailable   the tool, the risk engine or the database could not be reached (reason says which)
+--   risk_timeout  the risk engine did not answer in time. It may still have written "allow" for the
+--                 call (and with it used up the lease's one effect), so this is kept apart from a
+--                 plain denial: an investigator can see why a later honest call was refused.
+--
+-- Append only: the gateway holds INSERT on these columns and nothing else, and the trigger is the
+-- wall behind the grants (the superuser too cannot change a row; TRUNCATE is not caught, only the
+-- table owner may do it, and the test suite resets with it).
+CREATE TABLE tool_calls (
+    id           bigserial PRIMARY KEY,
+    lease_hash   bytea NOT NULL,
+    tool         text NOT NULL,
+    arg_names    text[] NOT NULL,
+    dropped_args text[] NOT NULL,
+    outcome      text NOT NULL CHECK (outcome IN ('ok', 'tool_error', 'denied', 'unavailable', 'risk_timeout')),
+    reason       text NOT NULL DEFAULT '',
+    actor        text NOT NULL DEFAULT current_user,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE FUNCTION refuse_tool_call_change() RETURNS trigger
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+    RAISE EXCEPTION 'tool_calls is append only';
+END $$;
+
+CREATE TRIGGER tool_calls_append_only BEFORE UPDATE OR DELETE ON tool_calls
+    FOR EACH STATEMENT EXECUTE FUNCTION refuse_tool_call_change();
+REVOKE ALL ON FUNCTION refuse_tool_call_change() FROM PUBLIC;
+
+-- actor and created_at come from the column defaults, so the gateway cannot forge who or when.
+GRANT INSERT (lease_hash, tool, arg_names, dropped_args, outcome, reason) ON tool_calls TO gateway;
+GRANT USAGE ON SEQUENCE tool_calls_id_seq TO gateway;

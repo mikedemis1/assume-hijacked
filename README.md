@@ -15,12 +15,15 @@ flowchart LR
     T["ticket<br/>(attacker writes here)"] --> A["agent<br/>no DB password"]
 
     subgraph backend["one internal network per allowed edge, no route to the internet"]
-        A --> R[read_ticket]
-        A --> L[lookup_account]
-        A --> D[request_disconnection]
-        A --> C[issue_bill_credit]
-        A --> P[set_temp_protection]
+        A --> G["tool gateway<br/>lease, arguments, risk engine, signed token"]
+        G --> RE["risk engine<br/>POST /decide"]
+        G --> R[read_ticket]
+        G --> L[lookup_account]
+        G --> D[request_disconnection]
+        G --> C[issue_bill_credit]
+        G --> P[set_temp_protection]
         R & L & D & C & P --> DB[("PostgreSQL<br/>one role per component")]
+        G --> DB
         E["executor<br/>the only writer of effects"] --> DB
     end
 
@@ -30,7 +33,8 @@ flowchart LR
 
 - Tools only file requests. Credits, occupier notices and disconnection orders are written by the executor, after it checks them.
 - The database is the last wall. Each tool, the executor and the approver have their own role and password, grants down to the column, and triggers that refuse a credit or an order the data does not back. A bug in the executor still cannot pay a fake duplicate charge or disconnect a protected home.
-- The agent code, not the model, sets the ticket. Any `customer_id` the model adds is dropped and logged.
+- The agent code, not the model, sets the ticket. Any `customer_id` the model adds is dropped and logged, and the tool gateway drops it again.
+- The agent reaches a tool only through the tool gateway. The gateway checks the lease, asks the risk engine about every call (no answer in 2 seconds means no), compares the tool's description with the reviewed one, and signs the token the tool needs. It is the only component that holds the signing key. The agent is told `ERROR: lease`, `denied`, `invalid_argument`, `unavailable` or `tool_error` and never why.
 - Replies pass a guard. A number in a reply must be one a tool returned. Money wording is blocked in English and Greek.
 
 ## One attack, end to end
@@ -47,16 +51,20 @@ SAY {last}
 sequenceDiagram
     participant M as model (hijacked)
     participant A as agent code
+    participant G as tool gateway
     participant L as lookup_account
     participant DB as PostgreSQL
 
     M->>A: CALL lookup_account {customer_id: 1002}
-    A->>A: drop customer_id, set ticket_id = 4
+    A->>A: drop customer_id, keep the lease of ticket 4 in a header
     A-->>A: stderr: dropped_argument (name only)
-    A->>L: lookup_account {ticket_id: 4}
-    L->>DB: owner of ticket 4?
+    A->>G: lookup_account, X-Lease
+    G->>G: lease live, risk engine allows, description unchanged
+    G->>L: lookup_account, token for this call only
+    L->>DB: owner of the ticket of this lease?
     DB-->>L: 1001
-    L-->>A: account of 1001
+    L-->>G: account of 1001
+    G-->>A: account of 1001
     A-->>M: reply about 1001 only
 ```
 
@@ -83,7 +91,7 @@ Each row, its tests and its limits: [docs/attacks.md](docs/attacks.md).
 ## Not protected yet
 
 - A hijacked agent can pass another ticket's id. There is no signed ticket context yet, so grants are per column, not per row.
-- The agent still calls the tools directly (it has an edge network to each one); the tool gateway that replaces those edges comes later. No workload identity or NetworkPolicy until AKS.
+- In Compose the tool gateway tells the agent from other callers by the network alone: the five tools and the risk engine share an edge with the gateway and could open its port with a lease they have seen. Kubernetes closes that with the agent's service account token. No workload identity or NetworkPolicy until AKS.
 - Approvals are names, not people. Staff identity comes with Entra ID.
 - The reply guard works from word lists. A spelling nobody listed gets through; templated replies would fix it.
 - The executor serves `/healthz` and `/metrics` (port 9000, nothing publishes it), but nothing scrapes them or alerts yet. If it hangs, nothing goes out, but nobody is told.

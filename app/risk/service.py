@@ -6,7 +6,7 @@ Two jobs, one process (app/risk/main.py):
   answer {"decision": "allow|deny|pause", "reasons": [str]}. Every answer is written to
   call_assessments under sha256(lease); "pause" also stops every agent (pause_agents). Anything
   that goes wrong answers deny: a bad body 400, a database error 503. The gateway also denies when
-  it gets no answer at all (task A8), so a risk engine that is down or slow stops the tools.
+  it gets no answer at all (2 seconds), so a risk engine that is down or slow stops the tools.
 - assess_pending. Every effect request that is still pending and has no assessment gets one
   (risk_assessments). The executor acts on assessed requests only, and the database refuses an
   effect without one (check_approval_floor, db/sql/06-risk.sql).
@@ -41,6 +41,12 @@ from app.risk.rules import ENGINE_VERSION, EFFECT_TOOLS, CallFacts, EffectFacts,
 
 ROLE = "risk_engine"
 MAX_BODY_BYTES = 1024
+# The gateway waits 2 s for /decide (app/gateway/proxy.py). The engine's own database calls are
+# shorter: a connection that is not made in 2 s, or a statement that runs 1.5 s, fails the
+# decision (the gateway then denies) instead of holding the one connection every later decision
+# waits for.
+DECIDE_CONNECT_TIMEOUT_S = 2
+DECIDE_STATEMENT_TIMEOUT_MS = 1500
 MAX_LEASE_CHARS = 256
 TOOL_NAME = re.compile(r"[a-z_]{1,64}")
 DECIDE_ATTEMPTS = 3
@@ -49,6 +55,13 @@ EFFECT_TOOL_LIST = sorted(EFFECT_TOOLS)
 
 def connect(settings: Settings) -> psycopg.Connection:
     return db.connect(settings, ROLE)
+
+
+def connect_for_decide(settings: Settings) -> psycopg.Connection:
+    """The connection /decide uses: the same role, with the two timeouts above."""
+    return db.connect(
+        settings, ROLE, connect_timeout_s=DECIDE_CONNECT_TIMEOUT_S, statement_timeout_ms=DECIDE_STATEMENT_TIMEOUT_MS
+    )
 
 
 def _count(metrics: Metrics | None, name: str, labels: dict[str, str]) -> None:
@@ -177,14 +190,41 @@ def _parse(raw: bytes) -> tuple[str, str] | None:
     return lease, tool
 
 
+class _TooBig(Exception):
+    pass
+
+
+async def _read_capped(request: Request) -> bytes:
+    """The body, at most MAX_BODY_BYTES. A declared length over the cap is refused before a byte
+    is read; a body without a length (chunked) is read only until it passes the cap."""
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            size = int(declared)
+        except ValueError:
+            raise ValueError("bad content-length") from None
+        if size > MAX_BODY_BYTES:
+            raise _TooBig
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_BODY_BYTES:
+            raise _TooBig
+    return bytes(body)
+
+
 def build_app(decider, metrics: Metrics | None = None) -> Starlette:
     """The HTTP edge. decider has decide(lease, tool) -> (decision, reasons)."""
 
     async def decide_endpoint(request: Request) -> JSONResponse:
-        raw = await request.body()
-        if len(raw) > MAX_BODY_BYTES:
+        try:
+            raw = await _read_capped(request)
+        except _TooBig:
             _count(metrics, "risk_decisions_total", {"decision": "deny"})
             return _deny(413, "bad_request")
+        except ValueError:
+            _count(metrics, "risk_decisions_total", {"decision": "deny"})
+            return _deny(400, "bad_request")
         parsed = _parse(raw)
         if parsed is None:
             _count(metrics, "risk_decisions_total", {"decision": "deny"})

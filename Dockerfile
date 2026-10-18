@@ -13,6 +13,9 @@ WORKDIR /srv
 COPY pyproject.toml requirements.lock ./
 COPY scripts/install-deps.sh /usr/local/bin/install-deps.sh
 COPY app ./app
+# The reviewed capability manifests: the tool gateway reads the arguments and the description
+# fingerprint of each tool from them (app/gateway/manifest.py).
+COPY security/capabilities ./security/capabilities
 # Optional build secret "pip_cert": a CA bundle for networks that intercept TLS
 # (antivirus HTTPS scanning, corporate proxy). Empty or absent on a normal machine.
 # The wheels are bind-mounted for this step only, so they never end up in the image.
@@ -24,6 +27,6 @@ RUN --mount=type=secret,id=pip_cert,required=false \
  && useradd --create-home --uid 10001 app
 USER 10001
 EXPOSE 8000
-# No HEALTHCHECK here: this one image runs the five MCP tool servers, the executor's poll loop
-# (no port) and the one-shot agent, and no single check fits all three.
+# No HEALTHCHECK here: this one image runs the tool servers, the gateway, the executor's poll loop
+# (no port) and the one-shot agent, and no single check fits all of them.
 #checkov:skip=CKV_DOCKER_2: one image, three kinds of process (tool servers, executor loop, one-shot agent); no single image-level check fits

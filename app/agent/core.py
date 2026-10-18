@@ -8,9 +8,10 @@ import re
 from app.agent.events import security_event
 from app.agent.guard import SAFE_REPLY, block_reason, numbers_in
 from app.agent.llm import Reply
+from app.common import toolerrors
 
 MAX_STEPS = 10
-# What the model sees when a tool call failed, whatever the tool said (see _scrub).
+# What the model sees when a tool call failed in a way the gateway did not name (see _scrub).
 TOOL_ERROR = "ERROR: the tool could not complete this request"
 GIVE_UP = "We could not complete your request automatically. A colleague will contact you."
 
@@ -93,7 +94,13 @@ class Agent:
                     credit_asked = True
                 result = _scrub(self.gateway.call(action.name, args), lease)
                 if result.startswith("ERROR:"):
-                    security_event("tool_error", ticket_id=ticket_id, tool=action.name)
+                    category = toolerrors.category_of(result)
+                    security_event("tool_error", ticket_id=ticket_id, tool=action.name, category=category or "other")
+                    if category == toolerrors.LEASE:
+                        # The lease is gone (ended, revoked, or it never covered this tool): no
+                        # other call can work either, so the run ends here.
+                        security_event("lease_refused", ticket_id=ticket_id, tool=action.name)
+                        return _finish(GIVE_UP, submitted, credit_asked)
                 else:
                     # Not read_ticket: its result repeats the ticket text, which the customer wrote.
                     if action.name != "read_ticket":
@@ -124,9 +131,12 @@ def _scrub(result: str, lease: str) -> str:
 
     An error text can repeat the arguments that were sent (an MCP argument validation error shows
     them, shortened, so a plain search for the lease would miss part of it). So an error is reduced
-    to a fixed text, and any other result has the lease removed."""
+    to one of the gateway's fixed categories (ERROR: lease, denied, invalid_argument, unavailable,
+    tool_error; app/common/toolerrors.py), matched exactly, or else to a fixed text. Any other
+    result has the lease removed."""
     if result.startswith("ERROR:"):
-        return TOOL_ERROR
+        category = toolerrors.category_of(result)
+        return toolerrors.error_text(category) if category else TOOL_ERROR
     return result.replace(lease, "<lease>") if lease else result
 
 

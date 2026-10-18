@@ -7,6 +7,9 @@ from the lease (db/sql/05-lease.sql). The lease comes from the signed token of t
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import psycopg
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -20,6 +23,27 @@ class LeaseError(ToolError):
 
     A ToolError, so the MCP server passes the text "lease invalid" back to the caller; any other
     exception reaches it only as "Error executing tool <name>", with no detail."""
+
+
+# What a tool says when it does not accept the arguments. Fixed text: the library otherwise shows
+# nothing of a plain ValueError, and a message built from the arguments would repeat them.
+INVALID_ARGUMENT = "invalid argument"
+
+
+class ArgumentError(ToolError):
+    """The arguments are not acceptable (a date that is not a date, a reason off the list, an
+    amount that is not a positive number). The gateway turns the fixed text into the category
+    `invalid_argument` for the agent."""
+
+
+@contextmanager
+def checked_arguments() -> Iterator[None]:
+    """Turn the tool functions' own refusals (ValueError, and ArithmeticError from a Decimal that
+    is not a number) into ArgumentError, whatever their text."""
+    try:
+        yield
+    except (ValueError, ArithmeticError):
+        raise ArgumentError(INVALID_ARGUMENT) from None
 
 
 def call_api(conn: psycopg.Connection, query: str, params: tuple) -> psycopg.Cursor:

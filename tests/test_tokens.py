@@ -27,7 +27,7 @@ from app.tools import serve
 from tests.conftest import open_lease
 from tests.toolhttp import (  # noqa: F401  (the key fixtures are used by name)
     CALL_READ_TICKET,
-    AppToolGateway,
+    AppToolCaller,
     MCP_HEADERS,
     ConnectSpy,
     bearer,
@@ -333,8 +333,8 @@ def test_lease_comes_from_token_not_arguments(settings, admin, keypair):
 def test_lease_in_the_token_is_what_the_database_checks(settings, admin, keypair):
     # A token with a lease nobody opened gets "lease invalid" from the database and nothing else.
     private, public = keypair
-    gateway = AppToolGateway(settings, private, public, tools=("read_ticket",))
-    out = gateway.call("read_ticket", {"lease": "0" * 64})
+    caller = AppToolCaller(settings, private, public, tools=("read_ticket",))
+    out = caller.call("read_ticket", {"lease": "0" * 64})
     assert out.startswith("ERROR:") and "lease invalid" in out
     assert "PL/pgSQL" not in out
 
@@ -367,21 +367,21 @@ def test_every_request_of_one_call_carries_a_fresh_token(settings, admin, keypai
     # the client must sign each request separately. One call over a replay-checking app proves it.
     private, public = keypair
     lease = open_lease(admin, 1)
-    out = AppToolGateway(settings, private, public, tools=("read_ticket",)).call("read_ticket", {"lease": lease})
+    out = AppToolCaller(settings, private, public, tools=("read_ticket",)).call("read_ticket", {"lease": lease})
     assert json.loads(out)["ticket_id"] == 1
 
 
 def test_the_lease_is_in_the_token_and_not_in_the_request(settings, admin, keypair):
-    # What actually leaves the agent's tool client: a token per request, carrying the lease, and
+    # What actually leaves the gateway's tool client: a token per request, carrying the lease, and
     # nothing else that could be read as the lease (no header, no argument).
     private, public = keypair
     lease = open_lease(admin, 1)
-    gateway = AppToolGateway(settings, private, public, tools=("lookup_account",))
-    answer = json.loads(gateway.call("lookup_account", {"lease": lease}))
+    caller = AppToolCaller(settings, private, public, tools=("lookup_account",))
+    answer = json.loads(caller.call("lookup_account", {"lease": lease}))
     assert answer["name"] == "Eleni Papadopoulou"
-    assert len(gateway.sent) >= 2          # the handshake and the call are separate requests
+    assert len(caller.sent) >= 2          # the handshake and the call are separate requests
     tokens = []
-    for headers, body in gateway.sent:
+    for headers, body in caller.sent:
         assert lease.encode() not in body and b'"lease"' not in body
         assert lease not in "".join(headers.values())
         tokens.append(headers["authorization"].removeprefix("Bearer "))
@@ -395,5 +395,5 @@ def test_a_gateway_without_a_key_cannot_call_a_tool(settings, admin, keypair):
     # The control that the 401 is what stops an unsigned caller: same app, no key.
     _, public = keypair
     lease = open_lease(admin, 1)
-    keyless = AppToolGateway(settings, b"", public, tools=("read_ticket",))
+    keyless = AppToolCaller(settings, b"", public, tools=("read_ticket",))
     assert keyless.call("read_ticket", {"lease": lease}).startswith("ERROR:")

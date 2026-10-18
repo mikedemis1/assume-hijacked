@@ -48,8 +48,8 @@ Score = (killed + timeout) / all mutants run. The scope is in `pyproject.toml`, 
 
 ## Accepted findings
 
-- bandit B104 (`app/tools/serve.py` and `app/common/ops.py`, bind to 0.0.0.0): the agent reaches each tool, and Prometheus reaches each ops port, from another container; the containers are only on internal edge networks (`internal: true` in `compose.yaml`).
-- checkov CKV_DOCKER_2 (`Dockerfile`, no HEALTHCHECK): one image runs the tool servers, the executor loop and the one-shot agent, and no single check fits all three.
+- bandit B104 (`app/tools/serve.py`, `app/gateway/main.py`, `app/gateway/server.py`, `app/risk/main.py` and `app/common/ops.py`, bind to 0.0.0.0): the gateway reaches each tool, the agent reaches the gateway, the gateway reaches the risk engine, and Prometheus reaches each ops port, from another container; the containers are only on internal edge networks (`internal: true` in `compose.yaml`).
+- checkov CKV_DOCKER_2 (`Dockerfile`, no HEALTHCHECK): one image runs the tool servers, the gateway, the executor loop and the one-shot agent, and no single check fits all of them.
 - checkov CKV_DOCKER_2 and CKV_DOCKER_3 (`ci/smoke-runner.Dockerfile`, no HEALTHCHECK, runs as root): a one-shot test runner that needs the Docker socket, which is root on that daemon anyway.
 
 As of 2026-10-15, trivy reports 44 HIGH vulnerabilities in the Debian packages of the base image (util-linux, ncurses, systemd libraries, perl-base) and none has a fixed version, so the gate passes. The gate fails as soon as Debian ships a fix and the base image digest is not updated. Unfixed ones stay hidden from the gate on purpose, including `fix_deferred` ones such as perl-base CVE-2026-9538, so `build-scan` also writes a full report of every severity, fixed or not (`reports/trivy-all.json` and `reports/gl-container-scanning-report.json`, kept 90 days). Review that report by 2027-01-15 or whenever the base image digest is bumped, whichever comes first. The real fix is a smaller runtime base without util-linux, ncurses or perl (a distroless Python image, or a slim image with those packages removed).
