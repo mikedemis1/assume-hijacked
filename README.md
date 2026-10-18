@@ -16,6 +16,8 @@ flowchart LR
 
     subgraph backend["one internal network per allowed edge, no route to the internet"]
         A --> G["tool gateway<br/>lease, arguments, risk engine, signed token"]
+        A --> DI["dispatcher<br/>ticket, lease, reply guard again"]
+        DI --> DB
         G --> RE["risk engine<br/>POST /decide"]
         G --> R[read_ticket]
         G --> L[lookup_account]
@@ -36,6 +38,7 @@ flowchart LR
 - The agent code, not the model, sets the ticket. Any `customer_id` the model adds is dropped and logged, and the tool gateway drops it again.
 - The agent reaches a tool only through the tool gateway. The gateway checks the lease, asks the risk engine about every call (no answer in 2 seconds means no), compares the tool's description with the reviewed one, and signs the token the tool needs. It is the only component that holds the signing key. The agent is told `ERROR: lease`, `denied`, `invalid_argument`, `unavailable` or `tool_error` and never why.
 - Replies pass a guard. A number in a reply must be one a tool returned. Money wording is blocked in English and Greek.
+- The agent gets its ticket and its lease from the dispatcher and sends its reply back to it. The dispatcher runs the reply guard again, outside the agent, adds the credit notice and the medical question from the gateway's record of calls, stores the reply and ends the lease. In Kubernetes it also starts one agent Job per ticket from a template it checks field by field.
 
 ## One attack, end to end
 
@@ -85,6 +88,7 @@ The smoke test `test_attack_ticket_through_the_real_stack_leaks_nothing_and_is_l
 | 9 | Freeze the executor with locks or connections | lock functions revoked, connection limits, timeouts |
 | 10 | Send data out | `internal: true` network, tested from every container |
 | 11 | Read extra columns, forge the audit log | column grants, DB fills in actor and time |
+| 12 | A taken-over agent skips its own reply guard | the dispatcher runs the guard again before it stores a reply |
 
 Each row, its tests and its limits: [docs/attacks.md](docs/attacks.md).
 

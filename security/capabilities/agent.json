@@ -1,6 +1,6 @@
 {
   "component": "agent",
-  "description": "One run per ticket. Calls the tool gateway and nothing else: no database, no tool, no key, no outside system.",
+  "description": "One run per ticket. Asks the dispatcher for its ticket and sends its reply there, and calls the tool gateway for everything else: no database, no tool, no key, no outside system.",
   "db": {
     "role": null,
     "execute": [],
@@ -9,6 +9,7 @@
   "network": {
     "ingress_from": [],
     "egress_to": [
+      "dispatcher",
       "tool-gateway"
     ],
     "dns": [

@@ -299,3 +299,75 @@ REVOKE ALL ON FUNCTION refuse_tool_call_change() FROM PUBLIC;
 -- actor and created_at come from the column defaults, so the gateway cannot forge who or when.
 GRANT INSERT (lease_hash, tool, arg_names, dropped_args, outcome, reason) ON tool_calls TO gateway;
 GRANT USAGE ON SEQUENCE tool_calls_id_seq TO gateway;
+
+
+-- ---------------------------------------------------------------------------------------------
+-- The dispatcher's records (app/dispatcher): which agent run belongs to which ticket, and the
+-- reply that went out.
+--
+-- agent_runs: one row per ticket, ever (UNIQUE ticket_id: one run per ticket, so two claims, or a
+-- claim and a Job, can never start the same ticket twice).
+--
+--   started   the run exists. In Kubernetes the dispatcher has created the agent's Job (job_name);
+--             in Compose the agent is claiming right now.
+--   claimed   the agent asked for work and was given the lease (lease_hash is sha256 of it).
+--   replied   the reply is stored and the lease is revoked.
+--   failed    the Job could not be created. Nobody retries it: a person looks at the ticket.
+--
+-- lease_hash is empty until the claim, which is why the column may be NULL; the CHECK keeps a
+-- claimed or replied run from having none. job_name is the one the dispatcher made up
+-- (agent-<ticket>-<8 hex>, the same shape the Kubernetes admission policy accepts); the agent's pod is
+-- named after it by the Job controller, which is how a claim finds its row.
+CREATE TABLE agent_runs (
+    id         serial PRIMARY KEY,
+    ticket_id  int NOT NULL UNIQUE REFERENCES tickets,
+    lease_hash bytea UNIQUE,
+    job_name   text UNIQUE CHECK (job_name ~ '^agent-[0-9]{1,18}-[0-9a-f]{8}$'),
+    status     text NOT NULL DEFAULT 'started' CHECK (status IN ('started', 'claimed', 'replied', 'failed')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (status IN ('started', 'failed') OR lease_hash IS NOT NULL)
+);
+
+-- replies: the answer to a customer, one per ticket. What is stored passed the reply guard in the
+-- dispatcher (outside the agent) and carries the notices the dispatcher added.
+CREATE TABLE replies (
+    ticket_id  int PRIMARY KEY REFERENCES tickets,
+    text       text NOT NULL CHECK (text <> '' AND length(text) <= 10000),
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- The dispatcher holds column grants and nothing wider: ticket id and status (to pick the next
+-- open ticket), the run rows, and the right to add a reply. It cannot read a ticket's text or any
+-- customer data, and it cannot change or remove a reply or a run it did not just make.
+GRANT SELECT (id, status) ON tickets TO dispatcher;
+GRANT SELECT (id, ticket_id, job_name, status, created_at), INSERT (ticket_id, job_name, status),
+    UPDATE (lease_hash, status) ON agent_runs TO dispatcher;
+GRANT USAGE ON SEQUENCE agent_runs_id_seq TO dispatcher;
+GRANT SELECT (ticket_id), INSERT (ticket_id, text) ON replies TO dispatcher;
+
+-- What the dispatcher needs to finish a reply and cannot be told by the agent, because a hijacked
+-- agent would tell it nothing: for a live lease, the text a tool may have shown the model about the
+-- ticket owner's account (the numbers a reply may repeat), whether issue_bill_credit was called on
+-- the lease (whatever it answered), and whether a move-out request went in. The last two are read
+-- from the gateway's record of calls (tool_calls), not from the agent. No row for a lease that is
+-- unknown, expired or revoked.
+CREATE FUNCTION reply_facts(p_lease text)
+RETURNS TABLE(account_text text, credit_asked bool, moveout_submitted bool)
+LANGUAGE sql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+    SELECT a.tariff || ' ' || a.status || ' ' || s.address,
+           EXISTS (SELECT 1 FROM public.tool_calls c
+                   WHERE c.lease_hash = l.token_hash AND c.tool = 'issue_bill_credit'),
+           EXISTS (SELECT 1 FROM public.tool_calls c
+                   WHERE c.lease_hash = l.token_hash AND c.tool = 'request_disconnection' AND c.outcome = 'ok')
+    FROM public.leases l
+    JOIN public.tickets t ON t.id = l.ticket_id
+    JOIN public.accounts a ON a.customer_id = t.customer_id
+    JOIN public.supply_points s ON s.id = a.supply_point_id
+    WHERE l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
+      AND NOT l.revoked AND l.expires_at > clock_timestamp();
+$$;
+
+GRANT SELECT (lease_hash, tool, outcome) ON tool_calls TO api_owner;
+ALTER FUNCTION reply_facts(text) OWNER TO api_owner;
+REVOKE ALL ON FUNCTION reply_facts(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION reply_facts(text) TO dispatcher;

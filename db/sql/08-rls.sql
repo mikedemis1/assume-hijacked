@@ -18,6 +18,8 @@
 -- could write register_sync or a removal request could make an unprotected home look checked.
 -- And tool_calls (05-lease.sql), the gateway's record of every call: a tool must not be able to
 -- read what was refused or write a row that makes a refusal look like an answer.
+-- And the dispatcher's agent_runs and replies (05-lease.sql): a tool must not be able to write the
+-- reply a customer gets, or mark a run replied.
 DO $$
 DECLARE
     t text;
@@ -25,7 +27,7 @@ BEGIN
     FOREACH t IN ARRAY ARRAY['tickets', 'customers', 'accounts', 'supply_points', 'action_requests', 'leases',
                             'risk_assessments', 'call_assessments', 'agent_control', 'heartbeats',
                             'flags', 'register_sync', 'flag_removal_requests', 'flag_removal_approvals',
-                            'tool_calls']
+                            'tool_calls', 'agent_runs', 'replies']
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);

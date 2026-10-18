@@ -1,0 +1,69 @@
+{
+  "component": "dispatcher",
+  "description": "Hands a ticket and a lease to an agent, takes the agent's reply, runs the reply guard again, stores the reply and ends the lease. In Kubernetes it also starts the agent's Job, one per ticket, from a fixed template. Its database role reads only ticket id and status, keeps the run records, adds replies, opens and revokes leases and reads reply_facts; it cannot read a ticket's text or any customer data.",
+  "db": {
+    "role": "dispatcher",
+    "login": true,
+    "connection_limit": 5,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {
+      "agent_runs": [
+        "SELECT (created_at, id, job_name, status, ticket_id)",
+        "INSERT (job_name, status, ticket_id)",
+        "UPDATE (lease_hash, status)"
+      ],
+      "agent_runs_id_seq": [
+        "USAGE"
+      ],
+      "replies": [
+        "SELECT (ticket_id)",
+        "INSERT (text, ticket_id)"
+      ],
+      "tickets": [
+        "SELECT (id, status)"
+      ]
+    },
+    "execute": [
+      "beat(text)",
+      "lease_scope(text)",
+      "open_lease(integer, text[], text)",
+      "reply_facts(text)",
+      "revoke_lease(text)"
+    ]
+  },
+  "network": {
+    "ingress_from": [
+      "agent"
+    ],
+    "egress_to": [
+      "db"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "dispatcher",
+    "rbac": [
+      "create jobs.batch",
+      "create tokenreviews.authentication.k8s.io"
+    ]
+  },
+  "azure": {
+    "identity": "id-dispatcher",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-dispatcher"
+      }
+    ]
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}

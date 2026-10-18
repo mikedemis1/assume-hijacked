@@ -1,0 +1,136 @@
+{
+  "apiVersion": "batch/v1",
+  "kind": "Job",
+  "metadata": {
+    "labels": {
+      "ah/ticket": "",
+      "app.kubernetes.io/name": "agent"
+    },
+    "namespace": "ah-agent"
+  },
+  "spec": {
+    "activeDeadlineSeconds": 300,
+    "backoffLimit": 0,
+    "template": {
+      "metadata": {
+        "labels": {
+          "ah/ticket": "",
+          "app.kubernetes.io/name": "agent"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "command": [
+              "python",
+              "-m",
+              "app.agent.main"
+            ],
+            "env": [
+              {
+                "name": "APP_ENV",
+                "value": "kind"
+              },
+              {
+                "name": "CALLER_AUTH",
+                "value": "k8s"
+              },
+              {
+                "name": "GATEWAY_URL",
+                "value": "http://tool-gateway.ah-gateway.svc.cluster.local:8080/mcp"
+              },
+              {
+                "name": "LLM_GATEWAY_URL",
+                "value": "http://llm-gateway.ah-agent.svc.cluster.local:8083"
+              },
+              {
+                "name": "DISPATCHER_URL",
+                "value": "http://dispatcher.ah-intake.svc.cluster.local:8081"
+              }
+            ],
+            "image": "localhost:5001/assume-hijacked@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "agent",
+            "resources": {
+              "limits": {
+                "cpu": "500m",
+                "memory": "256Mi"
+              },
+              "requests": {
+                "cpu": "50m",
+                "memory": "64Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 10001,
+              "runAsNonRoot": true,
+              "runAsUser": 10001,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/var/run/secrets/ah",
+                "name": "ah-tokens",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "enableServiceLinks": false,
+        "restartPolicy": "Never",
+        "runtimeClassName": "kata-vm-isolation",
+        "securityContext": {
+          "fsGroup": 10001,
+          "runAsGroup": 10001,
+          "runAsNonRoot": true,
+          "runAsUser": 10001,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "serviceAccountName": "agent",
+        "volumes": [
+          {
+            "name": "ah-tokens",
+            "projected": {
+              "sources": [
+                {
+                  "serviceAccountToken": {
+                    "audience": "tool-gateway",
+                    "expirationSeconds": 600,
+                    "path": "tool-gateway/token"
+                  }
+                },
+                {
+                  "serviceAccountToken": {
+                    "audience": "llm-gateway",
+                    "expirationSeconds": 600,
+                    "path": "llm-gateway/token"
+                  }
+                },
+                {
+                  "serviceAccountToken": {
+                    "audience": "dispatcher",
+                    "expirationSeconds": 600,
+                    "path": "dispatcher/token"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ttlSecondsAfterFinished": 600
+  }
+}

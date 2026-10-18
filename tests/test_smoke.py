@@ -110,13 +110,16 @@ with ThreadPoolExecutor(8) as pool:
 FAKE_PORTS = {"fake-register": 8090, "fake-dso": 8091, "fake-sms": 8092}
 
 # Every service on an internal network except the db (which is also on hostaccess on purpose).
-WALLED_SERVICES = [*TOOL_HOSTS, "tool-gateway", "executor", "risk-engine", "register-sync", *FAKE_PORTS, "agent"]
+WALLED_SERVICES = [
+    *TOOL_HOSTS, "tool-gateway", "dispatcher", "executor", "risk-engine", "register-sync", *FAKE_PORTS, "agent",
+]
 
 DB_PORT = 5432  # inside the stack; the published host port is DB_HOST_PORT
 DB_HOST_PORT = int(os.environ.get("DB_PORT", "5432"))
 TOOL_PORT = 8000
 GATEWAY_PORT = 8080
 RISK_PORT = 8082
+DISPATCHER_PORT = 8081
 OPS_PORT = 9000
 
 
@@ -128,8 +131,9 @@ def compose(*args, timeout=300, env=None):
 
 
 def open_stack_lease(ticket_id):
-    """A lease for the ticket in the stack database. The dispatcher's job once it exists (task A9);
-    until then the test opens it as the database admin, over the published port."""
+    """A lease for the ticket in the stack database, opened as the database admin over the published
+    port. The agent container still takes its lease from AGENT_LEASE; the dispatcher tests below
+    claim theirs from the dispatcher."""
     with psycopg.connect(
         host=os.environ.get("DB_HOST", "127.0.0.1"),
         port=DB_HOST_PORT,
@@ -237,7 +241,7 @@ def test_the_gateway_holds_the_signing_key_and_not_the_public_one():
     assert secret_files("tool-gateway") == ["gateway_signing_key"]
 
 
-@pytest.mark.parametrize("service", ["executor", "risk-engine", "register-sync", "db", *FAKE_PORTS])
+@pytest.mark.parametrize("service", ["executor", "risk-engine", "register-sync", "dispatcher", "db", *FAKE_PORTS])
 def test_no_other_container_holds_a_gateway_key(service):
     assert secret_files(service) == []
 
@@ -366,7 +370,7 @@ def assert_blocked(source, targets):
 
 
 def test_agent_cannot_reach_db_on_any_ip():
-    # The db is on nine networks, so nine IPs. The agent shares none of them.
+    # The db is on ten networks, so ten IPs. The agent shares none of them.
     targets = [*service_targets("db", DB_PORT), ("host.docker.internal", DB_HOST_PORT)]
     assert len(targets) > 3, targets
     assert_blocked("agent", targets)
@@ -450,7 +454,8 @@ def test_fakes_cannot_reach_each_other(source, target):
 # The controls: the same ports on the edges that ARE allowed. Without these, "blocked" above could
 # just mean the service was down or the probe was broken.
 ALLOWED_EDGES = {
-    "agent": [("tool-gateway", GATEWAY_PORT)],
+    "agent": [("tool-gateway", GATEWAY_PORT), ("dispatcher", DISPATCHER_PORT)],
+    "dispatcher": [("db", DB_PORT)],
     "tool-gateway": [*((tool, TOOL_PORT) for tool in TOOL_HOSTS), ("risk-engine", RISK_PORT), ("db", DB_PORT)],
     **{tool: [("db", DB_PORT)] for tool in TOOL_HOSTS},
     "executor": [("db", DB_PORT), ("fake-dso", FAKE_PORTS["fake-dso"]), ("fake-sms", FAKE_PORTS["fake-sms"])],
@@ -756,3 +761,143 @@ def test_a_neighbour_of_the_gateway_is_refused_and_the_agent_is_not(source):
     assert let_in.returncode == 0, f"stdout: {let_in.stdout}\nstderr: {let_in.stderr}"
     assert let_in.stdout.strip().splitlines()[-1] == "200", let_in.stdout
     assert [(r[0], r[3], r[4]) for r in stack_calls(after)] == [("issue_bill_credit", "denied", "lease")]
+
+
+# --- The dispatcher in the stack ---
+
+def test_the_dispatcher_answers_healthz_and_publishes_its_metrics_from_the_start():
+    status, metrics = ops_of("dispatcher")
+    assert status == "200"
+    assert 'dispatcher_claims_total{outcome="issued"} ' in metrics
+    assert 'dispatcher_replies_blocked_total{reason="currency"} ' in metrics
+    assert 'dispatcher_callers_refused_total{reason="wrong_network"} ' in metrics
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["tool-gateway", *TOOL_HOSTS, "risk-engine", "executor", "register-sync", *FAKE_PORTS],
+)
+def test_nothing_without_an_edge_to_the_dispatcher_reaches_its_port(source):
+    # The agent is the only container on the dispatcher's agent-side edge. The database shares the
+    # dispatcher's other edge and is dealt with below.
+    assert_blocked(source, service_targets("dispatcher", DISPATCHER_PORT))
+
+
+@pytest.mark.parametrize(
+    "target",
+    [("tool-gateway", GATEWAY_PORT), ("risk-engine", RISK_PORT), ("executor", OPS_PORT), ("register-sync", OPS_PORT),
+     *((host, TOOL_PORT) for host in TOOL_HOSTS), *FAKE_PORTS.items()],
+)
+def test_the_dispatcher_reaches_nothing_but_the_database(target):
+    assert_blocked("dispatcher", service_targets(*target))
+
+
+# Runs in the agent container: ask the dispatcher for work, optionally reply, print what happened.
+# LEASE and TEXT come from the environment, so neither is on a command line.
+DISPATCHER_CLIENT = """
+import json, os, urllib.error, urllib.request
+
+def call(path, body=None, lease=None):
+    headers = {{"Content-Type": "application/json"}}
+    if lease:
+        headers["X-Lease"] = lease
+    data = b"" if body is None else json.dumps(body).encode()
+    request = urllib.request.Request("http://dispatcher:8081" + path, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as answer:
+            return answer.status, answer.read().decode()
+    except urllib.error.HTTPError as err:
+        return err.code, err.read().decode()
+
+{steps}
+"""
+
+CLAIM = """
+status, text = call("/claim")
+out = {"claim": status}
+if status == 200:
+    out.update(json.loads(text))
+print(json.dumps(out))
+"""
+
+REPLY = """
+lease, text = os.environ["LEASE"], os.environ["TEXT"]
+first, _ = call("/reply", {"text": text}, lease)
+again, _ = call("/reply", {"text": "a second reply"}, lease)
+print(json.dumps({"reply": first, "again": again}))
+"""
+
+
+def agent_script(steps, **env):
+    """Run the steps in a one-off agent container (no restart of its dependencies) and parse the last
+    line it printed as JSON."""
+    names = [arg for key in env for arg in ("-e", key)]
+    done = compose(
+        "run", "--rm", "--no-deps", *names, "agent", "python", "-c", DISPATCHER_CLIENT.format(steps=steps),
+        env={**os.environ, **env}, timeout=120,
+    )
+    assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+@pytest.fixture
+def clean_runs():
+    """The stack database keeps runs and replies between test runs; a ticket with a run is never
+    handed out again, so each test starts from none and leaves none."""
+
+    def wipe():
+        with stack_db() as conn:
+            conn.execute("DELETE FROM replies")
+            conn.execute("DELETE FROM agent_runs")
+
+    wipe()
+    yield
+    wipe()
+
+
+def test_the_agent_gets_a_ticket_and_a_lease_and_its_reply_is_stored_and_the_lease_ends(clean_runs):
+    claimed = agent_script(CLAIM)
+    assert claimed["claim"] == 200 and claimed["ticket_id"] == 1 and len(claimed["lease"]) == 64
+    with stack_db() as conn:
+        scope = conn.execute("SELECT ticket_id, bound_pod FROM lease_scope(%s)", (claimed["lease"],)).fetchone()
+        assert scope == (1, None)
+        assert conn.execute("SELECT ticket_id, status FROM agent_runs").fetchall() == [(1, "claimed")]
+    # The control: the lease works. The real agent answers ticket 1 with it, through the gateway.
+    answered = compose(
+        "run", "--rm", "--no-deps", "-e", "AGENT_LEASE", "agent", "python", "-m", "app.agent.main", "1",
+        env={**os.environ, "AGENT_LEASE": claimed["lease"]}, timeout=180,
+    )
+    assert answered.returncode == 0 and "Eleni Papadopoulou" in answered.stdout, answered.stderr
+    sent = agent_script(REPLY, LEASE=claimed["lease"], TEXT="Thank you, a colleague will check this.")
+    assert sent == {"reply": 200, "again": 403}                         # stored once; the lease has ended
+    with stack_db() as conn:
+        assert conn.execute("SELECT ticket_id, text FROM replies").fetchall() == [
+            (1, "Thank you, a colleague will check this.")]
+        assert conn.execute("SELECT ticket_id, status FROM agent_runs").fetchall() == [(1, "replied")]
+        assert conn.execute("SELECT count(*) FROM lease_scope(%s)", (claimed["lease"],)).fetchone()[0] == 0
+    # The next agent gets the next ticket.
+    assert agent_script(CLAIM)["ticket_id"] == 2
+
+
+def test_a_reply_that_promises_money_is_replaced_by_the_dispatcher_not_the_agent(clean_runs):
+    # The agent container here sends the text as a taken-over agent would: no guard of its own ran.
+    claimed = agent_script(CLAIM)
+    sent = agent_script(REPLY, LEASE=claimed["lease"], TEXT="Good news: a credit of 49 EUR will be paid back to you.")
+    assert sent["reply"] == 200
+    with stack_db() as conn:
+        (text,) = conn.execute("SELECT text FROM replies").fetchone()
+    assert text == "Thank you. A colleague will check this and reply to you."
+
+
+# Runs in the database container, which shares the dispatcher's database edge and so can open its
+# port, from an address that is not in the agent's subnet: the status line of the answer.
+FROM_THE_DATABASE = "wget -S -O /dev/null --post-data x http://dispatcher:8081/claim 2>&1; true"
+
+
+def test_a_neighbour_of_the_dispatcher_is_refused_and_the_agent_is_not(clean_runs):
+    refused = compose("exec", "-T", "db", "sh", "-c", FROM_THE_DATABASE, timeout=60)
+    assert refused.returncode == 0, refused.stderr
+    assert "401" in refused.stdout and "HTTP/1.1 200" not in refused.stdout, refused.stdout
+    with stack_db() as conn:
+        assert conn.execute("SELECT count(*) FROM agent_runs").fetchone()[0] == 0   # it never got as far as a claim
+    assert agent_script(CLAIM)["claim"] == 200                                      # the control: the agent is let in

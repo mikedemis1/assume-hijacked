@@ -336,12 +336,14 @@ def test_the_edges_the_manifests_name_are_the_edges_compose_builds():
     assert edges_of_compose() == edges_of_manifests()
 
 
-def test_the_agent_has_one_edge_and_it_leads_to_the_gateway():
+def test_the_agent_has_two_edges_one_to_the_gateway_and_one_to_the_dispatcher():
     services = compose()["services"]
-    assert services["agent"]["networks"] == ["edge_agent_gateway"]
-    assert manifests()["agent"]["network"]["egress_to"] == ["tool-gateway"]
+    assert services["agent"]["networks"] == ["edge_agent_gateway", "edge_agent_dispatcher"]
+    assert manifests()["agent"]["network"]["egress_to"] == ["dispatcher", "tool-gateway"]
     sharing = [name for name, service in services.items() if "edge_agent_gateway" in service.get("networks", [])]
     assert sorted(sharing) == ["agent", "tool-gateway"]
+    sharing = [name for name, service in services.items() if "edge_agent_dispatcher" in service.get("networks", [])]
+    assert sorted(sharing) == ["agent", "dispatcher"]
     # No tool is on a network the agent is on.
     agent_networks = set(services["agent"]["networks"])
     for component in TOOL_COMPONENTS.values():
@@ -412,3 +414,49 @@ def test_a_tool_serves_healthz_on_9000_while_it_runs(monkeypatch, tmp_path):
         assert started["heartbeat"].alive(started["heartbeat"].clock() + 10 ** 9)
     finally:
         started["server"].shutdown()
+
+
+# --- the dispatcher: its manifest, its edges, its subnet ------------------------------------------
+
+def test_the_dispatchers_edge_has_a_pinned_subnet_and_the_dispatcher_is_told_it():
+    import ipaddress
+
+    config = compose()
+    pinned = config["networks"]["edge_agent_dispatcher"]["ipam"]["config"]
+    assert len(pinned) == 1
+    subnet = pinned[0]["subnet"]
+    assert ipaddress.ip_network(subnet, strict=True).prefixlen >= 24
+    assert config["services"]["dispatcher"]["environment"]["CALLER_SUBNET"] == subnet
+    # Only the agent and the dispatcher are on it, and no other network pins the same range.
+    assert sorted(n for n, s in config["services"].items() if "edge_agent_dispatcher" in s.get("networks", [])) == [
+        "agent", "dispatcher"]
+    others = [n["ipam"]["config"][0]["subnet"] for name, n in config["networks"].items()
+              if name != "edge_agent_dispatcher" and n.get("ipam")]
+    assert subnet not in others
+
+
+def test_the_dispatcher_reaches_the_database_and_nothing_else():
+    services = compose()["services"]
+    assert sorted(services["dispatcher"]["networks"]) == ["edge_agent_dispatcher", "edge_dispatcher_db"]
+    assert sorted(n for n, s in services.items() if "edge_dispatcher_db" in s.get("networks", [])) == ["db", "dispatcher"]
+    env = services["dispatcher"]["environment"]
+    assert env["CALLER_AUTH"] == "compose" and env["DISPATCH_MODE"] == "compose"
+    # Its database password is its own, and it holds no key.
+    assert "DB_PASSWORD_DISPATCHER" in env and not [k for k in env if k.startswith("DB_PASSWORD_") and k != "DB_PASSWORD_DISPATCHER"]
+    assert "secrets" not in services["dispatcher"]
+    agent_env = services["agent"]["environment"]
+    assert agent_env["DISPATCHER_URL"] == "http://dispatcher:8081"
+    # The dispatcher's password is held by the dispatcher and by the db that sets it, nobody else.
+    holders = sorted(n for n, s in services.items() if "DB_PASSWORD_DISPATCHER" in s.get("environment", {}))
+    assert holders == ["db", "dispatcher"]
+    assert not [k for k in agent_env if k.startswith("DB_PASSWORD")]
+    assert sorted(services["agent"]["depends_on"]) == ["dispatcher", "tool-gateway"]
+
+
+def test_the_dispatcher_manifest_names_its_edges_and_its_kubernetes_rights():
+    manifest = manifests()["dispatcher"]
+    assert manifest["network"] == {"ingress_from": ["agent"], "egress_to": ["db"], "dns": ["cluster"]}
+    # Creating Jobs and reviewing tokens: nothing else in the cluster (the chart's Role and ClusterRole).
+    assert manifest["k8s"] == {"service_account": "dispatcher",
+                               "rbac": ["create jobs.batch", "create tokenreviews.authentication.k8s.io"]}
+    assert manifest["db"]["role"] == "dispatcher"

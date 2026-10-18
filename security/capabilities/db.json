@@ -51,6 +51,9 @@
           ],
           "tickets": [
             "SELECT (body, customer_id, id)"
+          ],
+          "tool_calls": [
+            "SELECT (lease_hash, outcome, tool)"
           ]
         },
         "execute": [
@@ -77,7 +80,8 @@
           "FUNCTION api_request_credit(text, numeric, text, integer) SECURITY DEFINER",
           "FUNCTION api_request_moveout(text, date) SECURITY DEFINER",
           "FUNCTION api_set_temp_protection(text) SECURITY DEFINER",
-          "FUNCTION lease_ticket_for_tool(text, text)"
+          "FUNCTION lease_ticket_for_tool(text, text)",
+          "FUNCTION reply_facts(text) SECURITY DEFINER"
         ],
         "default_privileges": [
           "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
@@ -353,6 +357,32 @@
           }
         ]
       },
+      "agent_runs": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
       "call_assessments": {
         "enabled": true,
         "forced": true,
@@ -536,6 +566,32 @@
         ]
       },
       "register_sync": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "replies": {
         "enabled": true,
         "forced": true,
         "policies": [
