@@ -397,6 +397,7 @@ services:
       LLM_BACKEND: scripted
       LLM_MODEL: claude-haiku-5-5
       LLM_TOKEN_BUDGET_PER_LEASE: "20000"
+      LLM_TOKEN_BUDGET_TOTAL: "500000"   # all leases and callers together, per 15 minutes
     restart: unless-stopped
     networks:
       - edge_agent_llmgw

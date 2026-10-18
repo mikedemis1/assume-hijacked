@@ -71,11 +71,11 @@ class CountingBackend:
 
 
 class Harness:
-    def __init__(self, backend=None, *, mode="compose", limit=20000, reviewer=None):
+    def __init__(self, backend=None, *, mode="compose", limit=20000, reviewer=None, total=None, **budget):
         self.metrics = Metrics()
         init_metrics(self.metrics)
         self.backend = backend if backend is not None else CountingBackend()
-        self.gateway = LlmGateway(self.backend, Budget(limit), self.metrics)
+        self.gateway = LlmGateway(self.backend, Budget(limit, **budget), self.metrics, total_limit=total)
         self.auth = llmgw_main.caller_auth(mode, AGENT_SUBNET if mode == "compose" else None, reviewer)
         self.app = build_app(self.gateway, self.auth, self.metrics)
 
@@ -217,7 +217,7 @@ def test_the_reply_limit_is_the_one_the_dispatcher_enforces():
 
 
 def test_budget_exceeded_returns_429():
-    h = Harness(limit=60)
+    h = Harness(limit=250)
     answers = [h.post(lease=LEASE) for _ in range(20)]
     codes = [a.status_code for a in answers]
     assert codes[0] == 200                                          # the control: a lease under budget is served
@@ -232,7 +232,7 @@ def test_budget_exceeded_returns_429():
 
 
 def test_the_budget_is_per_lease():
-    h = Harness(limit=60)
+    h = Harness(limit=250)
     while h.post(lease=LEASE).status_code == 200:
         pass
     assert h.post(lease=LEASE).status_code == 429
@@ -260,17 +260,19 @@ def test_the_budget_counts_the_tokens_the_provider_reports():
 
 def test_a_failed_call_still_costs_its_reservation():
     # A provider that errors must not give free calls: a loop of failures runs the budget out too.
-    h = Harness(FixedBackend(error=BackendError("status")), limit=60)
+    h = Harness(FixedBackend(error=BackendError("status")), limit=250)
     codes = [h.post().status_code for _ in range(20)]
     assert codes[0] == 502 and 429 in codes
 
 
 def test_in_kubernetes_the_pod_has_a_budget_too_so_new_lease_strings_do_not_reset_it():
     tokens = {"t-1": (AGENT_USER, "agent-1-abcde"), "t-2": (AGENT_USER, "agent-2-fghij")}
-    h = Harness(mode="k8s", limit=60, reviewer=reviewer_for(tokens))
+    h = Harness(mode="k8s", limit=250, reviewer=reviewer_for(tokens))
     headers = {"Authorization": "Bearer t-1"}
     codes = [h.post(lease=f"{i:064x}", headers=headers).status_code for i in range(40)]
-    assert codes[0] == 200 and 429 in codes                        # a fresh lease string every time did not help
+    # A fresh lease string every time did not help, and it was the pod's budget that said no (the
+    # address budget is five times as big and would need many more calls).
+    assert codes[0] == 200 and 429 in codes[:5]
     calls = h.backend.calls
     assert h.post(lease=OTHER_LEASE, headers=headers).status_code == 429
     assert h.backend.calls == calls
@@ -281,8 +283,9 @@ def test_budget_unit():
     budget = Budget(100)
     assert budget.reserve(["a"], 60) and budget.reserve(["a"], 40)
     assert not budget.reserve(["a"], 1)
-    assert budget.reserve(["b"], 100)
-    budget.settle(["b"], reserved=100, actual=10)                   # the call cost less: the difference is given back
+    reservation = budget.reserve(["b"], 100)
+    assert reservation
+    budget.settle(reservation, actual=10)                         # a same-window refund is still allowed
     assert budget.reserve(["b"], 90)
     assert not budget.reserve(["a", "c"], 1)                        # one key over budget refuses the whole call ...
     assert budget.reserve(["c"], 100)                               # ... and reserves nothing on the other keys
@@ -293,6 +296,179 @@ def test_the_budget_table_has_a_size_and_fails_closed():
     assert all(budget.reserve([str(i)], 1) for i in range(3))
     assert not budget.reserve(["new"], 1)                          # full: refuse a key we cannot track
     assert budget.reserve(["0"], 1)                                # a tracked key still works
+
+
+def fresh_leases():
+    return (f"{i:064x}" for i in range(10_000_000, 10_100_000))
+
+
+def test_new_lease_strings_from_one_address_run_into_the_address_budget():
+    # The gateway cannot tell a live lease from a made-up one, so a caller that sends a new random lease
+    # with every request must still be stopped. Compose has no pod, so it is the address that says no.
+    h = Harness(limit=250)
+    leases = fresh_leases()
+    codes = [h.post(lease=next(leases)).status_code for _ in range(40)]
+    assert codes[0] == 200 and 429 in codes                         # every lease alone was far under its budget
+    first = codes.index(429)
+    assert set(codes[first:]) == {429} and first <= 14
+    reached = h.backend.calls
+    assert h.post(lease=next(leases)).status_code == 429
+    assert h.backend.calls == reached                               # the model is not asked again
+    # The controls: another address is not affected, and a normal run on a fresh gateway is served.
+    assert h.post(lease=OTHER_LEASE, ip="10.250.3.6").status_code == 200
+    normal = Harness()
+    assert [normal.post(lease=LEASE).status_code for _ in range(5)] == [200] * 5
+
+
+def test_the_total_ceiling_holds_when_every_address_and_lease_is_under_its_own_budget():
+    h = Harness(limit=20000, total=450)
+    codes = []
+    for n in range(10):
+        codes.append(h.post(lease=f"{n:064x}", ip=f"10.250.3.{10 + n}").status_code)
+    assert codes[0] == 200 and 429 in codes
+    assert metric(h, "llmgw_requests_total", outcome="budget") >= 1
+    calls = h.backend.calls
+    assert h.post(lease=OTHER_LEASE, ip="10.250.3.99").status_code == 429
+    assert h.backend.calls == calls
+
+
+def test_a_flood_of_junk_leases_from_one_address_cannot_starve_another_address():
+    # The table is small here (30 keys). The flood is stopped by its address's budget after about a
+    # dozen keys, so there is room left for a real lease from elsewhere.
+    h = Harness(limit=250, max_keys=30)
+    leases = fresh_leases()
+    codes = [h.post(lease=next(leases)).status_code for _ in range(100)]
+    assert 429 in codes
+    assert h.post(lease=OTHER_LEASE, ip="10.250.3.6").status_code == 200
+
+
+def test_failed_calls_with_new_leases_cannot_fill_the_table_from_one_address():
+    backend = CountingBackend(FixedBackend(error=BackendError("status")))
+    h = Harness(backend, limit=250, max_keys=30)
+    leases = fresh_leases()
+    codes = [h.post(lease=next(leases)).status_code for _ in range(100)]
+    assert codes[0] == 502 and 429 in codes
+    reached = backend.calls
+    assert h.post(lease=next(leases)).status_code == 429
+    assert backend.calls == reached
+    assert h.post(lease=OTHER_LEASE, ip="10.250.3.6").status_code == 502
+    assert backend.calls == reached + 1
+
+
+@pytest.mark.parametrize("limit", [20_000, 10_000_000])
+def test_small_provider_usage_cannot_fill_the_table_from_one_address(limit):
+    backend = UsageBackend(1)
+    h = Harness(backend, limit=limit, total=1_000_000_000)
+    leases = fresh_leases()
+    for _ in range(1100):
+        answer = h.post(lease=next(leases))
+        if answer.status_code == 429:
+            break
+    assert answer.status_code == 429
+    reached = backend.calls
+    assert h.post(lease=next(leases)).json() == {"error": "budget"}
+    assert backend.calls == reached
+    assert h.post(lease=OTHER_LEASE, ip="10.250.3.6").status_code == 200
+
+
+def test_the_total_budget_recovers_after_its_window():
+    clock = Clock()
+    backend = UsageBackend(100)
+    h = Harness(backend, total=100, clock=clock)
+    assert h.post().status_code == 200
+    assert h.post(lease=OTHER_LEASE, ip="10.250.3.6").status_code == 429
+    assert backend.calls == 1
+    clock.now += 900
+    assert h.post(lease=OTHER_LEASE, ip="10.250.3.6").status_code == 200
+    assert backend.calls == 2
+
+
+def test_a_late_answer_cannot_refund_a_new_budget_window():
+    async def go():
+        clock = Clock()
+        entered, finish = asyncio.Event(), asyncio.Event()
+
+        class DelayedBackend:
+            calls = 0
+
+            async def next(self, transcript):
+                self.calls += 1
+                if self.calls == 1:
+                    entered.set()
+                    await finish.wait()
+                    return Step("reply", text="ok", tokens=100)
+                return Step("reply", text="ok", tokens=1000)
+
+        backend = DelayedBackend()
+        gateway = LlmGateway(backend, Budget(1000, clock=clock), Metrics(), total_limit=1000)
+        caller = llmgw_main.Caller(pod=None, address=AGENT_IP)
+        old = asyncio.create_task(gateway.next(caller, LEASE, [{"role": "ticket", "text": "x" * 2500}]))
+        await entered.wait()
+        clock.now += 900
+        try:
+            assert (await gateway.next(caller, LEASE, TICKET))[0] == 200
+        finally:
+            finish.set()
+            assert (await old)[0] == 200
+        assert (await gateway.next(caller, OTHER_LEASE, TICKET)) == (429, {"error": "budget"})
+        assert backend.calls == 2
+        clock.now += 900
+        assert (await gateway.next(caller, OTHER_LEASE, TICKET))[0] == 200
+        assert backend.calls == 3
+
+    asyncio.run(go())
+
+
+def test_the_default_ceilings_come_from_the_environment():
+    gateway, _ = llmgw_main.prepare(env(LLM_TOKEN_BUDGET_TOTAL="777"))
+    assert gateway._total_limit == 777
+    default, _ = llmgw_main.prepare(env())
+    assert default._total_limit == 500_000
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "lots", "", "2000000000"])
+def test_a_total_that_makes_no_sense_stops_the_start(value):
+    with pytest.raises(SystemExit, match="LLM_TOKEN_BUDGET_TOTAL"):
+        llmgw_main.prepare(env(LLM_TOKEN_BUDGET_TOTAL=value))
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_a_key_is_forgotten_after_its_window_and_spends_again():
+    clock = Clock()
+    budget = Budget(100, clock=clock, window_s=900)
+    assert budget.reserve(["a"], 100) and not budget.reserve(["a"], 1)
+    clock.now += 899
+    assert not budget.reserve(["a"], 1)                             # still inside the window
+    clock.now += 1
+    assert budget.reserve(["a"], 100)                               # forgotten, a new window
+
+
+def test_expired_keys_make_room_in_a_full_table_and_live_ones_do_not():
+    clock = Clock()
+    budget = Budget(10, max_keys=3, clock=clock, window_s=900)
+    assert all(budget.reserve([str(i)], 1) for i in range(3))
+    clock.now += 300
+    assert not budget.reserve(["new"], 1)                           # full of live keys: refused
+    clock.now += 600
+    assert budget.reserve(["new"], 1)                               # the old ones are older than the window
+    assert budget.reserve(["new2"], 1) and budget.reserve(["new3"], 1)
+
+
+def test_a_gateway_keeps_serving_new_leases_after_thousands_of_tickets():
+    # The table was a leak: after enough leases every new one got 429 until a restart.
+    clock = Clock()
+    budget = Budget(20000, max_keys=50, clock=clock, window_s=900)
+    for batch in range(20):                                         # 20 batches of 10 leases, each a window apart
+        for n in range(10):
+            assert budget.reserve([f"lease:{batch}-{n}"], 5), (batch, n)
+        clock.now += 901
 
 
 # --- the caller check -------------------------------------------------------------------------
@@ -810,7 +986,8 @@ def test_the_process_reads_the_peer_address_and_no_proxy_header():
 
 
 def test_only_the_gateway_knows_the_provider_the_agent_names_none():
-    # The model key and the Foundry identity live in the LLM gateway only (decision 7). The agent
+    # The model key and the Foundry identity live in the LLM gateway only, so a hijacked agent has
+    # nothing to read. The agent
     # package does not mention a provider, a key variable or the provider's address.
     agent_dir = ROOT / "app" / "agent"
     text = "\n".join(p.read_text(encoding="utf-8") for p in agent_dir.glob("*.py"))

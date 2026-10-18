@@ -508,3 +508,10 @@ def test_the_agent_gets_its_lease_from_the_claim_and_no_model_key_anywhere(setti
     assert len(sent) == 2 and len(set(sent)) == 1 and len(sent[0]) == 64   # one lease, from the claim
     text = "\n".join(p.read_text(encoding="utf-8") for p in (Path(agent_main.__file__).parent).glob("*.py"))
     assert "x-api-key" not in text.lower() and "ANTHROPIC" not in text and "FOUNDRY" not in text
+
+
+@pytest.fixture(autouse=True)
+def nothing_left_over(fresh_db, admin):
+    """The claim tests name ticket numbers, so they start from no runs, replies or leases at all."""
+    for table in ("agent_runs", "replies", "leases"):
+        assert admin.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"] == 0, table

@@ -502,6 +502,7 @@ def test_the_llm_gateway_as_shipped_has_no_key_no_database_and_no_route_out():
     assert not [n for n in env if n.startswith("DB_") or "KEY" in n or "FOUNDRY" in n or "ANTHROPIC" in n]
     assert service["command"] == ["python", "-m", "app.llmgw.main"]
     assert int(env["LLM_TOKEN_BUDGET_PER_LEASE"]) > 0
+    assert int(env["LLM_TOKEN_BUDGET_TOTAL"]) >= int(env["LLM_TOKEN_BUDGET_PER_LEASE"])   # a ceiling for all callers
 
 
 def test_a_model_key_exists_in_the_override_and_reaches_the_llm_gateway_only():

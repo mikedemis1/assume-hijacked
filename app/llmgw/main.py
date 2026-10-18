@@ -17,13 +17,22 @@ POST /next
     400       {"error": "bad_request"}   not a conversation of that shape, or no usable lease header
     401       {"error": "unauthorized"}  the caller is not an agent (see below)
     413       {"error": "too_large"}
-    429       {"error": "budget"}        the lease (or, in Kubernetes, the pod) has used its tokens
+    429       {"error": "budget"}        a lease, pod, address or total budget is exhausted
     502       {"error": "upstream"}      the model could not answer; nothing of what it said is passed on
 
 What the gateway does not do: it does not know whether a lease is live (it has no database role; the
-tool gateway and the dispatcher do that). The lease is the key of the token budget and nothing more.
-Without a pod to hang a second budget on (Compose), an agent that sends a new lease string with every
-request would get a new budget with each one; Compose is the lab, and Kubernetes also budgets the pod.
+tool gateway and the dispatcher do that). So a lease alone cannot be trusted as the unit of spending:
+a caller that sends a new random lease with every request would get a new budget each time. Every call
+is therefore charged to four keys at once, and has to fit all of them:
+    lease    LLM_TOKEN_BUDGET_PER_LEASE (default 20000)
+    pod      the same limit, Kubernetes only (a pod has one lease for its life)
+    address  the caller's source address, 5 times the per-lease limit
+    total    LLM_TOKEN_BUDGET_TOTAL (default 500000), all callers together
+Each key is a window of 15 minutes (the life of a lease) from its first spend; then it is forgotten. A
+call is charged at least MIN_CALL_TOKENS or one thousandth of the address limit, whichever is greater.
+Even a provider reporting a tiny usage cannot reduce that charge. A flood of new lease strings from
+one address therefore stops after at most a thousand keys, leaving room for other addresses. The table
+has a hard size limit as well and refuses a key it does not know when it is full.
 
 Who may call. Compose: the connection's source address must be inside CALLER_SUBNET, the subnet
 pinned on the agent's edge network (the same check as the tool gateway's and the dispatcher's).
@@ -36,7 +45,7 @@ app/llmgw/backends.py from the gateway's own key or token, and a header of the a
 authorization, or any other) is not copied into it.
 
 Environment: LLM_BACKEND (scripted|anthropic|foundry, default scripted), LLM_MODEL (default
-claude-haiku-5-5), LLM_TOKEN_BUDGET_PER_LEASE (default 20000), ANTHROPIC_API_KEY_FILE, FOUNDRY_ENDPOINT
+claude-haiku-5-5), LLM_TOKEN_BUDGET_PER_LEASE (default 20000), LLM_TOKEN_BUDGET_TOTAL (default 500000), ANTHROPIC_API_KEY_FILE, FOUNDRY_ENDPOINT
 and the workload identity variables, CALLER_AUTH (compose|k8s), CALLER_SUBNET (compose).
 """
 
@@ -47,7 +56,8 @@ import os
 import re
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 
 import uvicorn
 from starlette.applications import Starlette
@@ -60,7 +70,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.common import calls
 from app.common.events import security_event
 from app.common.ops import Heartbeat, Metrics, start_ops_server
-from app.gateway.auth import CallerAuth, CallerError, CallerIdentity
+from app.gateway.auth import CallerAuth, CallerError
 from app.llmgw import backends
 from app.llmgw.backends import BackendError, Step, estimate_tokens
 
@@ -78,6 +88,11 @@ MAX_NAME_CHARS = 64
 DEFAULT_BUDGET = 20_000
 MAX_BUDGET = 10_000_000
 MAX_BUDGET_KEYS = 10_000
+DEFAULT_TOTAL = 500_000
+MAX_TOTAL = 1_000_000_000
+ADDRESS_FACTOR = 5
+WINDOW_S = 15 * 60  # the life of a lease
+MIN_CALL_TOKENS = 100  # what one call costs at the least, whatever its estimate
 UNAUTHORIZED = {"error": "unauthorized"}
 
 REQUEST_OUTCOMES = ("ok", "budget", "bad_request", "too_large", "upstream")
@@ -99,44 +114,91 @@ def init_metrics(metrics: Metrics) -> None:
     metrics.inc("llmgw_tokens_total", by=0)
 
 
-class Budget:
-    """Tokens spent, per key. A call reserves its estimated input first and settles to what it really
-    cost; a call that does not fit reserves nothing, on any key. A table that is full refuses a key it
-    does not know: a gateway that forgot keys would give out fresh budgets."""
+@dataclass
+class _Spending:
+    tokens: int
+    started: float
 
-    def __init__(self, limit: int, max_keys: int = MAX_BUDGET_KEYS) -> None:
-        self.limit, self._max_keys = limit, max_keys
-        self._used: dict[str, int] = {}
+
+@dataclass(frozen=True)
+class _Reservation:
+    entries: tuple[tuple[str, _Spending], ...]
+    tokens: int
+
+
+BudgetKeys = list[str | tuple[str, int]]
+
+
+class Budget:
+    """Tokens spent, per key, in a window. A call reserves its estimated input first and settles to what
+    it really cost; a call that does not fit any one of its keys reserves nothing, on any key. A key is
+    forgotten WINDOW_S after its first spend (its spending starts again from 0). A table that is full,
+    after the forgotten keys are dropped, refuses a key it does not know: a gateway that forgot keys it
+    still needs would give out fresh budgets.
+
+    A key is a name, charged against the default limit, or a (name, limit) pair."""
+
+    def __init__(
+        self,
+        limit: int,
+        max_keys: int = MAX_BUDGET_KEYS,
+        *,
+        window_s: float = WINDOW_S,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.limit, self._max_keys, self._window_s, self._clock = limit, max_keys, window_s, clock
+        self._used: dict[str, _Spending] = {}
         self._lock = threading.Lock()
 
-    def reserve(self, keys: list[str], tokens: int) -> bool:
-        with self._lock:
-            new = [k for k in keys if k not in self._used]
-            if len(self._used) + len(new) > self._max_keys:
-                return False
-            if any(self._used.get(k, 0) + tokens > self.limit for k in keys):
-                return False
-            for key in keys:
-                self._used[key] = self._used.get(key, 0) + tokens
-            return True
+    def _pairs(self, keys: BudgetKeys) -> list[tuple[str, int]]:
+        return [(k, self.limit) if isinstance(k, str) else (k[0], k[1]) for k in keys]
 
-    def settle(self, keys: list[str], reserved: int, actual: int) -> None:
+    def _drop_old(self, now: float) -> None:
+        for name in [n for n, entry in self._used.items() if now - entry.started >= self._window_s]:
+            del self._used[name]
+
+    def reserve(self, keys: BudgetKeys, tokens: int) -> _Reservation | None:
+        pairs = self._pairs(keys)
         with self._lock:
-            for key in keys:
-                self._used[key] = max(0, self._used.get(key, 0) + actual - reserved)
+            now = self._clock()
+            self._drop_old(now)
+            if len(self._used) + len([n for n, _ in pairs if n not in self._used]) > self._max_keys:
+                return None
+            if any((self._used[n].tokens if n in self._used else 0) + tokens > limit for n, limit in pairs):
+                return None
+            for name, _ in pairs:
+                entry = self._used.setdefault(name, _Spending(0, now))
+                entry.tokens += tokens
+            return _Reservation(tuple((name, self._used[name]) for name, _ in pairs), tokens)
+
+    def settle(self, reservation: _Reservation, actual: int) -> None:
+        with self._lock:
+            for name, entry in reservation.entries:
+                # An old response must never refund or charge a replacement window with the same name.
+                if self._used.get(name) is entry:
+                    entry.tokens = max(0, entry.tokens + actual - reservation.tokens)
 
 
 class LlmGateway:
     """The rules, without HTTP."""
 
-    def __init__(self, backend, budget: Budget, metrics: Metrics) -> None:
+    def __init__(self, backend, budget: Budget, metrics: Metrics, *, total_limit: int | None = None) -> None:
         self.backend, self.budget, self.metrics = backend, budget, metrics
+        self._address_limit = budget.limit * ADDRESS_FACTOR
+        self._total_limit = total_limit if total_limit is not None else budget.limit * ADDRESS_FACTOR * 10
+        # Bound the number of new lease keys one address can buy, even with a large token limit.
+        self._minimum_charge = max(MIN_CALL_TOKENS, (self._address_limit + 999) // 1000)
 
-    async def next(self, caller: CallerIdentity, lease: str, transcript: list[dict]) -> tuple[int, dict]:
-        # The lease is the budget's key; in Kubernetes so is the pod, which has one lease for its life.
-        keys = [f"lease:{lease}"] + ([f"pod:{caller.pod}"] if caller.pod else [])
-        reserved = estimate_tokens(transcript)
-        if not self.budget.reserve(keys, reserved):
+    async def next(self, caller: Caller, lease: str, transcript: list[dict]) -> tuple[int, dict]:
+        # The lease cannot be checked here, so it is only one of four keys (see the module docstring).
+        keys = [
+            f"lease:{lease}",
+            (f"addr:{getattr(caller, 'address', None) or 'unknown'}", self._address_limit),
+            ("total", self._total_limit),
+        ] + ([f"pod:{caller.pod}"] if caller.pod else [])
+        reserved = max(estimate_tokens(transcript), self._minimum_charge)
+        reservation = self.budget.reserve(keys, reserved)
+        if reservation is None:
             return self._done(429, "budget", {"error": "budget"})
         try:
             step = await self.backend.next(transcript)
@@ -150,8 +212,8 @@ class LlmGateway:
             self.metrics.inc("llmgw_upstream_errors_total", {"category": "other"})
             security_event("llm_upstream_error", category="other", error=type(err).__name__)
             return self._done(502, "upstream", {"error": "upstream"})
-        spent = step.tokens if step.tokens > 0 else reserved + estimate_tokens(answer)
-        self.budget.settle(keys, reserved, spent)
+        spent = max(self._minimum_charge, step.tokens if step.tokens > 0 else reserved + estimate_tokens(answer))
+        self.budget.settle(reservation, spent)
         self.metrics.inc("llmgw_tokens_total", by=spent)
         return self._done(200, "ok", answer)
 
@@ -203,6 +265,14 @@ def _text(value) -> bool:
 # --- HTTP ---
 
 
+@dataclass(frozen=True)
+class Caller:
+    """Who called: the pod (Kubernetes) and the connection's source address (the budget's key)."""
+
+    pod: str | None
+    address: str | None
+
+
 class AuthenticateCaller:
     """Checks who is calling on every HTTP request, before any handler sees it."""
 
@@ -226,7 +296,9 @@ class AuthenticateCaller:
             answer = JSONResponse(UNAUTHORIZED, status_code=401, headers={"WWW-Authenticate": "Bearer"})
             await answer(scope, receive, send)
             return
-        await self.app({**scope, CALLER_SCOPE_KEY: caller}, receive, send)
+        client = scope.get("client")
+        address = client[0] if client else None
+        await self.app({**scope, CALLER_SCOPE_KEY: Caller(pod=caller.pod, address=address)}, receive, send)
 
 
 async def _read_capped(request: Request, limit: int) -> bytes | None:
@@ -288,6 +360,15 @@ def _budget_limit(env: Mapping[str, str]) -> int:
     return int(raw)
 
 
+def _total_limit(env: Mapping[str, str]) -> int:
+    if "LLM_TOKEN_BUDGET_TOTAL" not in env:
+        return DEFAULT_TOTAL
+    raw = env["LLM_TOKEN_BUDGET_TOTAL"].strip()
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= MAX_TOTAL:
+        raise SystemExit(f"LLM_TOKEN_BUDGET_TOTAL must be a whole number from 1 to {MAX_TOTAL}, got {raw!r}")
+    return int(raw)
+
+
 def prepare(env: Mapping[str, str], *, transport=None, reviewer=None) -> tuple[LlmGateway, CallerAuth]:
     """Everything the process needs, or SystemExit saying what is missing: a gateway that cannot reach
     its model, or would let every caller in, does not start."""
@@ -296,14 +377,14 @@ def prepare(env: Mapping[str, str], *, transport=None, reviewer=None) -> tuple[L
         auth = caller_auth(mode, env.get("CALLER_SUBNET") or None, reviewer)
     except ValueError as err:
         raise SystemExit(str(err)) from None
-    limit = _budget_limit(env)
+    limit, total = _budget_limit(env), _total_limit(env)
     try:
         backend = backends.make_backend(env, transport=transport)
     except BackendError as err:
         raise SystemExit(str(err)) from None
     metrics = Metrics()
     init_metrics(metrics)
-    return LlmGateway(backend, Budget(limit), metrics), auth
+    return LlmGateway(backend, Budget(limit), metrics, total_limit=total), auth
 
 
 def main() -> None:

@@ -26,7 +26,8 @@ from dataclasses import dataclass
 
 from app.agent.guard import SAFE_REPLY, block_reason, numbers_in
 
-# Added by this code, not the model, after a move-out request went in (decision 6, gap I10).
+# Added by this code, not the model, after a move-out request went in: a protected home may be
+# behind it and the customer is the only one who can say so.
 # No digits and no money words, so it would pass the reply guard anyway.
 MEDICAL_QUESTION = (
     "Does anyone at the property use medical equipment that needs electricity? "

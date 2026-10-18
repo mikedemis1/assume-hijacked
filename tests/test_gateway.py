@@ -745,7 +745,13 @@ def test_an_unknown_tool_is_denied_and_does_not_make_a_new_metric_series(setting
 
 # --- 7. logs and metrics carry names ---
 
-def test_gateway_logs_names_not_values(settings, admin, as_role, caplog):
+def test_gateway_logs_names_not_values(settings, admin, as_role, caplog, monkeypatch):
+    class EventClock:
+        @staticmethod
+        def now(tz):
+            return datetime(2026, 10, 18, 16, 0, 0, 777777, tzinfo=tz)
+
+    monkeypatch.setattr("app.common.events.datetime", EventClock)
     lease = open_lease(admin, 1)
     secret_reason = "SECRET-REASON-the-customer-has-a-heart-condition"
     built = build(settings, as_role)
@@ -754,13 +760,14 @@ def test_gateway_logs_names_not_values(settings, admin, as_role, caplog):
     caplog.set_level(logging.INFO)
     caplog.set_level(logging.DEBUG, logger="assume_hijacked.security")
     built.call("read_ticket", {"note": secret_reason}, lease)
-    built.call("issue_bill_credit", {"amount_eur": 4242.42, "reason": secret_reason, "evidence_ref": 777}, lease)
-    built.call("lookup_account", {"customer_id": 987654}, lease)
+    # Long sentinels cannot occur in ordinary timestamp components (including the fixed microseconds).
+    built.call("issue_bill_credit", {"amount_eur": 4242424242.42, "reason": secret_reason, "evidence_ref": 7777777777}, lease)
+    built.call("lookup_account", {"customer_id": 9876543210}, lease)
     built.call("read_ticket", {}, "f" * 64)                    # a lease that does not exist
     everything = caplog.text + built.metrics.render() + json.dumps(
         [{k: v for k, v in r.items() if k != "lease_hash"} for r in calls(admin)], default=str
     )
-    for value in (lease, "f" * 64, secret_reason, "4242", "777", "987654", "heart-condition"):
+    for value in (lease, "f" * 64, secret_reason, "4242424242", "7777777777", "9876543210", "heart-condition"):
         assert value not in everything, value
     # What is there: names.
     assert "dropped_args" in caplog.text and "customer_id" in caplog.text and "note" in caplog.text
