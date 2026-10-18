@@ -76,12 +76,18 @@ class Expected:
 
 def load_expected() -> Expected:
     """The probe matrix and the attack tickets from the attack suite in this repository.
-    Never raises: without the suite nothing is expected (partial sections), and a suite that
-    fails or answers nonsense is a problem the two sections report as errors."""
+    Raises no Exception: when the `attacks` package itself is not there, nothing is expected
+    (partial sections); a suite that fails to import (a syntax error, an exception at import, an
+    import inside it that fails), fails to answer, or answers nonsense is a problem the two
+    sections report as errors."""
     try:
         from attacks import probes, tickets
-    except ImportError:
-        return Expected(None, None)
+    except ModuleNotFoundError as exc:
+        if exc.name == "attacks":
+            return Expected(None, None)
+        return Expected(None, None, f"cannot import the attack suite: {type(exc).__name__}")
+    except Exception as exc:  # noqa: BLE001 - a broken suite must give error sections, not a crash
+        return Expected(None, None, f"cannot import the attack suite: {type(exc).__name__}")
     try:
         edges = tuple(p.edge for p in probes.matrix())
         numbers = tuple(t.number for t in tickets.ATTACK_TICKETS)

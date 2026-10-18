@@ -549,3 +549,29 @@ def test_a_missing_report_stays_not_run_even_with_a_broken_suite(tmp_path, monke
     report = evidence.build(tmp_path / "empty", generated=NOW)
     assert section(report, "probes").status == evidence.NOT_RUN
     assert report.overall == evidence.OVERALL_INCOMPLETE
+
+
+@pytest.mark.parametrize("probes_source, error", [
+    ("raise RuntimeError('broken at import')\n", "RuntimeError"),
+    ("import no_such_module_in_this_repository\n", "ModuleNotFoundError"),
+    ("from attacks import nothing_here\n", "ImportError"),
+    ("def broken(:\n", "SyntaxError"),
+])
+def test_an_attack_suite_that_fails_to_import_gives_error_sections(reports, tmp_path, monkeypatch,
+                                                                    probes_source, error):
+    import sys
+
+    package = tmp_path / "suite" / "attacks"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "probes.py").write_text(probes_source, encoding="utf-8")
+    (package / "tickets.py").write_text("ATTACK_TICKETS = ()\n", encoding="utf-8")
+    for name in ("attacks", "attacks.probes", "attacks.tickets"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.syspath_prepend(str(tmp_path / "suite"))
+    expected = evidence.load_expected()
+    assert expected.problem and error in expected.problem
+    report = evidence.build(reports, generated=NOW)
+    assert section(report, "probes").status == evidence.ERROR
+    assert section(report, "attacks").status == evidence.ERROR
+    assert report.overall == evidence.OVERALL_FAIL
