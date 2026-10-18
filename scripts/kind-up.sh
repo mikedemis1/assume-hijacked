@@ -68,11 +68,10 @@ ensure_api_reachable() {
                 kubectl config unset "clusters.$CONTEXT.certificate-authority-data" >/dev/null
                 kubectl config set-cluster "$CONTEXT" --insecure-skip-tls-verify=true >/dev/null
                 ;;
-            *)
-                # The API server needs a while after the containers start.
-                sleep 2
-                ;;
         esac
+        # The API server needs a while after the containers start. Every failed try waits, so
+        # 60 tries are the 120 s the message above says.
+        sleep 2
     done
 }
 

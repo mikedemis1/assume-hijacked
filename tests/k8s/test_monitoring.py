@@ -223,8 +223,21 @@ def test_dashboard_is_loaded_by_the_grafana_sidecar():
     script = MONITORING_SCRIPT.read_text(encoding="utf-8")
     assert "grafana_dashboard=1" in script
     assert "deploy/monitoring/dashboards/walls.json" in script
-    label = values()["grafana"]["sidecar"].get("dashboards", {}).get("label", "grafana_dashboard")
-    assert label == "grafana_dashboard"
+    # The label the rendered Grafana sidecar actually watches for (its LABEL env), not a default.
+    [grafana] = [d for d in stack_objects("Deployment") if d["metadata"]["name"] == "kps-grafana"]
+    sidecars = {c["name"]: {e["name"]: e.get("value") for e in c.get("env", [])}
+                for c in grafana["spec"]["template"]["spec"]["containers"]}
+    assert sidecars["grafana-sc-dashboard"]["LABEL"] == "grafana_dashboard"
+    # ... with the value the script sets (grafana_dashboard=1).
+    assert sidecars["grafana-sc-dashboard"]["LABEL_VALUE"] == "1"
+
+
+def test_components_scraped_panel_counts_the_application_only():
+    """The monitoring stack scrapes itself too; the panel counts only the application's targets."""
+    [panel] = [p for p in dashboard()["panels"] if p["title"] == "Components scraped"]
+    for target in panel["targets"]:
+        assert 'namespace=~"ah-.+"' in target["expr"]
+        assert 'namespace!="ah-monitoring"' in target["expr"]
 
 
 # --- the rules ---------------------------------------------------------------------------------
@@ -454,6 +467,10 @@ def test_kind_up_counts_every_failed_wait_and_converges_cilium():
     assert wait.index("tries=$((tries + 1))") < wait.index('case "$out"'), \
         "the counter must be bumped before the error is looked at"
     assert wait.count("tries=$((tries + 1))") == 1
+    # Every failed try waits, whatever the error, so the 60 tries are the 120 s the message says.
+    before_case, after_case = wait.split("esac", 1)
+    assert "sleep" not in before_case.split('case "$out"', 1)[1]
+    assert "sleep 2" in after_case.split("done", 1)[0]
     assert "upgrade --install cilium" in script
     assert 'stamp="$CILIUM_VERSION-$(sha256sum deploy/kind/cilium-values.yaml' in script
     assert 'if [ "$applied" != "$stamp" ]' in script

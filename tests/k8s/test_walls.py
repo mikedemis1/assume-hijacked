@@ -69,9 +69,18 @@ def pod(namespace: str, service_account: str, **spec) -> dict:
     return {"apiVersion": "v1", "kind": "Pod", "metadata": metadata, "spec": body}
 
 
+def job_template() -> dict:
+    """The agent Job template the admission policy was rendered with: the installed release's
+    (its image is the deployed digest), or else the chart's own render."""
+    result = kubectl("--namespace", "ah-intake", "get", "configmap", "agent-job-template", "-o", "json")
+    if result.returncode == 0 and chart_installed():
+        return json.loads(json.loads(result.stdout)["data"]["job.json"])
+    return agent_job("kind")
+
+
 def ticket_job(ticket: str = "42") -> dict:
-    """The agent Job exactly as the dispatcher builds it: the chart template plus name and ticket."""
-    job = agent_job("kind")
+    """The agent Job exactly as the dispatcher builds it: the template plus name and ticket."""
+    job = job_template()
     job["metadata"]["name"] = f"agent-{ticket}"
     job["metadata"]["labels"]["ah/ticket"] = ticket
     job["spec"]["template"]["metadata"]["labels"]["ah/ticket"] = ticket

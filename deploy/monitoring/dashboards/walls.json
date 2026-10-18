@@ -93,7 +93,7 @@
       "id": 2,
       "type": "stat",
       "title": "Components scraped",
-      "description": "Targets in the ah-* namespaces that answered the last scrape (up) and that did not (down).",
+      "description": "Application components (ah-* namespaces, not the monitoring stack itself) that answered the last scrape (up) and that did not (down).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -111,7 +111,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(up{job=~\".+\", namespace=~\"ah-.+\"} == 1)",
+          "expr": "count(up{job=~\".+\", namespace=~\"ah-.+\", namespace!=\"ah-monitoring\"} == 1)",
           "legendFormat": "up",
           "instant": true
         },
@@ -121,7 +121,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(up{job=~\".+\", namespace=~\"ah-.+\"} == 0) or vector(0)",
+          "expr": "count(up{job=~\".+\", namespace=~\"ah-.+\", namespace!=\"ah-monitoring\"} == 0) or vector(0)",
           "legendFormat": "down",
           "instant": true
         }

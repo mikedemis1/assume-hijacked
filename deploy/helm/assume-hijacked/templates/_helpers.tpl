@@ -79,6 +79,23 @@ projected:
 {{- end }}
 
 {{/*
+Projected tokens a component shows to the peers it calls (the same layout as the agent's
+tokens in agent.yaml): one per audience, 10 minutes, at <audience>/token. The peer checks it
+with a TokenReview. Call with the list of audiences.
+*/}}
+{{- define "ah.audienceTokenVolume" -}}
+name: ah-tokens
+projected:
+  sources:
+    {{- range . }}
+    - serviceAccountToken:
+        audience: {{ . }}
+        expirationSeconds: 600
+        path: {{ . }}/token
+    {{- end }}
+{{- end }}
+
+{{/*
 Where a component's secrets come from. Same Secret name (<name>-secrets) and keys on both
 environments, so the pod spec does not change:
   kind   a Secret rendered from values (secrets.*), required at install time
@@ -170,8 +187,17 @@ Call with a dict:
              /var/run/secrets/ah-files/<key>, path given to the app in env <env>
   configMaps list of (dict "name" "mountPath"), read-only
   apiToken   true when it calls the Kubernetes API
+  audiences  list of audiences it gets a projected token for, to call a peer that checks it
+             with a TokenReview: /var/run/secrets/ah/<audience>/token, 10 minutes, read-only
   sandbox    true to run under the sandbox RuntimeClass
   workloadIdentity  true when its process calls Azure itself (not needed to read its Key Vault)
+  strategy   Deployment strategy type; empty for the default rolling update
+
+Every pod gets a small writable /tmp (emptyDir): the root filesystem is read-only, and Python
+and its libraries fall back to /tmp for temporary files.
+
+A component listed in `stubs` (kind only, until its code is in this tree) runs the ops stand-in
+files/ops-stub.py instead of its entry point; everything else about the pod stays the same.
 */}}
 {{- define "ah.workload" -}}
 {{- $root := .root -}}
@@ -239,16 +265,41 @@ no pod label: its process holds no Azure token. Only a component that calls Azur
 {{- $volumes = append $volumes (include "ah.kubeApiTokenVolume" . | fromYaml) -}}
 {{- $mounts = append $mounts (dict "name" "kube-api-token" "mountPath" "/var/run/secrets/kubernetes.io/serviceaccount" "readOnly" true) -}}
 {{- end -}}
+{{- with .audiences -}}
+{{- $volumes = append $volumes (include "ah.audienceTokenVolume" . | fromYaml) -}}
+{{- $mounts = append $mounts (dict "name" "ah-tokens" "mountPath" "/var/run/secrets/ah" "readOnly" true) -}}
+{{- end -}}
 {{- range .configMaps -}}
 {{- $volumes = append $volumes (dict "name" .name "configMap" (dict "name" .name)) -}}
 {{- $mounts = append $mounts (dict "name" .name "mountPath" .mountPath "readOnly" true) -}}
 {{- end -}}
+{{- $volumes = append $volumes (dict "name" "tmp" "emptyDir" (dict "sizeLimit" "64Mi")) -}}
+{{- $mounts = append $mounts (dict "name" "tmp" "mountPath" "/tmp") -}}
 
 {{- /* Ports. */ -}}
 {{- $ports := default (list) .ports -}}
 {{- if .ops -}}
 {{- $ports = append $ports (dict "name" "ops" "port" 9000) -}}
 {{- end -}}
+
+{{- /* The entry point, or the ops stand-in while the component's code is not in this tree. */ -}}
+{{- $command := .command -}}
+{{- if has $name (default (list) $v.stubs) -}}
+{{- if ne $v.env "kind" -}}
+{{- fail (printf "stubs is for kind only (%s would not run its code)" $name) -}}
+{{- end -}}
+{{- if not .ops -}}
+{{- fail (printf "stubs: %s has no ops port for the stand-in to serve" $name) -}}
+{{- end -}}
+{{- $command = list "python" "-c" ($root.Files.Get "files/ops-stub.py") $name -}}
+{{- end -}}
+
+{{- /*
+Azure: db-migrate sets a new password for every database role on each deploy (pre-upgrade hook,
+db-migrate.yaml). A pod reads its password once, at start, so the pods with a database role are
+replaced on every deploy, after the new passwords are in the vaults.
+*/ -}}
+{{- $rotated := and (eq $v.env "azure") .dbRole -}}
 
 {{- include "ah.serviceAccount" (dict "root" $root "name" $name "namespace" .namespace "workloadIdentity" $wi) }}
 {{- if $hasSecrets }}
@@ -266,6 +317,10 @@ metadata:
 spec:
   replicas: 1
   revisionHistoryLimit: 3
+  {{- with .strategy }}
+  strategy:
+    type: {{ . }}
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ $name }}
@@ -276,6 +331,10 @@ spec:
         {{- if $podIdentity }}
         azure.workload.identity/use: "true"
         {{- end }}
+      {{- if $rotated }}
+      annotations:
+        ah/db-password-revision: {{ $root.Release.Revision | quote }}
+      {{- end }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
@@ -291,7 +350,7 @@ spec:
         - name: {{ $name }}
           image: {{ $v.images.app }}
           imagePullPolicy: IfNotPresent
-          command: {{ toJson .command }}
+          command: {{ toJson $command }}
           {{- with $ports }}
           ports:
             {{- range . }}
@@ -353,6 +412,18 @@ spec:
 {{/* Every DB login role that has a password (db/sql/02-roles.sql plus the gateway, risk engine, dispatcher and register sync roles). */}}
 {{- define "ah.dbRoles" -}}
 ["tool_read_ticket", "tool_lookup_account", "tool_request_disconnection", "tool_issue_bill_credit", "tool_set_temp_protection", "executor", "approver", "gateway", "risk_engine", "dispatcher", "register_sync"]
+{{- end }}
+
+{{/*
+The component that logs in as each database role, as a JSON object {role: component}. The
+role's password lives in that component's Secret (kind) or Key Vault (Azure).
+*/}}
+{{- define "ah.dbRoleComponents" -}}
+{{- $out := dict
+  "executor" "executor" "approver" "console" "gateway" "tool-gateway" "risk_engine" "risk-engine"
+  "dispatcher" "dispatcher" "register_sync" "register-sync" -}}
+{{- range include "ah.tools" . | fromJsonArray }}{{ $_ := set $out (printf "tool_%s" .) (printf "tool-%s" (replace "_" "-" .)) }}{{ end -}}
+{{- toJson $out -}}
 {{- end }}
 
 {{/*
@@ -486,7 +557,7 @@ database for every caller. */ -}}
 {{- $edges = append $edges (dict "id" "edge-db-setup-to-db" "from" (dict "ns" "ah-core" "pods" (list "db-migrate")) "to" $db) -}}
 {{- end -}}
 {{- /* Row 21: Prometheus (namespace ah-monitoring, deploy/monitoring) scrapes the ops port, and only that. */ -}}
-{{- range $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" -}}
+{{- range $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" "ah-fakes" -}}
 {{- $edges = append $edges (dict "id" "edge-21-monitoring-to-metrics" "from" (dict "ns" "ah-monitoring" "pods" (list) "external" true) "to" (dict "ns" $ns "pods" (list) "ports" (list 9000))) -}}
 {{- end -}}
 {{- toJson $edges -}}
@@ -518,7 +589,13 @@ cluster.local.
 {{- $out = append $out (dict "name" "console" "ns" "ah-staff" "hosts" (list $entra)) -}}
 {{- end -}}
 {{- if eq $v.env "azure" -}}
-{{- $out = append $out (dict "name" "db-migrate" "ns" "ah-core" "hosts" (list $entra)) -}}
+{{- /* db-migrate also writes each role's new password into that workload's vault. */ -}}
+{{- $vaults := list -}}
+{{- range $role, $component := include "ah.dbRoleComponents" . | fromJson -}}
+{{- $vault := required (printf "azure.keyVaults.%s is required with env=azure" $component) (index $v.azure.keyVaults $component) -}}
+{{- $vaults = append $vaults (printf "%s.vault.azure.net" $vault) -}}
+{{- end -}}
+{{- $out = append $out (dict "name" "db-migrate" "ns" "ah-core" "hosts" (concat (list $entra) ($vaults | uniq | sortAlpha))) -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}

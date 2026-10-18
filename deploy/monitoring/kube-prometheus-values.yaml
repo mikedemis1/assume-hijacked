@@ -109,7 +109,7 @@ prometheus:
     - name: assume-hijacked
       jobLabel: app.kubernetes.io/name
       namespaceSelector:
-        matchNames: [ah-intake, ah-agent, ah-gateway, ah-tools, ah-core, ah-staff]
+        matchNames: [ah-intake, ah-agent, ah-gateway, ah-tools, ah-core, ah-staff, ah-fakes]
       selector:
         matchLabels:
           app.kubernetes.io/part-of: assume-hijacked

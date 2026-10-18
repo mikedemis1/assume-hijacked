@@ -1,6 +1,9 @@
 {{- /*
-Stand-ins for the outside systems (ah-fakes): the national register, the grid operator (DSO)
-and the SMS provider. They record calls in memory (GET /calls) and have no database.
+Stand-ins for the outside systems (ah-fakes), the same on kind and Azure: the national register,
+the grid operator (DSO) and the SMS provider. They record calls in memory (GET /calls) and have
+no database. Each accepts only its one caller (register-sync, or the executor for the other two):
+the caller's projected token, checked with a TokenReview, so each fake gets an API server token
+and the TokenReview right (tokenreview.yaml) and nothing else.
 */ -}}
 {{- $root := . -}}
 {{- $fakes := list (list "register" 8090) (list "dso" 8091) (list "sms" 8092) -}}
@@ -13,5 +16,8 @@ and the SMS provider. They record calls in memory (GET /calls) and have no datab
     "name" (printf "fake-%s" (index $f 0))
     "namespace" "ah-fakes"
     "command" (list "python" "-m" (printf "app.fakes.%s" (index $f 0)))
-    "ports" (list (dict "name" "http" "port" (index $f 1)))) }}
+    "ports" (list (dict "name" "http" "port" (index $f 1)))
+    "ops" true
+    "env" (list (dict "name" "CALLER_AUTH" "value" "k8s"))
+    "apiToken" true) }}
 {{- end }}

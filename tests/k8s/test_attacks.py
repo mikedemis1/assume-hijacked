@@ -148,6 +148,23 @@ def chart_allows(src: str, dst: str, port: int) -> bool:
 
 
 @pytest.mark.skipif(HELM is None, reason="helm is not installed")
+def test_api_server_probes_agree_with_the_chart():
+    """The Kubernetes API is a Cilium entity rule, not a NetworkPolicy edge: each probe source may
+    reach it exactly when a CiliumNetworkPolicy gives its component the kube-apiserver entity."""
+    allowed = {(p["metadata"]["namespace"], p["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/name"])
+               for p in rendered("kind") if p["kind"] == "CiliumNetworkPolicy"
+               for rule in p["spec"].get("egress", []) if "kube-apiserver" in rule.get("toEntities", [])}
+    api_probes = [p for p in probes.matrix() if p.kind == "tcp" and p.target == probes.KUBE_API
+                  and p.source in probes.COMPONENTS]
+    assert len(api_probes) >= 12
+    for p in api_probes:
+        namespace, label, _ = probes.placement(p.source)
+        assert ((namespace, label) in allowed) == (p.expected == ALLOW), p.edge
+    # Every component the chart lets reach the API has an allow probe (the control).
+    assert {probes.placement(p.source)[:2] for p in api_probes if p.expected == ALLOW} == allowed
+
+
+@pytest.mark.skipif(HELM is None, reason="helm is not installed")
 def test_matrix_expectations_agree_with_the_chart():
     """Each probe between two pods expects what the rendered NetworkPolicies say. So the live
     test proves the chart's walls, and a matrix edit cannot quietly drift from them."""

@@ -1,8 +1,18 @@
-{{- /* Executor (ah-core): the only component that carries out effects. No listening port but ops. */ -}}
+{{- /*
+Executor (ah-core): the only component that carries out effects. No listening port but ops.
+It tells the grid operator (fake-dso) about disconnection orders and the SMS provider (fake-sms)
+about occupier notices, each call with its projected token for that peer's audience; the peer
+checks it with a TokenReview and accepts only this ServiceAccount.
+*/ -}}
 {{ include "ah.workload" (dict
     "root" .
     "name" "executor"
     "namespace" "ah-core"
     "command" (list "python" "-m" "app.executor.main")
     "ops" true
+    "env" (list
+      (dict "name" "CALLER_AUTH" "value" "k8s")
+      (dict "name" "DSO_URL" "value" (printf "http://%s:8091/orders" (include "ah.host" (list "fake-dso" "ah-fakes"))))
+      (dict "name" "SMS_URL" "value" (printf "http://%s:8092/messages" (include "ah.host" (list "fake-sms" "ah-fakes")))))
+    "audiences" (list "fake-dso" "fake-sms")
     "dbRole" "executor") }}

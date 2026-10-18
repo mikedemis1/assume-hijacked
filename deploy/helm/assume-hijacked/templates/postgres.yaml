@@ -114,6 +114,10 @@ spec:
 ---
 # Runs once, after the first install: init.sh is not idempotent (CREATE ROLE, CREATE DATABASE).
 # It waits for the server, then applies db/sql exactly as Compose's initdb hook and CI do.
+# Helm runs a post-install hook after it has created the release and, with --wait, only once every
+# pod is ready; the components are not ready until the database is set up, so a --wait install
+# would wait for this hook and the hook for the wait. scripts/kind-deploy.sh therefore runs helm
+# with --wait=hookOnly (Helm waits for this Job only) and waits for the rollouts itself.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -147,7 +151,9 @@ spec:
           command:
             - sh
             - -c
-            - until pg_isready -q; do sleep 2; done; exec sh /db/init/init.sh
+            # The user and database are named: the app UID has no entry in the image's
+            # /etc/passwd, and pg_isready without -U gives up ("no attempt") instead of waiting.
+            - until pg_isready -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do sleep 2; done; exec sh /db/init/init.sh
           env:
             - {name: PGHOST, value: {{ include "ah.host" (list "postgres" "ah-data") }}}
             - {name: POSTGRES_USER, value: postgres}

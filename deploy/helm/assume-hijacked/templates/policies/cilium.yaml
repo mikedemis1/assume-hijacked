@@ -21,7 +21,8 @@ https://docs.cilium.io/en/v1.20/security/policy/deny/ (egressDeny).
    (helper ah.dbCallers) may also resolve db.host, DNS only: the connection is the ipBlock edge.
    Each such name is allowed with its search-list forms (helper ah.searchNames).
 3. The Kubernetes API (rows 3, 10): only the dispatcher, the tool gateway and the LLM gateway
-   (TokenReview of the caller's token; the dispatcher also creates agent Jobs). 443 is the service port
+   (TokenReview of the caller's token; the dispatcher also creates agent Jobs), and the three
+   fakes of the outside systems (TokenReview of the executor's and register sync's tokens). 443 is the service port
    and what AKS uses; 6443 is the API server's port on kind (policy sees the backend port).
 4. The instance metadata endpoint 169.254.169.254 (Azure IMDS: managed identity tokens) is
    denied in every namespace, whatever any allow says.
@@ -125,7 +126,9 @@ spec:
               - matchName: {{ . | quote }}
               {{- end }}
 {{- end }}
-{{- range $c := list (list "edge-03" "dispatcher" "ah-intake") (list "edge-10" "tool-gateway" "ah-gateway") (list "edge-10" "llm-gateway" "ah-agent") }}
+{{- $apiCallers := list (list "edge-03" "dispatcher" "ah-intake") (list "edge-10" "tool-gateway" "ah-gateway") (list "edge-10" "llm-gateway" "ah-agent") -}}
+{{- range $fake := list "fake-register" "fake-dso" "fake-sms" }}{{ $apiCallers = append $apiCallers (list "edge-tokenreview" $fake "ah-fakes") }}{{ end -}}
+{{- range $c := $apiCallers }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

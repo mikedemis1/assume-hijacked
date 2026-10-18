@@ -1,0 +1,21 @@
+# Temporary, kind only. The components whose code is not in this tree yet run the ops stand-in
+# (files/ops-stub.py: /healthz and /metrics on 9000) instead of their entry point, so the walls,
+# probes, Secrets and network policies can be deployed and checked before the application lands.
+# scripts/kind-deploy.sh adds this file while it exists. Delete it, and files/ops-stub.py, once
+# the application code is merged.
+stubs:
+  - tool-read-ticket
+  - tool-lookup-account
+  - tool-request-disconnection
+  - tool-issue-bill-credit
+  - tool-set-temp-protection
+  - tool-gateway
+  - risk-engine
+  - dispatcher
+  - llm-gateway
+  - executor
+  - register-sync
+  - console
+  - fake-register
+  - fake-dso
+  - fake-sms

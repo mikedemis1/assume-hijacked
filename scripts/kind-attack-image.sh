@@ -9,7 +9,8 @@ PUSH=127.0.0.1:5001/assume-hijacked-attacks
 PULL=localhost:5001/assume-hijacked-attacks
 
 # Progress goes to stderr: stdout is only the image reference.
-docker build --quiet -f attacks/Dockerfile -t "$PUSH:dev" . >&2
+# No provenance attestation (it carries the build time): the same code keeps the same digest.
+docker build --quiet --provenance=false -f attacks/Dockerfile -t "$PUSH:dev" . >&2
 docker push --quiet "$PUSH:dev" >&2
 digest=$(docker inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$PUSH:dev" \
     | grep "^$PUSH@" | head -n 1 | cut -d @ -f 2)

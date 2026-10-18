@@ -31,7 +31,7 @@ TOOLS = ["read_ticket", "lookup_account", "request_disconnection", "issue_bill_c
          "set_temp_protection"]
 TOOL_COMPONENTS = {f"tool-{t.replace('_', '-')}" for t in TOOLS}
 
-# Contract: one namespace per trust zone, and the DB role of each component ("" = none).
+# One namespace per trust zone, and the DB role of each component ("" = none).
 COMPONENTS = {
     **{f"tool-{t.replace('_', '-')}": ("ah-tools", f"tool_{t}") for t in TOOLS},
     "tool-gateway": ("ah-gateway", "gateway"),
@@ -46,8 +46,11 @@ COMPONENTS = {
     "fake-sms": ("ah-fakes", ""),
 }
 DB_ROLES = sorted({role for _, role in COMPONENTS.values() if role})
-# Components that call the Kubernetes API (TokenReview; the dispatcher also creates Jobs).
-API_CALLERS = {"tool-gateway", "llm-gateway", "dispatcher"}
+# Components that call the Kubernetes API: TokenReview of their callers' tokens (the three the
+# agent calls, and the three fakes the executor and register sync call); the dispatcher also
+# creates Jobs.
+FAKES = {"fake-register", "fake-dso", "fake-sms"}
+API_CALLERS = {"tool-gateway", "llm-gateway", "dispatcher"} | FAKES
 CLUSTER_SCOPED = {"Namespace", "ClusterRole", "ClusterRoleBinding", "ValidatingAdmissionPolicy",
                   "ValidatingAdmissionPolicyBinding"}
 NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff", "ah-fakes",
@@ -146,7 +149,7 @@ def test_helm_lint(env):
 
 
 @pytest.mark.parametrize("env", ENVS)
-def test_helm_template_puts_every_object_in_a_contract_namespace(env):
+def test_helm_template_puts_every_object_in_a_chart_namespace(env):
     for obj in rendered(env):
         if obj["kind"] in CLUSTER_SCOPED:
             assert "namespace" not in obj["metadata"], obj["metadata"]["name"]
@@ -346,7 +349,8 @@ def test_azure_secrets_come_from_key_vault_with_workload_identity():
     deployments = {d["metadata"]["name"]: d for d in objects("azure", "Deployment")}
     spcs = {s["metadata"]["name"]: s for s in objects("azure", "SecretProviderClass")}
     with_secrets = {n for n, (_, role) in COMPONENTS.items() if role}
-    assert set(spcs) == with_secrets | {"db-migrate"}
+    # db-migrate reads no secret: it writes the role passwords into the workloads' vaults.
+    assert set(spcs) == with_secrets
     for name, spc in spcs.items():
         assert spc["apiVersion"] == "secrets-store.csi.x-k8s.io/v1"
         assert spc["spec"]["provider"] == "azure"
@@ -395,6 +399,7 @@ def test_database_objects_per_environment():
     for env, job in (("kind", "postgres-init"), ("azure", "db-migrate")):
         annotations = find(env, "Job", job)["metadata"]["annotations"]
         assert annotations["helm.sh/hook"] == "post-install", "init.sh is not idempotent: run once"
+    assert ("Job", "db-passwords") in azure_names and ("Job", "db-passwords") not in kind_names
 
 
 @pytest.mark.parametrize("env", ENVS)
@@ -430,7 +435,7 @@ MATRIX = {
     ("ah-staff", ("console",), DB, (), (5432,)),                                       # 18
 }
 DB_SETUP = {"kind": ("ah-data", ("postgres-init",)), "azure": ("ah-core", ("db-migrate",))}
-OPS_NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff"}
+OPS_NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff", "ah-fakes"}
 CLUSTER_DNS_PATTERNS = ["*.*.svc.cluster.local.", "*.*.svc.cluster.local.*.svc.cluster.local.",
                         "*.*.svc.cluster.local.svc.cluster.local.", "*.*.svc.cluster.local.cluster.local."]
 ENTRA = "login.microsoftonline.com"
@@ -577,8 +582,14 @@ def test_only_named_components_reach_names_outside_the_cluster():
     assert external_names("kind") == {}
     assert external_names("kind", "llm.backend=anthropic", "secrets.anthropicApiKey=test-only") == {
         "llm-gateway": (search_names("api.anthropic.com", "ah-agent"), ["api.anthropic.com"])}
-    assert external_names("azure") == {"console": (search_names(ENTRA, "ah-staff"), [ENTRA]),
-                                       "db-migrate": (search_names(ENTRA, "ah-core"), [ENTRA])}
+    # db-migrate: Entra, and the vault of every workload with a database role (it writes their
+    # passwords there).
+    vault_hosts = sorted({f"{install_values('azure')['azure']['keyVaults'][c]}.vault.azure.net"
+                          for c, (_, role) in COMPONENTS.items() if role})
+    migrate_hosts = [ENTRA, *vault_hosts]
+    assert external_names("azure") == {
+        "console": (search_names(ENTRA, "ah-staff"), [ENTRA]),
+        "db-migrate": ([n for h in migrate_hosts for n in search_names(h, "ah-core")], migrate_hosts)}
     # The endpoint's port is not part of the name.
     for endpoint in ("https://ai-ah.openai.azure.com/", "https://ai-ah.openai.azure.com:443/openai"):
         foundry = external_names("azure", "llm.backend=foundry", f"llm.foundryEndpoint={endpoint}")
@@ -610,7 +621,8 @@ def test_only_api_callers_reach_kube_apiserver(env):
             if "kube-apiserver" in rule.get("toEntities", []):
                 callers.add((p["metadata"]["namespace"],
                              p["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/name"]))
-    assert callers == {("ah-intake", "dispatcher"), ("ah-gateway", "tool-gateway"), ("ah-agent", "llm-gateway")}
+    assert callers == {("ah-intake", "dispatcher"), ("ah-gateway", "tool-gateway"), ("ah-agent", "llm-gateway"),
+                       *{("ah-fakes", fake) for fake in FAKES}}
     assert {name for _, name in callers} == API_CALLERS
 
 
@@ -789,3 +801,303 @@ def test_database_cidr_accepts_a_private_subnet(cidr):
     result = helm("template", "azure", "--set", f"network.databaseCidr={cidr}")
     assert result.returncode == 0, result.stderr
     assert f"cidr: {cidr}" in result.stdout
+
+
+# --- probes, temp space, single risk engine -------------------------------------------------
+
+def deployments(env: str, *sets: str) -> dict[str, dict]:
+    return {o["metadata"]["name"]: o for o in rendered(env, *sets) if o["kind"] == "Deployment"}
+
+
+def container_env(deployment: dict) -> dict:
+    [container] = deployment["spec"]["template"]["spec"]["containers"]
+    return {e["name"]: e.get("value", e.get("valueFrom")) for e in container.get("env", [])}
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_every_component_has_ops_probes(env):
+    """Every long-running component, the fakes included, serves /healthz on its ops port 9000, and
+    the kubelet checks it there (liveness restarts a stuck process, readiness keeps it out of its
+    Service until it answers)."""
+    for name, d in deployments(env).items():
+        [container] = d["spec"]["template"]["spec"]["containers"]
+        assert {"name": "ops", "containerPort": 9000, "protocol": "TCP"} in container["ports"], name
+        for probe in ("livenessProbe", "readinessProbe"):
+            assert container[probe]["httpGet"] == {"path": "/healthz", "port": "ops"}, (name, probe)
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_every_read_only_container_gets_a_writable_tmp(env):
+    """The root filesystem is read-only everywhere; /tmp is a small emptyDir in every pod the chart
+    runs. The agent Job is the exception the admission policy fixes: one volume, its tokens."""
+    for name, spec in pod_specs(env):
+        if name == "agent":
+            assert [v["name"] for v in spec["volumes"]] == ["ah-tokens"]
+            continue
+        volumes = {v["name"]: v for v in spec.get("volumes", [])}
+        for container in containers(spec):
+            assert container["securityContext"]["readOnlyRootFilesystem"] is True
+            tmp = [m for m in container.get("volumeMounts", []) if m["mountPath"] == "/tmp"]
+            assert len(tmp) == 1, (name, container["name"])
+            assert "emptyDir" in volumes[tmp[0]["name"]], (name, container["name"])
+            assert not tmp[0].get("readOnly"), (name, container["name"])
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_risk_engine_runs_exactly_one_process(env):
+    """/decide keeps per-lease state in one process: one replica, and Recreate so a rollout never
+    runs the old and the new pod side by side. No value changes it."""
+    d = deployments(env)["risk-engine"]
+    assert d["spec"]["replicas"] == 1
+    assert d["spec"]["strategy"] == {"type": "Recreate"}
+    # Control: the others keep the default rolling update.
+    assert all("strategy" not in o["spec"] for n, o in deployments(env).items() if n != "risk-engine")
+    for setting in ("replicas=3", "riskEngine.replicas=3", "risk-engine.replicas=3"):
+        assert deployments(env, setting)["risk-engine"]["spec"]["replicas"] == 1
+
+
+# --- the fakes check their callers ----------------------------------------------------------
+
+@pytest.mark.parametrize("env", ENVS)
+def test_fakes_check_callers_with_tokenreview_and_nothing_else(env):
+    """Each fake asks the API server whose token a caller showed (TokenReview), so it gets an API
+    token and exactly that right, and reaches the API server and nothing else outside its
+    namespace. Same on kind and Azure (the fakes stand in for the outside systems in both)."""
+    ds = deployments(env)
+    for fake in FAKES:
+        d = ds[fake]
+        assert d["metadata"]["namespace"] == "ah-fakes"
+        assert container_env(d)["CALLER_AUTH"] == "k8s"
+        [container] = d["spec"]["template"]["spec"]["containers"]
+        assert {"name": "kube-api-token", "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                "readOnly": True} in container["volumeMounts"]
+        # No database, no Secret.
+        assert not [e for e in container["env"] if "valueFrom" in e], fake
+    [binding] = objects(env, "ClusterRoleBinding")
+    assert {s["name"] for s in binding["subjects"] if s["namespace"] == "ah-fakes"} == FAKES
+    [role] = objects(env, "ClusterRole")
+    assert role["rules"] == [{"apiGroups": ["authentication.k8s.io"], "resources": ["tokenreviews"],
+                              "verbs": ["create"]}]
+    # No namespaced right for them either.
+    assert all(s["name"] not in FAKES for b in objects(env, "RoleBinding") for s in b["subjects"])
+    # Network: the API server only (Cilium); no NetworkPolicy egress half starts in ah-fakes.
+    assert not [p for p in network_policies(env)
+                if p["metadata"]["namespace"] == "ah-fakes" and "Egress" in p["spec"]["policyTypes"]
+                and p["metadata"]["name"] != "default-deny"]
+    fake_egress = {}
+    for p in cilium_policies(env):
+        if p["metadata"]["namespace"] == "ah-fakes" and p["spec"]["endpointSelector"] and p["spec"].get("egress"):
+            [rule] = p["spec"]["egress"]
+            fake_egress[p["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/name"]] = rule
+    assert set(fake_egress) == FAKES
+    for rule in fake_egress.values():
+        assert rule == {"toEntities": ["kube-apiserver"],
+                        "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}, {"port": "6443", "protocol": "TCP"}]}]}
+
+
+AUDIENCE_CALLERS = {"executor": ["fake-dso", "fake-sms"], "register-sync": ["fake-register"]}
+FAKE_URLS = {
+    "executor": {"DSO_URL": "http://fake-dso.ah-fakes.svc.cluster.local:8091/orders",
+                 "SMS_URL": "http://fake-sms.ah-fakes.svc.cluster.local:8092/messages"},
+    "register-sync": {"REGISTER_URL": "http://fake-register.ah-fakes.svc.cluster.local:8090/protected"},
+}
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_executor_and_register_sync_show_tokens_for_their_fakes_only(env):
+    """The executor holds tokens for fake-dso and fake-sms, register sync for fake-register, 10
+    minutes each, read-only; nobody else holds a token for a fake's audience."""
+    for name, d in deployments(env).items():
+        spec = d["spec"]["template"]["spec"]
+        audiences = [s["serviceAccountToken"].get("audience") for v in spec.get("volumes", [])
+                     for s in v.get("projected", {}).get("sources", []) if "serviceAccountToken" in s]
+        assert [a for a in audiences if a in FAKES] == AUDIENCE_CALLERS.get(name, []), name
+        if name not in AUDIENCE_CALLERS:
+            continue
+        [volume] = [v for v in spec["volumes"] if v["name"] == "ah-tokens"]
+        assert [s["serviceAccountToken"] for s in volume["projected"]["sources"]] == [
+            {"audience": a, "expirationSeconds": 600, "path": f"{a}/token"} for a in AUDIENCE_CALLERS[name]]
+        [container] = spec["containers"]
+        assert {"name": "ah-tokens", "mountPath": "/var/run/secrets/ah", "readOnly": True} in container["volumeMounts"]
+        env_vars = container_env(d)
+        assert env_vars["CALLER_AUTH"] == "k8s"
+        assert {k: env_vars[k] for k in FAKE_URLS[name]} == FAKE_URLS[name]
+    # The agent's tokens never name a fake.
+    sources = agent_job(env)["spec"]["template"]["spec"]["volumes"][0]["projected"]["sources"]
+    assert not {s["serviceAccountToken"]["audience"] for s in sources} & FAKES
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_into_the_fakes_only_their_callers_and_monitoring(env):
+    """Ingress into ah-fakes: executor -> fake-dso:8091 and fake-sms:8092, register sync ->
+    fake-register:8090, and Prometheus on 9000. Nothing else."""
+    ingress = set()
+    for p in network_policies(env):
+        if p["metadata"]["namespace"] != "ah-fakes" or p["metadata"]["name"] == "default-deny":
+            continue
+        [rule] = p["spec"]["ingress"]
+        [peer] = rule["from"]
+        ingress.add((peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"],
+                     name_values(peer.get("podSelector", {})), name_values(p["spec"]["podSelector"]),
+                     tuple(x["port"] for x in rule["ports"])))
+    assert ingress == {("ah-core", ("executor",), ("fake-dso",), (8091,)),
+                       ("ah-core", ("executor",), ("fake-sms",), (8092,)),
+                       ("ah-core", ("register-sync",), ("fake-register",), (8090,)),
+                       ("ah-monitoring", (), (), (9000,))}
+
+
+# --- the ops stand-in (kind only, until the application code is merged) -----------------------
+
+STUBS_FILE = CHART / "values-kind-stubs.yaml"
+STUB_SOURCE = CHART / "files" / "ops-stub.py"
+ENTRY_POINTS = {
+    **{f"tool-{t.replace('_', '-')}": ["python", "-m", "app.tools.serve", t] for t in TOOLS},
+    "tool-gateway": ["python", "-m", "app.gateway.main"],
+    "risk-engine": ["python", "-m", "app.risk.main"],
+    "dispatcher": ["python", "-m", "app.dispatcher.main"],
+    "llm-gateway": ["python", "-m", "app.llmgw.main"],
+    "executor": ["python", "-m", "app.executor.main"],
+    "register-sync": ["python", "-m", "app.register.sync"],
+    "console": ["python", "-m", "app.console.main"],
+    "fake-register": ["python", "-m", "app.fakes.register"],
+    "fake-dso": ["python", "-m", "app.fakes.dso"],
+    "fake-sms": ["python", "-m", "app.fakes.sms"],
+}
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_components_run_their_entry_points_without_stubs(env):
+    commands = {n: d["spec"]["template"]["spec"]["containers"][0]["command"] for n, d in deployments(env).items()}
+    assert commands == ENTRY_POINTS
+
+
+def test_stubbed_components_run_only_the_ops_stand_in_on_kind():
+    stubs = yaml.safe_load(STUBS_FILE.read_text(encoding="utf-8"))["stubs"]
+    assert set(stubs) == set(COMPONENTS)
+    source = STUB_SOURCE.read_text(encoding="utf-8")
+    result = helm("template", "kind", "-f", str(STUBS_FILE))
+    assert result.returncode == 0, result.stderr
+    stubbed = {o["metadata"]["name"]: o for o in yaml.safe_load_all(result.stdout) if o and o["kind"] == "Deployment"}
+    plain = deployments("kind")
+    assert set(stubbed) == set(COMPONENTS)
+    for name in COMPONENTS:
+        a = json.loads(json.dumps(plain[name]["spec"]["template"]))
+        b = stubbed[name]["spec"]["template"]
+        assert b["spec"]["containers"][0].pop("command") == ["python", "-c", source, name]
+        a["spec"]["containers"][0].pop("command")
+        # Only the command changes: the pod keeps its Secrets, tokens, probes and labels.
+        assert a == b, name
+    # The agent Job template never runs the stand-in.
+    assert "app.agent.main" in find("kind", "ConfigMap", "agent-job-template")["data"]["job.json"]
+    assert "ops-stub" not in result.stdout.split("agent-job-template")[1].split("---")[0]
+
+
+def test_stubs_are_refused_on_azure():
+    result = helm("template", "azure", "--set", "stubs={risk-engine}")
+    assert result.returncode != 0
+    # The schema refuses it before any template runs ...
+    assert "at '/stubs': maxItems: got 1, want 0" in result.stderr
+    # ... and the template too, when the schema is skipped.
+    result = helm("template", "azure", "--skip-schema-validation", "--set", "stubs={risk-engine}")
+    assert result.returncode != 0
+    assert "stubs is for kind only" in result.stderr
+    # An unknown name is refused too (a typo would leave a component running unnoticed).
+    assert helm("template", "kind", "--set", "stubs={risk-engin}").returncode != 0
+    # Control: kind takes them.
+    assert helm("template", "kind", "--set", "stubs={risk-engine}").returncode == 0
+
+
+# --- database setup order and the Azure password rotation ----------------------------------
+
+def hooks(env: str) -> dict[str, str]:
+    return {o["metadata"]["name"]: o["metadata"].get("annotations", {}).get("helm.sh/hook", "")
+            for o in rendered(env) if o["kind"] == "Job"}
+
+
+def test_database_setup_runs_where_it_cannot_deadlock_an_install():
+    """No setup Job waits for the release's pods: kind sets the database up once after the
+    install (the server is in the release; the Job waits for it); Azure sets it up after the
+    install and rotates the passwords before every upgrade (the server is outside the cluster).
+    The deploy runs helm without waiting for pods (test_deploy.py)."""
+    assert hooks("kind") == {"postgres-init": "post-install"}
+    assert hooks("azure") == {"db-migrate": "post-install", "db-passwords": "pre-upgrade"}
+    for env in ENVS:
+        for o in rendered(env):
+            hook = o["metadata"].get("annotations", {}).get("helm.sh/hook")
+            assert hook is None or o["kind"] == "Job", (o["kind"], o["metadata"]["name"])
+
+
+def azure_jobs() -> dict[str, dict]:
+    return {o["metadata"]["name"]: o for o in objects("azure", "Job")}
+
+
+def test_azure_db_passwords_go_to_the_vault_each_workload_reads():
+    """The passwords step writes db-password-<role> into exactly the vault (and under exactly the
+    name) that the role's workload reads through its SecretProviderClass."""
+    reads = {}
+    for spc in objects("azure", "SecretProviderClass"):
+        objects_text = spc["spec"]["parameters"]["objects"]
+        for item in spc["spec"]["secretObjects"][0]["data"]:
+            if item["key"].startswith("DB_PASSWORD_"):
+                assert f"objectName: {item['objectName']}" in objects_text
+                reads[item["key"][len("DB_PASSWORD_"):].lower()] = {
+                    "vault": spc["spec"]["parameters"]["keyvaultName"], "secret": item["objectName"]}
+    assert set(reads) == set(DB_ROLES)
+    for name, job in azure_jobs().items():
+        spec = job["spec"]["template"]["spec"]
+        [passwords] = spec["containers"]
+        assert passwords["command"] == ["python", "-m", "app.dbsetup.passwords"], name
+        env = {e["name"]: e["value"] for e in passwords["env"]}
+        assert json.loads(env["DB_PASSWORD_VAULTS"]) == reads, name
+        assert env["DB_ACCESS_TOKEN_FILE"] == "/run/ah-token/postgres"
+        assert env["KEY_VAULT_ACCESS_TOKEN_FILE"] == "/run/ah-token/key-vault"
+        # It acts with the db-migrate workload identity and holds no secret of its own.
+        labels = job["spec"]["template"]["metadata"]["labels"]
+        assert spec["serviceAccountName"] == "db-migrate"
+        assert labels["azure.workload.identity/use"] == "true"
+        assert labels["app.kubernetes.io/name"] == "db-migrate"
+        assert not [e for c in containers(spec) for e in c.get("env", []) if "valueFrom" in e], name
+        assert not [v for v in spec["volumes"] if "csi" in v or "secret" in v], name
+        assert [v for v in spec["volumes"] if v["name"] == "ah-token"] == [
+            {"name": "ah-token", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}]
+        assert spec["initContainers"][0]["name"] == "entra-token"
+
+
+def test_azure_migration_creates_roles_with_throwaway_passwords_then_rotates():
+    jobs = azure_jobs()
+    migrate = jobs["db-migrate"]["spec"]["template"]["spec"]
+    assert [c["name"] for c in migrate["initContainers"]] == ["entra-token", "migrate"]
+    script = migrate["initContainers"][1]["command"][2]
+    for role in DB_ROLES:
+        assert f'DB_PASSWORD_{role.upper()}="$(head -c 24 /dev/urandom' in script, role
+        assert f"export DB_PASSWORD_{role.upper()}" in script, role
+    assert script.rstrip().endswith("exec sh /db/init/init.sh")
+    # The upgrade Job only rotates: init.sh is not idempotent.
+    rotate = jobs["db-passwords"]["spec"]["template"]["spec"]
+    assert [c["name"] for c in rotate["initContainers"]] == ["entra-token"]
+    assert "init.sh" not in json.dumps(rotate)
+
+
+def test_azure_pods_with_a_database_role_restart_on_every_deploy():
+    """A pod reads its password at start; the passwords change on every Azure deploy."""
+    for env in ENVS:
+        for name, d in deployments(env).items():
+            annotations = d["spec"]["template"]["metadata"].get("annotations", {})
+            rotated = env == "azure" and bool(COMPONENTS[name][1])
+            assert ("ah/db-password-revision" in annotations) == rotated, (env, name)
+    assert deployments("azure")["executor"]["spec"]["template"]["metadata"]["annotations"] == {
+        "ah/db-password-revision": "1"}
+
+
+def test_kind_keeps_role_passwords_in_kubernetes_secrets():
+    """kind: the passwords are Kubernetes Secrets the deploy script generated once; no rotation,
+    no vault, no passwords Job."""
+    assert "db-passwords" not in hooks("kind")
+    init = find("kind", "Job", "postgres-init")["spec"]["template"]["spec"]["containers"][0]
+    # The wait names its user: the app UID has no passwd entry, and pg_isready without -U makes
+    # no attempt (exit 3) forever, so the hook would time out.
+    assert init["command"][2].startswith('until pg_isready -q -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do sleep 2; done;')
+    from_secret = {e["name"]: e["valueFrom"]["secretKeyRef"] for e in init["env"] if "valueFrom" in e}
+    assert from_secret == {"PGPASSWORD": {"name": "postgres-secrets", "key": "POSTGRES_PASSWORD"},
+                           **{f"DB_PASSWORD_{r.upper()}": {"name": "postgres-secrets",
+                                                           "key": f"DB_PASSWORD_{r.upper()}"} for r in DB_ROLES}}
