@@ -1,6 +1,6 @@
 # Azure go-live
 
-Nothing in Azure exists yet. The Terraform in `infra/` is validated and tested with mock providers in CI (`iac-*` jobs), never applied. This page is the plan for bringing it up in short sessions and taking it down again after each one: what each session builds and proves, what it costs, where the owner has to decide or click, and how to make sure nothing is left running.
+The Azure side is three Terraform stacks. `infra/base` is applied by the owner by hand and stays; `infra/net` and `infra/lab` are applied from the pipeline, each apply started by hand, for a working session, and destroyed at its end. Every stack is checked on each push without touching Azure (`iac-*` jobs: validate, `terraform test` with mock providers, tflint, checkov). This page covers the sessions: what each one builds and proves, what it costs, where the owner has to decide or click, and how to make sure nothing is left running.
 
 Labels: ✓ checked in the linked source, ~ from memory or not re-checked, ✎ my own choice.
 

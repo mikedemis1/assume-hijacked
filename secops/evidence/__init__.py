@@ -67,19 +67,30 @@ class ReportError(ValueError):
 
 @dataclass(frozen=True)
 class Expected:
-    """What a complete report holds. None: not known, so completeness cannot be shown."""
+    """What a complete report holds. None: not known, so completeness cannot be shown.
+    problem: the lists could not be read; the probe and attack sections are then errors."""
     probe_edges: tuple[str, ...] | None
     attack_tickets: tuple[int, ...] | None
+    problem: str | None = None
 
 
 def load_expected() -> Expected:
-    """The probe matrix and the attack tickets from the attack suite in this repository."""
+    """The probe matrix and the attack tickets from the attack suite in this repository.
+    Never raises: without the suite nothing is expected (partial sections), and a suite that
+    fails or answers nonsense is a problem the two sections report as errors."""
     try:
         from attacks import probes, tickets
-        return Expected(tuple(p.edge for p in probes.matrix()),
-                        tuple(t.number for t in tickets.ATTACK_TICKETS))
     except ImportError:
         return Expected(None, None)
+    try:
+        edges = tuple(p.edge for p in probes.matrix())
+        numbers = tuple(t.number for t in tickets.ATTACK_TICKETS)
+        if not all(isinstance(x, str) for x in edges) or not all(
+                isinstance(n, int) and not isinstance(n, bool) for n in numbers):
+            raise TypeError("probe edges must be strings and ticket numbers integers")
+        return Expected(edges, numbers)
+    except Exception as exc:  # noqa: BLE001 - a broken suite must give error sections, not a crash
+        return Expected(None, None, f"cannot read the expected lists from attacks/: {type(exc).__name__}")
 
 
 @dataclass(frozen=True)
@@ -274,6 +285,7 @@ def probes_section(folder: Path, expected: Expected) -> tuple[str, str, str]:
               f"probe result {i + 1} must be an object with {', '.join(keys)}")
     edges = [str(r["edge"]) for r in results]
     _need(len(edges) == len(set(edges)), "k8s-probe-matrix.json reports an edge more than once")
+    _need(expected.problem is None, str(expected.problem))
     missing, unexpected, count = _completeness(edges, expected.probe_edges, "probe edges")
     if not results:
         return FAIL, f"the file holds no probe result: nothing was probed ({count})", _p("No probe results.")
@@ -322,6 +334,7 @@ def attacks_section(folder: Path, expected: Expected) -> tuple[str, str, str]:
         classes.append("ok" if ok else "bad")
     numbers = [line["ticket"] for line in lines]
     _need(len(numbers) == len(set(numbers)), "attack-replay.json reports a ticket more than once")
+    _need(expected.problem is None, str(expected.problem))
     missing, unexpected, count = _completeness(numbers, expected.attack_tickets, "attack tickets")
     if not rows:
         return FAIL, f"the file holds no ticket: nothing was replayed ({count})", _p("No attack results.")

@@ -502,3 +502,50 @@ def test_cli_output_has_no_control_characters_from_the_reports(reports, capsys, 
     assert not any(not c.isprintable() and c != "\n" for c in out)
     assert "skipped: azure" in out and "owned" in out  # the name is shown, made harmless
     assert len(out.split("\n")) == 7  # one line per section, the result line, the final newline
+
+
+def _fake_suite(monkeypatch, matrix, tickets=(1, 4, 9)):
+    import sys
+    import types
+
+    probes_mod = types.ModuleType("attacks.probes")
+    probes_mod.matrix = matrix
+    tickets_mod = types.ModuleType("attacks.tickets")
+    tickets_mod.ATTACK_TICKETS = tuple(types.SimpleNamespace(number=n) for n in tickets)
+    package = types.ModuleType("attacks")
+    package.probes, package.tickets = probes_mod, tickets_mod
+    monkeypatch.setitem(sys.modules, "attacks", package)
+    monkeypatch.setitem(sys.modules, "attacks.probes", probes_mod)
+    monkeypatch.setitem(sys.modules, "attacks.tickets", tickets_mod)
+
+
+def test_a_broken_attack_suite_gives_error_sections_not_a_crash(reports, monkeypatch):
+    def matrix():
+        raise RuntimeError("bug in the matrix")
+
+    _fake_suite(monkeypatch, matrix)
+    report = evidence.build(reports, generated=NOW)  # expected lists loaded from the suite
+    assert section(report, "probes").status == evidence.ERROR
+    assert section(report, "attacks").status == evidence.ERROR
+    assert "RuntimeError" in section(report, "probes").summary
+    assert report.overall == evidence.OVERALL_FAIL
+    evidence.render(report)
+
+
+def test_an_expected_list_of_the_wrong_type_is_an_error(reports, monkeypatch):
+    import types
+
+    _fake_suite(monkeypatch, lambda: [types.SimpleNamespace(edge=5)])
+    report = evidence.build(reports, generated=NOW)
+    assert section(report, "probes").status == evidence.ERROR
+    assert section(report, "attacks").status == evidence.ERROR
+
+
+def test_a_missing_report_stays_not_run_even_with_a_broken_suite(tmp_path, monkeypatch):
+    def matrix():
+        raise RuntimeError("bug in the matrix")
+
+    _fake_suite(monkeypatch, matrix)
+    report = evidence.build(tmp_path / "empty", generated=NOW)
+    assert section(report, "probes").status == evidence.NOT_RUN
+    assert report.overall == evidence.OVERALL_INCOMPLETE
