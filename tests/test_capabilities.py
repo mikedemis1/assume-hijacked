@@ -48,7 +48,7 @@ def test_manifests_are_named_after_their_component_and_use_known_keys():
 def test_every_tool_and_the_database_has_a_manifest():
     found = manifests()
     assert set(TOOL_COMPONENTS.values()) <= set(found)
-    assert {"db", "agent", "executor", "risk-engine", "register-sync", "tool-gateway"} <= set(found)
+    assert {"db", "agent", "executor", "risk-engine", "register-sync", "tool-gateway", "llm-gateway"} <= set(found)
 
 
 # --- the descriptor fingerprint ---------------------------------------------------------------
@@ -209,6 +209,9 @@ def test_every_tool_gets_the_public_key_and_only_the_gateway_gets_the_private_ke
     agent = services["agent"]
     assert "secrets" not in agent
     assert not any("KEY" in name or name.startswith("TOOL_URL") for name in agent["environment"])
+    # ... nor a model key, a model identity, a password or a token of any kind.
+    secret_words = ("KEY", "SECRET", "TOKEN", "PASSWORD", "ANTHROPIC", "FOUNDRY", "AZURE", "SIGNING")
+    assert not [n for n in agent["environment"] if any(word in n for word in secret_words)], agent["environment"]
     # The public key is for the tools only; nothing else needs to check a token.
     users = [name for name, service in services.items() if "gateway_public_key" in service.get("secrets", [])]
     assert sorted(users) == sorted(TOOL_COMPONENTS.values())
@@ -336,10 +339,12 @@ def test_the_edges_the_manifests_name_are_the_edges_compose_builds():
     assert edges_of_compose() == edges_of_manifests()
 
 
-def test_the_agent_has_two_edges_one_to_the_gateway_and_one_to_the_dispatcher():
+def test_the_agent_has_three_edges_to_the_gateway_the_llm_gateway_and_the_dispatcher():
     services = compose()["services"]
-    assert services["agent"]["networks"] == ["edge_agent_gateway", "edge_agent_dispatcher"]
-    assert manifests()["agent"]["network"]["egress_to"] == ["dispatcher", "tool-gateway"]
+    assert services["agent"]["networks"] == ["edge_agent_gateway", "edge_agent_llmgw", "edge_agent_dispatcher"]
+    assert manifests()["agent"]["network"]["egress_to"] == ["dispatcher", "llm-gateway", "tool-gateway"]
+    sharing = [name for name, service in services.items() if "edge_agent_llmgw" in service.get("networks", [])]
+    assert sorted(sharing) == ["agent", "llm-gateway"]
     sharing = [name for name, service in services.items() if "edge_agent_gateway" in service.get("networks", [])]
     assert sorted(sharing) == ["agent", "tool-gateway"]
     sharing = [name for name, service in services.items() if "edge_agent_dispatcher" in service.get("networks", [])]
@@ -450,7 +455,7 @@ def test_the_dispatcher_reaches_the_database_and_nothing_else():
     holders = sorted(n for n, s in services.items() if "DB_PASSWORD_DISPATCHER" in s.get("environment", {}))
     assert holders == ["db", "dispatcher"]
     assert not [k for k in agent_env if k.startswith("DB_PASSWORD")]
-    assert sorted(services["agent"]["depends_on"]) == ["dispatcher", "tool-gateway"]
+    assert sorted(services["agent"]["depends_on"]) == ["dispatcher", "llm-gateway", "tool-gateway"]
 
 
 def test_the_dispatcher_manifest_names_its_edges_and_its_kubernetes_rights():
@@ -460,3 +465,97 @@ def test_the_dispatcher_manifest_names_its_edges_and_its_kubernetes_rights():
     assert manifest["k8s"] == {"service_account": "dispatcher",
                                "rbac": ["create jobs.batch", "create tokenreviews.authentication.k8s.io"]}
     assert manifest["db"]["role"] == "dispatcher"
+
+
+# --- the LLM gateway: its manifest, its edge, its subnet, the only place a model key can be ---------------
+
+def compose_override():
+    return yaml.safe_load((ROOT / "compose.llm-anthropic.yaml").read_text(encoding="utf-8"))
+
+
+def test_the_llm_gateways_edge_has_a_pinned_subnet_and_the_llm_gateway_is_told_it():
+    import ipaddress
+
+    config = compose()
+    pinned = config["networks"]["edge_agent_llmgw"]["ipam"]["config"]
+    assert len(pinned) == 1
+    subnet = pinned[0]["subnet"]
+    assert ipaddress.ip_network(subnet, strict=True).prefixlen >= 24
+    assert config["services"]["llm-gateway"]["environment"]["CALLER_SUBNET"] == subnet
+    assert config["services"]["llm-gateway"]["environment"]["CALLER_AUTH"] == "compose"
+    # Only the agent and the LLM gateway are on it, and no other network pins the same range.
+    assert sorted(n for n, s in config["services"].items() if "edge_agent_llmgw" in s.get("networks", [])) == [
+        "agent", "llm-gateway"]
+    others = [n["ipam"]["config"][0]["subnet"] for name, n in config["networks"].items()
+              if name != "edge_agent_llmgw" and n.get("ipam")]
+    assert subnet not in others
+
+
+def test_the_llm_gateway_as_shipped_has_no_key_no_database_and_no_route_out():
+    config = compose()
+    service = config["services"]["llm-gateway"]
+    assert service["networks"] == ["edge_agent_llmgw"]
+    assert all(config["networks"][n].get("internal") is True for n in service["networks"])   # nothing leaves
+    assert "secrets" not in service
+    env = service["environment"]
+    assert env["LLM_BACKEND"] == "scripted"                           # no provider unless the override is used
+    assert not [n for n in env if n.startswith("DB_") or "KEY" in n or "FOUNDRY" in n or "ANTHROPIC" in n]
+    assert service["command"] == ["python", "-m", "app.llmgw.main"]
+    assert int(env["LLM_TOKEN_BUDGET_PER_LEASE"]) > 0
+
+
+def test_a_model_key_exists_in_the_override_and_reaches_the_llm_gateway_only():
+    base, override = compose(), compose_override()
+    # The stack as shipped declares no model key at all.
+    assert not [name for name in base["secrets"] if "anthropic" in name.lower()]
+    assert not [n for n, s in base["services"].items()
+                if any("ANTHROPIC" in k or "FOUNDRY" in k for k in s.get("environment", {}))]
+    # The override touches one service, and gives it the key and a route out.
+    assert list(override["services"]) == ["llm-gateway"]
+    service = override["services"]["llm-gateway"]
+    assert service["secrets"] == ["anthropic_api_key"]
+    assert service["environment"] == {"LLM_BACKEND": "anthropic", "ANTHROPIC_API_KEY_FILE": "/run/secrets/anthropic_api_key"}
+    assert service["networks"] == ["egress_llm"]
+    assert override["networks"] == {"egress_llm": {}}                  # an ordinary network: that is the route out
+    assert list(override["secrets"]) == ["anthropic_api_key"]
+    assert override["secrets"]["anthropic_api_key"]["file"] == "./build/keys/anthropic.key"
+    ignored = subprocess.run(["git", "check-ignore", "build/keys/anthropic.key"], cwd=ROOT, capture_output=True, text=True, check=False)
+    assert ignored.stdout.split() == ["build/keys/anthropic.key"]      # the key file can never be committed
+
+
+def test_the_override_merges_into_a_valid_stack_where_only_the_llm_gateway_changes():
+    done = subprocess.run(
+        ["docker", "compose", "--profile", "manual", "-f", "compose.yaml", "-f", "compose.llm-anthropic.yaml", "config", "--format", "json"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    if done.returncode != 0 and "required variable" in done.stderr:
+        pytest.skip("compose needs the .env passwords to render")
+    assert done.returncode == 0, done.stderr
+    merged = json.loads(done.stdout)
+    holders = [n for n, s in merged["services"].items() if "anthropic_api_key" in s.get("secrets", {})
+               or any(isinstance(x, dict) and x.get("source") == "anthropic_api_key" for x in s.get("secrets", []))]
+    assert holders == ["llm-gateway"]
+    outward = [n for n, s in merged["services"].items() if "egress_llm" in s.get("networks", {})]
+    assert outward == ["llm-gateway"]
+    assert merged["services"]["agent"]["networks"].keys() == {"edge_agent_gateway", "edge_agent_llmgw", "edge_agent_dispatcher"}
+
+
+def test_the_llm_gateway_manifest_names_its_edge_and_its_rights():
+    manifest = manifests()["llm-gateway"]
+    assert manifest["db"]["role"] is None and manifest["db"]["execute"] == [] and manifest["db"]["tables"] == {}
+    # Only the agent calls it, and in the stack as shipped it calls nobody (a real provider is the
+    # override's route out and the cluster's host-name policy; see the description).
+    assert manifest["network"] == {"ingress_from": ["agent"], "egress_to": [], "dns": ["cluster"]}
+    assert manifest["k8s"] == {"service_account": "llm-gateway", "rbac": ["create tokenreviews.authentication.k8s.io"]}
+    assert manifest["azure"]["identity"] == "id-llm-gateway"
+    assert {(r["role"], r["scope"]) for r in manifest["azure"]["roles"]} == {
+        ("Key Vault Secrets User", "kv-llm-gateway"), ("Cognitive Services User", "foundry-resource")}
+    assert manifest["runtime_class"] == "runc" and manifest["mcp"] == {"tools": []}
+    assert "provider" in manifest["description"].lower()
+
+
+def test_no_other_manifest_gives_a_component_a_model_role():
+    for name, manifest in manifests().items():
+        roles = {r["role"] for r in manifest["azure"]["roles"]}
+        assert ("Cognitive Services User" in roles) == (name == "llm-gateway"), name
+        assert ("kv-llm-gateway" in {r["scope"] for r in manifest["azure"]["roles"]}) == (name == "llm-gateway"), name

@@ -4,7 +4,7 @@ An AI support agent for a fictional electricity supplier, built on the assumptio
 
 The agent acts through five MCP tools. If a prompt injection takes over the model, the question is what it can still reach. Here the answer is: only the data of the ticket it was given, no way out to the internet, no money it can promise, and no home it can cut off. Every attempt is logged.
 
-The model is a stand-in, `ScriptedLLM`, which obeys any `CALL <tool> <json>` line written in a ticket. That is the worst case on purpose: the tests check the walls, not how well a real model resists. All data is fake.
+The default model is a stand-in, `ScriptedLLM`, which obeys any `CALL <tool> <json>` line written in a ticket. That is the worst case on purpose: the tests check the walls, not how well a real model resists. A real model (Anthropic, or Claude in Microsoft Foundry) can be switched on behind the LLM gateway; the agent never holds its key. All data is fake.
 
 Status: the local stack runs in Docker Compose (393 tests, 50 smoke tests against the real containers) and the GitLab pipeline is green on GitLab.com. Next is the Azure phase: Terraform, AKS, Azure Firewall, Entra ID workload identity, Key Vault, central logs.
 
@@ -12,11 +12,12 @@ Status: the local stack runs in Docker Compose (393 tests, 50 smoke tests agains
 
 ```mermaid
 flowchart LR
-    T["ticket<br/>(attacker writes here)"] --> A["agent<br/>no DB password"]
+    T["ticket<br/>(attacker writes here)"] --> A["agent<br/>no DB password, no model key"]
 
     subgraph backend["one internal network per allowed edge, no route to the internet"]
         A --> G["tool gateway<br/>lease, arguments, risk engine, signed token"]
         A --> DI["dispatcher<br/>ticket, lease, reply guard again"]
+        A --> LL["LLM gateway<br/>the model key, token budget"]
         DI --> DB
         G --> RE["risk engine<br/>POST /decide"]
         G --> R[read_ticket]
@@ -37,6 +38,7 @@ flowchart LR
 - The database is the last wall. Each tool, the executor and the approver have their own role and password, grants down to the column, and triggers that refuse a credit or an order the data does not back. A bug in the executor still cannot pay a fake duplicate charge or disconnect a protected home.
 - The agent code, not the model, sets the ticket. Any `customer_id` the model adds is dropped and logged, and the tool gateway drops it again.
 - The agent reaches a tool only through the tool gateway. The gateway checks the lease, asks the risk engine about every call (no answer in 2 seconds means no), compares the tool's description with the reviewed one, and signs the token the tool needs. It is the only component that holds the signing key. The agent is told `ERROR: lease`, `denied`, `invalid_argument`, `unavailable` or `tool_error` and never why.
+- The agent reaches a model only through the LLM gateway. It is the one place that holds a model key or identity, it keeps a token budget per lease (`429`), and it forwards none of the agent's headers to the provider.
 - Replies pass a guard. A number in a reply must be one a tool returned. Money wording is blocked in English and Greek.
 - The agent gets its ticket and its lease from the dispatcher and sends its reply back to it. The dispatcher runs the reply guard again, outside the agent, adds the credit notice and the medical question from the gateway's record of calls, stores the reply and ends the lease. In Kubernetes it also starts one agent Job per ticket from a template it checks field by field.
 
@@ -163,7 +165,8 @@ Copy-Item .env.example .env      # then replace every change-me-* password
 
 sh scripts/gen-gateway-key.sh   # the key pair the tools check calls with (build/keys/, not in git)
 docker compose up -d --build
-docker compose --profile manual run --rm agent python -m app.agent.main 4   # the attack ticket
+docker compose --profile manual run --rm agent   # answers the next open ticket; run it four times to reach the attack ticket
+docker compose exec -T db psql -U postgres -d supplier -c "SELECT ticket_id, text FROM replies"
 python -m pytest                 # walls
 python -m pytest -m smoke        # real containers
 ```

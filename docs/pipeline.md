@@ -48,7 +48,7 @@ Score = (killed + timeout) / all mutants run. The scope is in `pyproject.toml`, 
 
 ## Accepted findings
 
-- bandit B104 (`app/tools/serve.py`, `app/gateway/main.py`, `app/gateway/server.py`, `app/dispatcher/main.py`, `app/risk/main.py` and `app/common/ops.py`, bind to 0.0.0.0): the gateway reaches each tool, the agent reaches the gateway and the dispatcher, the gateway reaches the risk engine, and Prometheus reaches each ops port, from another container; the containers are only on internal edge networks (`internal: true` in `compose.yaml`).
+- bandit B104 (`app/tools/serve.py`, `app/gateway/main.py`, `app/gateway/server.py`, `app/dispatcher/main.py`, `app/llmgw/main.py`, `app/risk/main.py` and `app/common/ops.py`, bind to 0.0.0.0): the gateway reaches each tool, the agent reaches the gateway, the LLM gateway and the dispatcher, the gateway reaches the risk engine, and Prometheus reaches each ops port, from another container; the containers are only on internal edge networks (`internal: true` in `compose.yaml`).
 - checkov CKV_DOCKER_2 (`Dockerfile`, no HEALTHCHECK): one image runs the tool servers, the gateway, the executor loop and the one-shot agent, and no single check fits all of them.
 - checkov CKV_DOCKER_2 and CKV_DOCKER_3 (`ci/smoke-runner.Dockerfile`, no HEALTHCHECK, runs as root): a one-shot test runner that needs the Docker socket, which is root on that daemon anyway.
 

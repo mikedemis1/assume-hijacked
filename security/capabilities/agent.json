@@ -1,6 +1,6 @@
 {
   "component": "agent",
-  "description": "One run per ticket. Asks the dispatcher for its ticket and sends its reply there, and calls the tool gateway for everything else: no database, no tool, no key, no outside system.",
+  "description": "One run per ticket. Asks the dispatcher for its ticket and sends its reply there, asks the LLM gateway what to do next and calls the tool gateway for every tool: no database, no tool, no key of any kind (no model key either), no outside system.",
   "db": {
     "role": null,
     "execute": [],
@@ -10,6 +10,7 @@
     "ingress_from": [],
     "egress_to": [
       "dispatcher",
+      "llm-gateway",
       "tool-gateway"
     ],
     "dns": [

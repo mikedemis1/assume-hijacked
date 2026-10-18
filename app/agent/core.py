@@ -8,12 +8,16 @@ import re
 from app.agent.events import security_event
 from app.agent.guard import SAFE_REPLY, block_reason, numbers_in
 from app.agent.llm import Reply
+from app.agent.llm_client import LlmError
 from app.common import toolerrors
 
 MAX_STEPS = 10
 # What the model sees when a tool call failed in a way the gateway did not name (see _scrub).
 TOOL_ERROR = "ERROR: the tool could not complete this request"
 GIVE_UP = "We could not complete your request automatically. A colleague will contact you."
+# The longest reply the dispatcher takes (app/dispatcher/replies.py MAX_TEXT_CHARS); a test keeps the
+# two equal. A longer or an empty text is not sent: GIVE_UP is.
+MAX_REPLY_CHARS = 4000
 
 # Arguments the LLM may set. The lease (which names the ticket) is always set by this code, and a
 # ticket_id or lease from the model is dropped (decision 1).
@@ -26,21 +30,6 @@ ALLOWED_ARGS = {
 }
 VULNERABLE_EXTRA = {"lookup_account": {"customer_id"}}
 
-# Added by this code, not the model, after a move-out request went in (decision 6, gap I10).
-# No digits and no money words, so it would pass the reply guard anyway.
-MEDICAL_QUESTION = (
-    "Does anyone at the property use medical equipment that needs electricity? "
-    "If so, please tell us and we will protect the supply.\n"
-    "Χρησιμοποιεί κάποιος στο ακίνητο ιατρικό εξοπλισμό που χρειάζεται ρεύμα; "
-    "Αν ναι, πείτε μας και θα προστατεύσουμε την παροχή."
-)
-# Added by this code, not the model, whenever issue_bill_credit was called, whether the call worked
-# or not: the model's reply may still suggest that money is coming. It names a credit, so the reply
-# guard would block it; that is why it goes on after the guard.
-CREDIT_NOTICE = (
-    "No credit is confirmed until it has been checked.\n"
-    "Καμία πίστωση δεν επιβεβαιώνεται πριν ελεγχθεί."
-)
 # Tool and argument names come from the model, so they can carry any text. Log one only when it
 # looks like an identifier; anything else (a sentence, health data, a forged log line) is "<invalid>".
 SAFE_NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
@@ -62,25 +51,34 @@ class Agent:
         self.vulnerable = vulnerable
 
     def handle_ticket(self, ticket_id: int, lease: str) -> str:
-        """Answer one ticket. `lease` is the lease opened for this ticket; it goes to every tool
-        and never into the transcript, so the model never sees it. `ticket_id` is for the
-        security log only: the tools take the ticket from the lease."""
+        """The text to send as the reply to one ticket. `lease` is the lease the dispatcher handed
+        out for this ticket; it goes to every tool and never into the transcript, so the model never
+        sees it. `ticket_id` is for the security log only: the tools take the ticket from the lease.
+
+        The text is the model's reply, the safe text when the reply guard blocks it, or the give-up
+        text. It carries no notice: the dispatcher adds the credit notice and the medical question
+        itself, from the gateway's record of calls (app/dispatcher/replies.py), after it has run the
+        guard again."""
         body = _ticket_body(_scrub(self.gateway.call("read_ticket", {"lease": lease}), lease))
         if body is None:
             security_event("ticket_unreadable", ticket_id=ticket_id)
             return GIVE_UP
         transcript: list[dict] = [{"role": "ticket", "text": body}]
         allowed_numbers: set[str] = set()  # numbers a tool returned in this conversation
-        submitted = False  # a move-out request went in
-        credit_asked = False  # issue_bill_credit was called, whatever it answered
         for _ in range(MAX_STEPS):
-            action = self.llm.next_action(transcript)
+            try:
+                action = self.llm.next_action(transcript)
+            except LlmError as err:
+                # The model could not answer (over its budget, unreachable, an answer that makes no
+                # sense): no other step can work either, so the run ends with the give-up text.
+                security_event("llm_refused", ticket_id=ticket_id, category=err.category)
+                return GIVE_UP
             if isinstance(action, Reply):
                 reason = block_reason(action.text, allowed_numbers)
                 if reason:
                     security_event("reply_blocked", ticket_id=ticket_id, reason=reason)
-                    return _finish(SAFE_REPLY, submitted, credit_asked)
-                return _finish(action.text, submitted, credit_asked)
+                    return SAFE_REPLY
+                return self._usable(action.text, ticket_id)
             args, dropped = self._safe_args(action.name, action.args, lease)
             if args is None:
                 security_event("unknown_tool", ticket_id=ticket_id, name=_name(action.name))
@@ -90,8 +88,6 @@ class Agent:
                     security_event(
                         "dropped_argument", ticket_id=ticket_id, tool=action.name, args=_names(dropped)
                     )
-                if action.name == "issue_bill_credit":
-                    credit_asked = True
                 result = _scrub(self.gateway.call(action.name, args), lease)
                 if result.startswith("ERROR:"):
                     category = toolerrors.category_of(result)
@@ -100,16 +96,25 @@ class Agent:
                         # The lease is gone (ended, revoked, or it never covered this tool): no
                         # other call can work either, so the run ends here.
                         security_event("lease_refused", ticket_id=ticket_id, tool=action.name)
-                        return _finish(GIVE_UP, submitted, credit_asked)
+                        return GIVE_UP
                 else:
                     # Not read_ticket: its result repeats the ticket text, which the customer wrote.
                     if action.name != "read_ticket":
                         allowed_numbers |= numbers_in(result)
-                    if action.name == "request_disconnection":
-                        submitted = True
-            transcript.append({"role": "tool", "name": action.name, "result": result})
+            # What the model asked for, without the lease, so a model that reads the conversation
+            # again sees its own calls. An unknown tool's arguments are not sent back.
+            shown = {} if args is None else {key: value for key, value in args.items() if key != "lease"}
+            transcript.append({"role": "tool", "name": action.name, "args": shown, "result": result})
         security_event("max_steps", ticket_id=ticket_id)
-        return _finish(GIVE_UP, submitted, credit_asked)
+        return GIVE_UP
+
+    @staticmethod
+    def _usable(text: str, ticket_id: int) -> str:
+        """The reply as it can be sent: the dispatcher takes 1 to MAX_REPLY_CHARS characters."""
+        if not text.strip() or len(text) > MAX_REPLY_CHARS:
+            security_event("reply_unusable", ticket_id=ticket_id)
+            return GIVE_UP
+        return text
 
     def _safe_args(self, name: str, args: dict, lease: str) -> tuple[dict | None, list[str]]:
         """The arguments to send, and the names of the ones the model sent that were dropped."""
@@ -148,14 +153,3 @@ def _ticket_body(raw: str) -> str | None:
     except (ValueError, KeyError, TypeError, RecursionError):
         return None
     return body if isinstance(body, str) else None
-
-
-def _finish(reply: str, submitted: bool, credit_asked: bool) -> str:
-    """The model writes the reply; this code adds the credit notice and the medical question,
-    after the guard."""
-    parts = [reply]
-    if credit_asked:
-        parts.append(CREDIT_NOTICE)
-    if submitted:
-        parts.append(MEDICAL_QUESTION)
-    return "\n\n".join(parts)

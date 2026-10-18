@@ -9,102 +9,34 @@ recording fake.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import hashlib
 import json
 import logging
 import threading
-from pathlib import Path
 
-import httpx2
 import psycopg
 import pytest
 
 from app.agent import core, templates
 from app.agent.guard import SAFE_REPLY
 from app.common.ops import Metrics
-from app.common.tokenreview import Review
 from app.dispatcher import k8s, main as dispatcher_main, replies
-from app.dispatcher.main import Dispatcher, build_app, init_metrics
+from app.dispatcher.main import Dispatcher, init_metrics
 from app.dispatcher.store import DispatcherDb
 from app.gateway.auth import AGENT_USER
 from tests.conftest import TOOLS, open_lease
-
-ROOT = Path(__file__).resolve().parent.parent
-TEMPLATE_FILE = ROOT / "tests" / "fixtures" / "agent-job-template.json"
-# The subnet of the agent's edge to the dispatcher (compose.yaml) and an address in it.
-AGENT_SUBNET = "10.250.2.0/24"
-AGENT_IP = "10.250.2.5"
-TOOL_IP = "10.250.9.7"  # a tool's address on its own edge: not the agent's network
-EVENTS = "assume_hijacked.security"
-
-
-# --- the harness ---------------------------------------------------------------------------------
-
-
-def request(app, method, path, *, headers=None, content=None, ip=AGENT_IP):
-    """One request to the app as if it came from `ip` (None: no peer address at all)."""
-
-    async def go():
-        client = None if ip is None else (ip, 50000)
-        async with httpx2.AsyncClient(
-            transport=httpx2.ASGITransport(app=app, client=client), base_url="http://dispatcher.test"
-        ) as http:
-            return await http.request(method, path, headers=headers, content=content)
-
-    return asyncio.run(go())
-
-
-def post(app, path, *, lease=None, body=None, headers=None, ip=AGENT_IP, content=None):
-    sent = dict(headers or {})
-    if lease is not None:
-        sent["X-Lease"] = lease
-    if content is None and body is not None:
-        content = json.dumps(body)
-    return request(app, "POST", path, headers=sent, content=content, ip=ip)
-
-
-class CountingStore(DispatcherDb):
-    """The real store, counting how often it was used: a refused request must leave it at 0."""
-
-    def __init__(self, connect):
-        super().__init__(connect)
-        self.used = 0
-
-    def _use(self, work):
-        self.used += 1
-        return super()._use(work)
-
-
-class Harness:
-    def __init__(self, settings, as_role, *, mode="compose", reviewer=None, api=None, max_active=3, template=None):
-        self.metrics = Metrics()
-        init_metrics(self.metrics)
-        self.store = CountingStore(lambda: as_role("dispatcher"))
-        self.api = api
-        self.dispatcher = Dispatcher(
-            self.store,
-            mode,
-            self.metrics,
-            template=template if template is not None else (templates.load_template(TEMPLATE_FILE) if mode == "k8s" else None),
-            api=api,
-            max_active=max_active,
-        )
-        # The same function the process uses, so a wrong audience or subnet there is caught here.
-        auth = dispatcher_main.caller_auth(mode, AGENT_SUBNET if mode == "compose" else None, reviewer)
-        self.app = build_app(self.dispatcher, auth, self.metrics)
-
-
-def reviewer_for(tokens):
-    """A TokenReview stand-in: token -> (service account user, pod name) or nothing."""
-
-    def review(token, audience):
-        assert audience == "dispatcher"
-        found = tokens.get(token)
-        return None if found is None else Review(username=found[0], pod=found[1])
-
-    return review
+from tests.dispatcherharness import (  # the harness is shared with tests/test_agent.py
+    AGENT_IP,
+    EVENTS,
+    ROOT,
+    TEMPLATE_FILE,
+    TOOL_IP,
+    Harness,
+    post,
+    request,
+    reviewer_for,
+)
 
 
 @pytest.fixture
@@ -383,7 +315,7 @@ def test_the_notices_come_from_the_record_of_calls_not_from_the_agent(compose_di
     tool_call(admin, lease, "request_disconnection", "ok")
     # The agent says nothing about any of this.
     assert post(h.app, "/reply", lease=lease, body={"text": "Thank you, we are checking."}).status_code == 200
-    assert stored(admin, ticket) == "\n\n".join(["Thank you, we are checking.", core.CREDIT_NOTICE, core.MEDICAL_QUESTION])
+    assert stored(admin, ticket) == "\n\n".join(["Thank you, we are checking.", replies.CREDIT_NOTICE, replies.MEDICAL_QUESTION])
 
 
 @pytest.mark.parametrize(
@@ -406,11 +338,13 @@ def test_the_dispatcher_adds_the_notices_by_the_agents_rules(compose_dispatcher,
     for tool, outcome in calls:
         tool_call(admin, lease, tool, outcome)
     assert post(h.app, "/reply", lease=lease, body={"text": "We are looking into it."}).status_code == 200
-    # Exactly what the agent's own finishing step produces for the same facts.
-    assert stored(admin, ticket) == core._finish("We are looking into it.", moveout, credit)
-    assert replies.finish("We are looking into it.", "", credit, moveout).text == core._finish(
-        "We are looking into it.", moveout, credit
+    # The reply, then the credit notice if a credit was asked for, then the medical question if a
+    # move-out went in, each after a blank line.
+    expected = "\n\n".join(
+        ["We are looking into it."] + ([replies.CREDIT_NOTICE] if credit else []) + ([replies.MEDICAL_QUESTION] if moveout else [])
     )
+    assert stored(admin, ticket) == expected
+    assert replies.finish("We are looking into it.", "", credit, moveout).text == expected
 
 
 def test_other_leases_calls_do_not_count(compose_dispatcher, admin):
@@ -427,18 +361,18 @@ def test_the_notices_that_name_a_credit_are_added_after_the_guard(compose_dispat
     # The notice says "credit", which the guard blocks; it must not be blocked on its way out.
     from app.agent.guard import block_reason
 
-    assert block_reason(core.CREDIT_NOTICE, set())
+    assert block_reason(replies.CREDIT_NOTICE, set())
     h = compose_dispatcher
     ticket, lease = claimed(h)
     tool_call(admin, lease, "issue_bill_credit")
     post(h.app, "/reply", lease=lease, body={"text": "Thank you."})
-    assert core.CREDIT_NOTICE in stored(admin, ticket) and SAFE_REPLY not in stored(admin, ticket)
+    assert replies.CREDIT_NOTICE in stored(admin, ticket) and SAFE_REPLY not in stored(admin, ticket)
 
 
 def test_an_agent_that_sends_the_notice_itself_is_blocked_like_any_money_text(compose_dispatcher, admin):
     h = compose_dispatcher
     ticket, lease = claimed(h)
-    post(h.app, "/reply", lease=lease, body={"text": "Hello. " + core.CREDIT_NOTICE})
+    post(h.app, "/reply", lease=lease, body={"text": "Hello. " + replies.CREDIT_NOTICE})
     assert stored(admin, ticket) == SAFE_REPLY
 
 

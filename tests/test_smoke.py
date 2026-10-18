@@ -4,6 +4,7 @@ They run the real agent container and look at what the real tool gateway, tool c
 network do.
 """
 
+import collections
 import functools
 import itertools
 import json
@@ -111,7 +112,8 @@ FAKE_PORTS = {"fake-register": 8090, "fake-dso": 8091, "fake-sms": 8092}
 
 # Every service on an internal network except the db (which is also on hostaccess on purpose).
 WALLED_SERVICES = [
-    *TOOL_HOSTS, "tool-gateway", "dispatcher", "executor", "risk-engine", "register-sync", *FAKE_PORTS, "agent",
+    *TOOL_HOSTS, "tool-gateway", "dispatcher", "llm-gateway", "executor", "risk-engine", "register-sync", *FAKE_PORTS,
+    "agent",
 ]
 
 DB_PORT = 5432  # inside the stack; the published host port is DB_HOST_PORT
@@ -120,6 +122,7 @@ TOOL_PORT = 8000
 GATEWAY_PORT = 8080
 RISK_PORT = 8082
 DISPATCHER_PORT = 8081
+LLM_GATEWAY_PORT = 8083
 OPS_PORT = 9000
 
 
@@ -130,32 +133,40 @@ def compose(*args, timeout=300, env=None):
     )
 
 
-def open_stack_lease(ticket_id):
-    """A lease for the ticket in the stack database, opened as the database admin over the published
-    port. The agent container still takes its lease from AGENT_LEASE; the dispatcher tests below
-    claim theirs from the dispatcher."""
-    with psycopg.connect(
-        host=os.environ.get("DB_HOST", "127.0.0.1"),
-        port=DB_HOST_PORT,
-        dbname="supplier",
-        user="postgres",
-        password=os.environ["POSTGRES_PASSWORD"],
-        autocommit=True,
-    ) as conn:
-        return conn.execute("SELECT open_lease(%s, %s, NULL)", (ticket_id, list(TOOLS))).fetchone()[0]
+AgentRun = collections.namedtuple("AgentRun", "returncode stdout stderr reply")
+
+
+def wipe_runs():
+    """The stack database keeps runs and replies between test runs, and a ticket with a run is never
+    handed out again, so a test that runs the agent starts from none and leaves none."""
+    with stack_db() as conn:
+        conn.execute("DELETE FROM replies")
+        conn.execute("DELETE FROM agent_runs")
 
 
 def run_agent(ticket_id, start_dependencies=True):
-    # `-e AGENT_LEASE` with no value: Compose takes it from this process's environment, so the
-    # lease is not on any command line. `run` starts the services the agent depends on, so a test
-    # that has stopped one of them passes --no-deps, or the run would start it again.
-    env = {**os.environ, "AGENT_LEASE": open_stack_lease(ticket_id)}
-    deps = [] if start_dependencies else ["--no-deps"]
-    done = compose(
-        "run", "--rm", *deps, "-e", "AGENT_LEASE", "agent", "python", "-m", "app.agent.main", str(ticket_id), env=env
-    )
-    assert done.returncode == 0, f"agent exited {done.returncode}\nstdout: {done.stdout}\nstderr: {done.stderr}"
-    return done
+    """Run the agent container once and return what it did, with the reply that was stored.
+
+    The agent takes no ticket number: the dispatcher hands out the lowest open ticket that has no run
+    yet. So the tickets below the one wanted are given a finished run first (as `failed`, which the
+    dispatcher never hands out again), and everything is wiped afterwards. `run` starts the services
+    the agent depends on, so a test that has stopped one of them passes --no-deps, or the run would
+    start it again."""
+    wipe_runs()
+    try:
+        with stack_db() as conn:
+            conn.execute(
+                "INSERT INTO agent_runs (ticket_id, status) SELECT id, 'failed' FROM tickets WHERE id < %s", (ticket_id,)
+            )
+        deps = [] if start_dependencies else ["--no-deps"]
+        done = compose("run", "--rm", *deps, "agent")
+        assert done.returncode == 0, f"agent exited {done.returncode}\nstdout: {done.stdout}\nstderr: {done.stderr}"
+        with stack_db() as conn:
+            row = conn.execute("SELECT text FROM replies WHERE ticket_id = %s", (ticket_id,)).fetchone()
+        assert row is not None, f"no reply stored for ticket {ticket_id}\nstderr: {done.stderr}"
+        return AgentRun(done.returncode, done.stdout, done.stderr, row[0])
+    finally:
+        wipe_runs()
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -166,13 +177,16 @@ def tools_are_up():
 
 
 def test_agent_container_answers_a_ticket():
-    assert "Eleni Papadopoulou" in run_agent(1).stdout
+    done = run_agent(1)
+    assert "Eleni Papadopoulou" in done.reply
+    assert done.stdout == ""                                       # the reply goes to the dispatcher, not to the log
+    assert [e["kind"] for e in security_events(done.stderr)] == ["reply_sent"]
 
 
 def test_attack_ticket_through_the_real_stack_leaks_nothing_and_is_logged():
     done = run_agent(4)  # ticket 4 asks for customer 1002 with a customer_id argument
-    assert "Eleni Papadopoulou" in done.stdout, done.stderr
-    assert "Nikos" not in done.stdout, done.stderr
+    assert "Eleni Papadopoulou" in done.reply, done.stderr
+    assert "Nikos" not in done.reply and "Nikos" not in done.stderr, done.stderr
     dropped = [e for e in security_events(done.stderr) if e["kind"] == "dropped_argument"]
     assert dropped, f"no dropped_argument event on stderr:\n{done.stderr}"
     assert "customer_id" in json.dumps(dropped), dropped
@@ -241,7 +255,9 @@ def test_the_gateway_holds_the_signing_key_and_not_the_public_one():
     assert secret_files("tool-gateway") == ["gateway_signing_key"]
 
 
-@pytest.mark.parametrize("service", ["executor", "risk-engine", "register-sync", "dispatcher", "db", *FAKE_PORTS])
+@pytest.mark.parametrize(
+    "service", ["executor", "risk-engine", "register-sync", "dispatcher", "llm-gateway", "db", *FAKE_PORTS]
+)
 def test_no_other_container_holds_a_gateway_key(service):
     assert secret_files(service) == []
 
@@ -252,9 +268,10 @@ def test_the_agent_holds_no_key_and_is_told_no_tool_address():
     done = compose("run", "--rm", "agent", "sh", "-c", "[ -d /run/secrets ] && ls /run/secrets; env", timeout=120)
     assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
     names = {line.split("=", 1)[0] for line in done.stdout.splitlines() if "=" in line}
-    assert "GATEWAY_URL" in names                                   # the control: the env is the agent's
+    assert "GATEWAY_URL" in names and "LLM_GATEWAY_URL" in names   # the control: the env is the agent's
     # GPG_KEY is the Python image's public key id for its own download, not a secret of ours.
-    held = [n for n in names if ("KEY" in n and n != "GPG_KEY") or n.startswith("TOOL_URL") or n.startswith("DB_PASSWORD")]
+    held = [n for n in names if ("KEY" in n and n != "GPG_KEY") or n.startswith("TOOL_URL") or n.startswith("DB_PASSWORD")
+            or any(word in n for word in ("ANTHROPIC", "FOUNDRY", "AZURE", "SECRET", "TOKEN"))]
     assert not held, names
     assert "gateway_signing_key" not in done.stdout and "gateway_public_key" not in done.stdout
 
@@ -436,7 +453,7 @@ def test_fakes_cannot_reach_db(fake):
 FAKE_TARGETS = [(fake, port) for fake, port in FAKE_PORTS.items()]
 
 
-@pytest.mark.parametrize("source", ["agent", *TOOL_HOSTS, "tool-gateway", "risk-engine"])
+@pytest.mark.parametrize("source", ["agent", *TOOL_HOSTS, "tool-gateway", "risk-engine", "llm-gateway"])
 def test_only_their_callers_reach_the_fakes(source):
     # A hijacked agent or tool cannot send an order to the grid operator or a text to an occupier
     # by itself: only the executor reaches the DSO and SMS fakes, only register-sync the register.
@@ -454,7 +471,7 @@ def test_fakes_cannot_reach_each_other(source, target):
 # The controls: the same ports on the edges that ARE allowed. Without these, "blocked" above could
 # just mean the service was down or the probe was broken.
 ALLOWED_EDGES = {
-    "agent": [("tool-gateway", GATEWAY_PORT), ("dispatcher", DISPATCHER_PORT)],
+    "agent": [("tool-gateway", GATEWAY_PORT), ("dispatcher", DISPATCHER_PORT), ("llm-gateway", LLM_GATEWAY_PORT)],
     "dispatcher": [("db", DB_PORT)],
     "tool-gateway": [*((tool, TOOL_PORT) for tool in TOOL_HOSTS), ("risk-engine", RISK_PORT), ("db", DB_PORT)],
     **{tool: [("db", DB_PORT)] for tool in TOOL_HOSTS},
@@ -694,7 +711,7 @@ def test_a_ticket_through_the_gateway_leaves_a_record_of_names_only():
     after = last_call_id()
     started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     done = run_agent(4)  # ticket 4 asks for customer 1002 with a customer_id argument
-    assert "Nikos" not in done.stdout, done.stderr
+    assert "Nikos" not in done.reply, done.stderr
     rows = stack_calls(after)
     assert [(r[0], r[3], r[5]) for r in rows] == [("read_ticket", "ok", "gateway"), ("lookup_account", "ok", "gateway")]
     # The agent's own code already dropped customer_id, so the gateway had nothing left to drop here.
@@ -712,7 +729,7 @@ def test_the_gateway_denies_while_the_risk_engine_is_stopped_and_works_again_aft
     assert stopped.returncode == 0, stopped.stderr
     try:
         done = run_agent(1, start_dependencies=False)
-        assert "Eleni" not in done.stdout and "colleague" in done.stdout, done.stdout   # the agent gave up
+        assert "Eleni" not in done.reply and "colleague" in done.reply, done.reply   # the agent gave up
         rows = stack_calls(after)
         assert rows and {(r[0], r[3]) for r in rows} == {("read_ticket", "denied")}, rows
         assert rows[0][4] in ("risk_unavailable", "risk_timeout")
@@ -725,7 +742,7 @@ def test_the_gateway_denies_while_the_risk_engine_is_stopped_and_works_again_aft
             if probe_done.returncode == 0:
                 break
             time.sleep(1)
-    assert "Eleni Papadopoulou" in run_agent(1).stdout                          # the control
+    assert "Eleni Papadopoulou" in run_agent(1).reply                           # the control
 
 
 # A call to the gateway's MCP endpoint, made from inside a container: the status code.
@@ -862,12 +879,6 @@ def test_the_agent_gets_a_ticket_and_a_lease_and_its_reply_is_stored_and_the_lea
         scope = conn.execute("SELECT ticket_id, bound_pod FROM lease_scope(%s)", (claimed["lease"],)).fetchone()
         assert scope == (1, None)
         assert conn.execute("SELECT ticket_id, status FROM agent_runs").fetchall() == [(1, "claimed")]
-    # The control: the lease works. The real agent answers ticket 1 with it, through the gateway.
-    answered = compose(
-        "run", "--rm", "--no-deps", "-e", "AGENT_LEASE", "agent", "python", "-m", "app.agent.main", "1",
-        env={**os.environ, "AGENT_LEASE": claimed["lease"]}, timeout=180,
-    )
-    assert answered.returncode == 0 and "Eleni Papadopoulou" in answered.stdout, answered.stderr
     sent = agent_script(REPLY, LEASE=claimed["lease"], TEXT="Thank you, a colleague will check this.")
     assert sent == {"reply": 200, "again": 403}                         # stored once; the lease has ended
     with stack_db() as conn:
@@ -875,8 +886,14 @@ def test_the_agent_gets_a_ticket_and_a_lease_and_its_reply_is_stored_and_the_lea
             (1, "Thank you, a colleague will check this.")]
         assert conn.execute("SELECT ticket_id, status FROM agent_runs").fetchall() == [(1, "replied")]
         assert conn.execute("SELECT count(*) FROM lease_scope(%s)", (claimed["lease"],)).fetchone()[0] == 0
-    # The next agent gets the next ticket.
-    assert agent_script(CLAIM)["ticket_id"] == 2
+    # The control: the real agent container asks for work itself, gets the next ticket (2) and answers it.
+    answered = compose("run", "--rm", "--no-deps", "agent", timeout=180)
+    assert answered.returncode == 0, answered.stderr
+    with stack_db() as conn:
+        assert conn.execute("SELECT ticket_id, status FROM agent_runs ORDER BY ticket_id").fetchall() == [
+            (1, "replied"), (2, "replied")]
+        (text,) = conn.execute("SELECT text FROM replies WHERE ticket_id = 2").fetchone()
+    assert "Nikos Georgiou" in text                                      # ticket 2 is Nikos's own ticket
 
 
 def test_a_reply_that_promises_money_is_replaced_by_the_dispatcher_not_the_agent(clean_runs):
@@ -901,3 +918,118 @@ def test_a_neighbour_of_the_dispatcher_is_refused_and_the_agent_is_not(clean_run
     with stack_db() as conn:
         assert conn.execute("SELECT count(*) FROM agent_runs").fetchone()[0] == 0   # it never got as far as a claim
     assert agent_script(CLAIM)["claim"] == 200                                      # the control: the agent is let in
+
+
+# --- The LLM gateway in the stack ---
+
+def test_the_llm_gateway_answers_healthz_and_publishes_its_metrics_from_the_start():
+    status, metrics = ops_of("llm-gateway")
+    assert status == "200"
+    assert 'llmgw_requests_total{outcome="budget"} ' in metrics
+    assert 'llmgw_callers_refused_total{reason="wrong_network"} ' in metrics
+    assert "llmgw_tokens_total " in metrics
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["tool-gateway", "dispatcher", *TOOL_HOSTS, "risk-engine", "executor", "register-sync", *FAKE_PORTS],
+)
+def test_nothing_without_an_edge_to_the_llm_gateway_reaches_its_port(source):
+    # The agent is the only container on the LLM gateway's one edge.
+    assert_blocked(source, service_targets("llm-gateway", LLM_GATEWAY_PORT))
+
+
+@pytest.mark.parametrize(
+    "target",
+    [("db", DB_PORT), ("tool-gateway", GATEWAY_PORT), ("dispatcher", DISPATCHER_PORT), ("risk-engine", RISK_PORT),
+     ("executor", OPS_PORT), ("register-sync", OPS_PORT), *((host, TOOL_PORT) for host in TOOL_HOSTS), *FAKE_PORTS.items()],
+)
+def test_the_llm_gateway_reaches_nothing(target):
+    # It has one peer, the agent, and that edge is one it only answers on.
+    assert_blocked("llm-gateway", service_targets(*target))
+
+
+def test_the_llm_gateway_holds_no_secret_and_no_key_variable():
+    assert secret_files("llm-gateway") == []
+    done = compose("exec", "-T", "llm-gateway", "env", timeout=60)
+    assert done.returncode == 0, done.stderr
+    names = {line.split("=", 1)[0] for line in done.stdout.splitlines() if "=" in line}
+    assert "LLM_BACKEND" in names                                       # the control: this is the right container
+    held = [n for n in names if ("KEY" in n and n != "GPG_KEY") or n.startswith("DB_") or "FOUNDRY" in n or "ANTHROPIC" in n]
+    assert not held, names
+
+
+# A request to /next made from inside a container: the status code and the body.
+CALL_THE_LLM_GATEWAY = """
+import json, sys, urllib.request, urllib.error
+host = sys.argv[1] if len(sys.argv) > 1 else "llm-gateway"
+body = {"transcript": [{"role": "ticket", "text": "SAY hello"}]}
+request = urllib.request.Request(
+    f"http://{host}:8083/next", data=json.dumps(body).encode(),
+    headers={"Content-Type": "application/json", "X-Lease": "ab" * 32},
+)
+try:
+    answer = urllib.request.urlopen(request, timeout=10)
+    print(answer.status, answer.read().decode())
+except urllib.error.HTTPError as err:
+    print(err.code, err.read().decode())
+"""
+
+
+def test_the_llm_gateway_answers_the_agent_and_refuses_a_caller_outside_the_agents_subnet():
+    # From the agent's container: let in. From the LLM gateway's own container, over the loopback
+    # address (not in the agent's subnet): the gateway's own check refuses it before any model runs.
+    let_in = probe("agent", CALL_THE_LLM_GATEWAY)
+    assert let_in.returncode == 0, f"stdout: {let_in.stdout}\nstderr: {let_in.stderr}"
+    status, _, body = let_in.stdout.strip().splitlines()[-1].partition(" ")
+    assert status == "200" and json.loads(body) == {"type": "reply", "text": "hello"}, let_in.stdout
+    refused = compose("exec", "-T", "llm-gateway", "python", "-c", CALL_THE_LLM_GATEWAY, "127.0.0.1", timeout=60)
+    assert refused.returncode == 0, refused.stderr
+    status, _, body = refused.stdout.strip().partition(" ")
+    assert status == "401" and json.loads(body) == {"error": "unauthorized"}, refused.stdout
+
+
+# A conversation that costs about 5000 tokens by the gateway's estimate, sent with one lease until it says no.
+BURN_THE_BUDGET = """
+import json, secrets, urllib.request, urllib.error
+lease = secrets.token_hex(32)   # a new lease every run: the gateway keeps each lease's spending while it runs
+text = "SAY hello " + "x" * 19000
+codes = []
+for _ in range(30):
+    request = urllib.request.Request(
+        "http://llm-gateway:8083/next", data=json.dumps({"transcript": [{"role": "ticket", "text": text}]}).encode(),
+        headers={"Content-Type": "application/json", "X-Lease": lease},
+    )
+    try:
+        codes.append(urllib.request.urlopen(request, timeout=10).status)
+    except urllib.error.HTTPError as err:
+        codes.append(err.code)
+        if err.code == 429:
+            print(json.dumps({"codes": codes, "body": err.read().decode()}))
+            break
+else:
+    print(json.dumps({"codes": codes, "body": ""}))
+"""
+
+
+def test_a_lease_that_spends_its_tokens_is_refused_with_429_in_the_container():
+    done = probe("agent", BURN_THE_BUDGET)
+    assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    assert result["codes"][0] == 200 and result["codes"][-1] == 429, result   # served first, refused after
+    assert json.loads(result["body"]) == {"error": "budget"}
+    assert 2 <= len(result["codes"]) <= 8, result                              # 20000 tokens at about 5000 a call
+    _, metrics = ops_of("llm-gateway")
+    assert 'llmgw_requests_total{outcome="budget"} 0' not in metrics
+
+
+def test_a_run_asks_the_llm_gateway_for_every_step():
+    _, before = ops_of("llm-gateway")
+    run_agent(1)
+    _, after = ops_of("llm-gateway")
+
+    def served(text):
+        line = next(l for l in text.splitlines() if l.startswith('llmgw_requests_total{outcome="ok"}'))
+        return int(line.rsplit(" ", 1)[1])
+
+    assert served(after) - served(before) == 2          # ticket 1: ask for the account, then the reply

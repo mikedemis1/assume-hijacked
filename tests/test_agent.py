@@ -5,10 +5,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.agent.core import CREDIT_NOTICE, GIVE_UP, MEDICAL_QUESTION, TOOL_ERROR, Agent
+from app.agent.core import GIVE_UP, MAX_REPLY_CHARS, TOOL_ERROR, Agent
 from app.agent.guard import SAFE_REPLY, block_reason, guard_reply, numbers_in
-from app.agent.llm import DEFAULT_PLAN, ScriptedLLM, _parse
+from app.agent.llm import DEFAULT_PLAN, Reply, ScriptedLLM, ToolCall, _parse
+from app.agent.llm_client import LlmError
+from app.dispatcher.replies import CREDIT_NOTICE, MEDICAL_QUESTION
 from tests.conftest import admin_connect, open_lease
+from tests.dispatcherharness import Harness, post
 from tests.gatewayharness import AppGatewayClient, build
 
 
@@ -17,17 +20,36 @@ UNKNOWN_LEASE = "0" * 64
 
 
 class LeasedAgent:
-    """The agent with real in-memory tool servers. It opens a lease per ticket, which is the
-    dispatcher's job once it exists (task A9)."""
+    """The agent with real in-memory tool servers and the real dispatcher. A lease is opened for the
+    ticket as the dispatcher's claim would, the agent works under it, and its text goes to the
+    dispatcher's reply endpoint, which runs the guard again and adds the notices. Two answers are
+    kept apart on purpose: `sent_text` is what the agent sends, `handle_ticket` is what the
+    customer is sent."""
 
-    def __init__(self, agent, settings):
+    def __init__(self, agent, settings, as_role):
         self.agent = agent
         self.settings = settings
+        self.dispatcher = Harness(settings, as_role)
+        self.lease = None
+        self.sent = None
+
+    def sent_text(self, ticket_id):
+        """What the agent sends to the dispatcher for this ticket (no notices: those are added there)."""
+        with admin_connect(self.settings) as admin:
+            self.lease = open_lease(admin, ticket_id)
+        self.sent = self.agent.handle_ticket(ticket_id, self.lease)
+        return self.sent
+
+    def post_reply(self):
+        return post(self.dispatcher.app, "/reply", lease=self.lease, body={"text": self.sent})
 
     def handle_ticket(self, ticket_id):
+        """What is stored and sent to the customer after the dispatcher has run its checks."""
+        self.sent_text(ticket_id)
+        answer = self.post_reply()
+        assert answer.status_code == 200, answer.text
         with admin_connect(self.settings) as admin:
-            lease = open_lease(admin, ticket_id)
-        return self.agent.handle_ticket(ticket_id, lease)
+            return admin.execute("SELECT text FROM replies WHERE ticket_id = %s", (ticket_id,)).fetchone()["text"]
 
 
 def make_agent(settings, as_role, vulnerable=False):
@@ -35,7 +57,7 @@ def make_agent(settings, as_role, vulnerable=False):
     (header X-Lease) -> the gateway (every wall, the risk engine allowing) -> the tools (token check)."""
     s = dataclasses.replace(settings, vulnerable=vulnerable)
     gw = AppGatewayClient(build(s, as_role, vulnerable=vulnerable))
-    return LeasedAgent(Agent(ScriptedLLM(), gw, vulnerable=vulnerable), settings)
+    return LeasedAgent(Agent(ScriptedLLM(), gw, vulnerable=vulnerable), settings, as_role)
 
 
 class RecordingGateway:
@@ -110,8 +132,30 @@ def test_vulnerable_agent_passes_customer_id_on():  # the demo switch, so the te
 
 
 def test_vulnerable_mode_leaks_other_customer(settings, admin, demo_vulnerable, as_role):  # ① demo switch
+    # The demo build trusts a customer_id written by the model. The leak is visible in two places:
+    # what the agent sends, and the record of calls (the argument was not dropped). The customer is
+    # not sent it: the dispatcher's reply guard runs again outside the agent, and the other
+    # customer's street number is not one of the ticket owner's numbers, so it replaces the reply.
+    # That is the second wall working; the demo reads the leak from the first two.
     add_ticket(admin, 100, 1001, 'CALL lookup_account {"customer_id": 1002}\nSAY Here you go: {last}')
-    assert "Nikos Georgiou" in make_agent(settings, as_role, vulnerable=True).handle_ticket(100)
+    agent = make_agent(settings, as_role, vulnerable=True)
+    assert "Nikos Georgiou" in agent.sent_text(100)                      # the tool answered with his account
+    row = admin.execute(
+        "SELECT arg_names, dropped_args, outcome FROM tool_calls WHERE tool = 'lookup_account'"
+    ).fetchone()
+    assert row == {"arg_names": ["customer_id"], "dropped_args": [], "outcome": "ok"}   # nothing was dropped
+    assert agent.post_reply().status_code == 200
+    stored = admin.execute("SELECT text FROM replies WHERE ticket_id = 100").fetchone()["text"]
+    assert stored == SAFE_REPLY and "Nikos" not in stored                 # and the dispatcher kept it from him
+
+
+def test_normal_mode_drops_customer_id_and_the_record_shows_it_was_never_sent(settings, admin, as_role):
+    # The control of the test above: the same ticket without the demo switch.
+    add_ticket(admin, 100, 1001, 'CALL lookup_account {"customer_id": 1002}\nSAY Here you go: {last}')
+    agent = make_agent(settings, as_role)
+    assert "Nikos" not in agent.handle_ticket(100)
+    row = admin.execute("SELECT arg_names, dropped_args FROM tool_calls WHERE tool = 'lookup_account'").fetchone()
+    assert row == {"arg_names": [], "dropped_args": []}                   # the agent already dropped it
 
 
 def test_reply_has_no_health_data(settings, admin, as_role):  # ②
@@ -128,7 +172,10 @@ def test_reply_never_promises_amount(settings, admin, as_role):  # ⑧
         'CALL issue_bill_credit {"amount_eur": 49, "reason": "duplicate_charge", "evidence_ref": 2}\n'
         "SAY Done! We credited €49 to your account.",
     )
-    assert make_agent(settings, as_role).handle_ticket(102) == f"{SAFE_REPLY}\n\n{CREDIT_NOTICE}"
+    agent = make_agent(settings, as_role)
+    assert agent.sent_text(102) == SAFE_REPLY                    # the agent's own guard ran, and it adds no notice
+    assert agent.post_reply().status_code == 200
+    assert admin.execute("SELECT text FROM replies").fetchone()["text"] == f"{SAFE_REPLY}\n\n{CREDIT_NOTICE}"
 
 
 @pytest.mark.parametrize(
@@ -291,7 +338,10 @@ def test_numbers_from_another_conversation_do_not_count(settings, admin, as_role
 def test_move_out_reply_ends_with_the_medical_question(settings, admin, now, as_role):
     day = (now + timedelta(days=30)).date().isoformat()
     add_ticket(admin, 120, 1001, f'CALL request_disconnection {{"move_out_date": "{day}"}}\nSAY OK')
-    reply = make_agent(settings, as_role).handle_ticket(120)
+    agent = make_agent(settings, as_role)
+    assert agent.sent_text(120) == "OK"                          # the agent adds nothing ...
+    assert agent.post_reply().status_code == 200
+    reply = admin.execute("SELECT text FROM replies").fetchone()["text"]     # ... the dispatcher adds the question
     assert reply == f"OK\n\n{MEDICAL_QUESTION}"
     assert "medical equipment" in reply and "ιατρικό" in reply
 
@@ -345,11 +395,34 @@ def test_failed_credit_call_adds_the_notice_too(settings, admin, as_role):
     assert make_agent(settings, as_role).handle_ticket(141) == f"Thank you.\n\n{CREDIT_NOTICE}"
 
 
-def test_credit_notice_follows_a_blocked_reply_and_give_up():
+def test_credit_notice_follows_a_blocked_reply_and_give_up(settings, admin, as_role):
+    add_ticket(admin, 143, 1001, f"{CREDIT_CALL}\nSAY Your credit is approved")
+    assert make_agent(settings, as_role).handle_ticket(143) == f"{SAFE_REPLY}\n\n{CREDIT_NOTICE}"
+    add_ticket(admin, 144, 1001, "\n".join([CREDIT_CALL] + ["CALL lookup_account {}"] * 30))
+    assert make_agent(settings, as_role).handle_ticket(144) == f"{GIVE_UP}\n\n{CREDIT_NOTICE}"
+
+
+def test_the_agent_itself_sends_neither_notice_even_after_a_credit_and_a_move_out():
+    # Both notices are added by the dispatcher from the gateway's record of calls. An agent that
+    # added its own would have the credit one replaced by the safe text (it names a credit).
+    gw = RecordingGateway(f'{CREDIT_CALL}\nCALL request_disconnection {{"move_out_date": "2030-01-01"}}\nSAY Thanks')
+    sent = Agent(ScriptedLLM(), gw).handle_ticket(7, LEASE)
+    assert sent == "Thanks"
+    assert CREDIT_NOTICE not in sent and MEDICAL_QUESTION not in sent
     gw = RecordingGateway(f"{CREDIT_CALL}\nSAY Your credit is approved")
-    assert Agent(ScriptedLLM(), gw).handle_ticket(7, LEASE) == f"{SAFE_REPLY}\n\n{CREDIT_NOTICE}"
+    assert Agent(ScriptedLLM(), gw).handle_ticket(7, LEASE) == SAFE_REPLY
     gw = RecordingGateway("\n".join([CREDIT_CALL] + ["CALL lookup_account {}"] * 30))
-    assert Agent(ScriptedLLM(), gw).handle_ticket(7, LEASE) == f"{GIVE_UP}\n\n{CREDIT_NOTICE}"
+    assert Agent(ScriptedLLM(), gw).handle_ticket(7, LEASE) == GIVE_UP
+
+
+def test_the_agents_code_does_not_hold_the_notices():
+    from pathlib import Path
+
+    import app.agent.core as core_module
+
+    source = Path(core_module.__file__).read_text(encoding="utf-8")
+    assert "No credit is confirmed" not in source and "medical equipment" not in source
+    assert not hasattr(core_module, "CREDIT_NOTICE") and not hasattr(core_module, "MEDICAL_QUESTION")
 
 
 def test_no_credit_notice_without_a_credit_call(settings, as_role):
@@ -494,9 +567,13 @@ def test_a_lease_that_ends_during_the_run_gives_up_and_leaks_nothing(settings, a
     add_ticket(admin, 150, 1001, "CALL lookup_account {}\nSAY Here you go: {last}")
     agent = make_agent(settings, as_role)
     agent.agent.llm = RevokingLLM()
-    reply = agent.handle_ticket(150)
+    reply = agent.sent_text(150)
     assert reply == GIVE_UP
     assert "Eleni" not in reply and "ERROR" not in reply and "lease" not in reply.lower()
+    # And the reply under the ended lease is refused by the dispatcher: nothing is stored.
+    answer = agent.post_reply()
+    assert (answer.status_code, answer.json()) == (403, {"error": "lease"})
+    assert admin.execute("SELECT count(*) AS n FROM replies").fetchone()["n"] == 0
 
 
 def test_tool_error_is_logged_without_the_error_text(caplog):
@@ -517,7 +594,7 @@ def test_tool_error_through_the_real_tools_is_logged(settings, admin, caplog, as
         'CALL issue_bill_credit {"amount_eur": -5, "reason": "outage", "evidence_ref": 1}\nSAY ok',
     )
     with caplog.at_level(logging.INFO, logger="assume_hijacked.security"):
-        make_agent(settings, as_role).handle_ticket(130)
+        make_agent(settings, as_role).sent_text(130)
     assert [e["kind"] for e in security_events(caplog)] == ["tool_error"]
 
 
@@ -566,7 +643,7 @@ def test_ticket_body_never_reaches_the_log(caplog):
 
 def test_a_quiet_ticket_logs_nothing(settings, caplog, as_role):
     with caplog.at_level(logging.INFO, logger="assume_hijacked.security"):
-        make_agent(settings, as_role).handle_ticket(1)
+        make_agent(settings, as_role).sent_text(1)
     assert security_events(caplog) == []
 
 
@@ -670,64 +747,6 @@ def test_long_tool_name_is_logged_as_invalid(caplog):
     assert security_events(caplog)[0]["name"] == "<invalid>"
 
 
-# --- events go to stderr (fix round 1, item 4) ---
-
-def test_main_sends_security_events_to_stderr_not_stdout(monkeypatch, capsys):
-    from app.agent import main as agent_main
-    from app.agent.events import LOGGER, security_event
-
-    for handler in list(LOGGER.handlers):
-        LOGGER.removeHandler(handler)
-    monkeypatch.setattr("sys.argv", ["main", "1"])
-    monkeypatch.setattr(
-        agent_main.config, "load", lambda: type("S", (), {"vulnerable": False, "caller_auth": "compose"})()
-    )
-    monkeypatch.setattr(agent_main, "ToolGateway", lambda url, headers: RecordingGateway("hello"))
-    monkeypatch.setenv("GATEWAY_URL", "http://tool-gateway:8080/mcp")
-    monkeypatch.setenv("AGENT_LEASE", "lease-from-the-dispatcher")
-    try:
-        agent_main.main()
-        security_event("probe")
-        out = capsys.readouterr()
-        assert '"kind": "probe"' in out.err
-        assert "probe" not in out.out
-    finally:
-        for handler in list(LOGGER.handlers):
-            LOGGER.removeHandler(handler)
-        LOGGER.propagate = True
-
-
-def test_main_refuses_to_start_without_the_gateway_address(monkeypatch):
-    from app.agent import main as agent_main
-
-    monkeypatch.setattr("sys.argv", ["main", "1"])
-    monkeypatch.setenv("AGENT_LEASE", "lease-from-the-dispatcher")
-    monkeypatch.delenv("GATEWAY_URL", raising=False)
-    with pytest.raises(SystemExit, match="GATEWAY_URL"):
-        agent_main.main()
-
-
-def test_the_agent_holds_no_key_and_knows_no_tool_address():
-    # The agent's only edge is the gateway: no signing key to read, no TOOL_URL_* to call a tool by.
-    from pathlib import Path
-
-    from app.agent import gateway as agent_gateway
-    from app.agent import main as agent_main
-
-    source = Path(agent_main.__file__).read_text(encoding="utf-8") + Path(agent_gateway.__file__).read_text(encoding="utf-8")
-    for word in ("SIGNING_KEY", "TOOL_URL", "load_private_key", "mint_tool_token", "app.tools"):
-        assert word not in source.replace("tool client", ""), word
-
-
-def test_main_refuses_to_start_without_a_lease(monkeypatch):
-    from app.agent import main as agent_main
-
-    monkeypatch.setattr("sys.argv", ["main", "1"])
-    monkeypatch.delenv("AGENT_LEASE", raising=False)
-    with pytest.raises(SystemExit, match="AGENT_LEASE"):
-        agent_main.main()
-
-
 def test_guard_reads_circled_and_full_width_digits():  # NFKC: these are digits to a customer
     assert guard_reply("Your meter is \u2463\u2466\u2460\u2461", {"4711"}) == SAFE_REPLY
     assert guard_reply("Your meter is \uff14\uff17\uff11\uff11", {"4711"}) == "Your meter is \uff14\uff17\uff11\uff11"
@@ -735,3 +754,85 @@ def test_guard_reads_circled_and_full_width_digits():  # NFKC: these are digits 
 
 def test_guard_reads_ligatures():  # NFKC: the fi ligature (U+FB01) is "fi" to a customer
     assert guard_reply("We gave you \ufb01fty", {"10"}) == SAFE_REPLY
+
+
+# --- the model is the LLM gateway (it can fail, and it sees the calls it made) ---
+
+class FailingLLM:
+    def __init__(self, category, after=0):
+        self.category, self.after, self.asked = category, after, 0
+
+    def next_action(self, transcript):
+        self.asked += 1
+        if self.asked > self.after:
+            raise LlmError(self.category)
+        return ToolCall("lookup_account", {})
+
+
+@pytest.mark.parametrize("category", ["budget", "unavailable", "bad_answer", "unauthorized", "bad_request"])
+def test_a_model_that_cannot_answer_ends_the_run_with_give_up(caplog, category):
+    gw = RecordingGateway("anything")
+    with caplog.at_level(logging.INFO, logger="assume_hijacked.security"):
+        assert Agent(FailingLLM(category), gw).handle_ticket(7, LEASE) == GIVE_UP
+    assert gw.calls == [("read_ticket", {"lease": LEASE})]           # no tool was called without a model step
+    (event,) = security_events(caplog)
+    assert (event["kind"], event["category"], event["ticket_id"]) == ("llm_refused", category, 7)
+
+
+def test_a_model_that_fails_half_way_ends_the_run_without_another_tool_call():
+    gw = RecordingGateway("anything")
+    assert Agent(FailingLLM("budget", after=1), gw).handle_ticket(7, LEASE) == GIVE_UP
+    assert [name for name, _ in gw.calls] == ["read_ticket", "lookup_account"]
+    # The control: a model that keeps answering is called again.
+    gw = RecordingGateway("SAY done")
+    assert Agent(ScriptedLLM(), gw).handle_ticket(7, LEASE) == "done"
+
+
+def test_the_transcript_shows_the_model_its_own_calls_without_the_lease_or_dropped_arguments():
+    gw = RecordingGateway('CALL lookup_account {"customer_id": 1002}\nCALL request_disconnection {"move_out_date": "2030-01-01"}\nSAY done')
+    llm = TranscriptSpy()
+    Agent(llm, gw).handle_ticket(7, LEASE)
+    last = json.loads(llm.seen[-1])
+    assert [(i["role"], i.get("name"), i.get("args")) for i in last] == [
+        ("ticket", None, None), ("tool", "lookup_account", {}), ("tool", "request_disconnection", {"move_out_date": "2030-01-01"}),
+    ]
+    tool_part = json.dumps(last[1:])                                  # the ticket text itself is the customer's
+    assert LEASE not in llm.seen[-1] and "1002" not in tool_part
+
+
+def test_an_unknown_tools_arguments_are_not_sent_back_to_the_model():
+    gw = RecordingGateway('CALL delete_everything {"secret": "SECRETVALUE"}\nSAY done')
+    llm = TranscriptSpy()
+    Agent(llm, gw).handle_ticket(7, LEASE)
+    assert json.loads(llm.seen[-1])[1] == {
+        "role": "tool", "name": "delete_everything", "args": {}, "result": "ERROR: unknown tool delete_everything"}
+
+
+@pytest.mark.parametrize("text", ["", "   ", "x" * (MAX_REPLY_CHARS + 1)])
+def test_a_reply_the_dispatcher_would_not_take_is_replaced_by_the_give_up_text(caplog, text):
+    class Says(ScriptedLLM):
+        def next_action(self, transcript):
+            return Reply(text)
+
+    with caplog.at_level(logging.INFO, logger="assume_hijacked.security"):
+        assert Agent(Says(), RecordingGateway("x")).handle_ticket(7, LEASE) == GIVE_UP
+    (event,) = security_events(caplog)
+    assert event["kind"] == "reply_unusable"
+    # The control: the longest text the dispatcher takes is sent as it is.
+    class SaysMax(ScriptedLLM):
+        def next_action(self, transcript):
+            return Reply("a" * MAX_REPLY_CHARS)
+
+    assert Agent(SaysMax(), RecordingGateway("x")).handle_ticket(7, LEASE) == "a" * MAX_REPLY_CHARS
+
+
+def test_the_agent_holds_no_key_and_knows_no_tool_address():
+    # The agent's only edges are the dispatcher, the LLM gateway and the tool gateway: no signing
+    # key to read, no TOOL_URL_* to call a tool by, no database, no provider.
+    from pathlib import Path
+
+    import app.agent as agent_package
+
+    source = "\n".join(p.read_text(encoding="utf-8") for p in Path(agent_package.__file__).parent.glob("*.py"))
+    for word in ("SIGNING_KEY", "TOOL_URL", "load_private_key", "mint_tool_token", "app.tools", "psycopg", "app.db"):
+        assert word not in source.replace("tool client", ""), word

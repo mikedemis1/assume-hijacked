@@ -46,6 +46,7 @@ secrets:
 # What the stack has today:
 #   edge_agent_gateway     agent -> tool-gateway   the agent reaches a tool only through the gateway
 #   edge_agent_dispatcher  agent -> dispatcher     the agent asks for its ticket and sends its reply
+#   edge_agent_llmgw       agent -> llm-gateway    the agent's only way to a model
 #   edge_gateway_<tool> x5 tool-gateway -> tool    the gateway is the only caller of a tool
 #   edge_gateway_risk      tool-gateway -> risk-engine   POST /decide for every call
 #   edge_gateway_db        tool-gateway -> db      the lease, the stop switch, the record of calls
@@ -57,9 +58,9 @@ secrets:
 #   edge_register_fakes    register-sync -> fake-register
 #   edge_executor_dso      executor -> fake-dso    } the matrix's executor -> fakes edge, one network
 #   edge_executor_sms      executor -> fake-sms    } per fake so the two fakes cannot reach each other
-# Later tasks add their services and their edges (edge_agent_llmgw, edge_console_db).
+# Later tasks add their services and their edges (edge_console_db).
 # Which edges are NOT here is tested: tests/test_smoke.py (agent -> db, agent -> every tool, agent ->
-# risk engine, dispatcher -> everything but the db,
+# risk engine, llm-gateway -> everything (it has no peer but the agent), dispatcher -> everything but the db,
 # tool -> tool, executor -> tools, risk-engine -> tools, register-sync -> tools, gateway -> the
 # executor, register-sync and the fakes, fakes -> db, fake -> fake, agent, tools and risk-engine
 # -> fakes).
@@ -69,9 +70,10 @@ secrets:
 # The tests and psql on this PC need the db port, so the db is also on `hostaccess`, a normal
 # network that nothing else joins. Only the db has a route out; nothing else is on hostaccess.
 networks:
-  # The subnets of the agent's two edges are pinned because the gateway and the dispatcher tell the agent from the other containers on its
-  # other edges by source address (CALLER_SUBNET below, app/gateway/auth.py): only the agent is on
-  # this network, so a call from any other address is refused.
+  # The subnets of the agent's three edges are pinned because the gateway, the dispatcher and the LLM
+  # gateway tell the agent from the other containers on their other edges by source address
+  # (CALLER_SUBNET below, app/gateway/auth.py): only the agent is on this network, so a call from any
+  # other address is refused.
   edge_agent_gateway:
     internal: true
     ipam:
@@ -82,6 +84,11 @@ networks:
     ipam:
       config:
         - subnet: 10.250.2.0/24
+  edge_agent_llmgw:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.250.3.0/24
   edge_dispatcher_db: {internal: true}
   edge_gateway_read_ticket: {internal: true}
   edge_gateway_lookup_account: {internal: true}
@@ -375,21 +382,46 @@ services:
       - edge_dispatcher_db
     command: ["python", "-m", "app.dispatcher.main"]
 
-  # No database password and no key here: the agent only talks to the tool gateway and the dispatcher.
+  # The LLM gateway (8083 /next, 9000 ops): the agent's only way to a model, and the only place that
+  # would hold a model key or identity. The default backend is the scripted one (a model that obeys
+  # the ticket, for the tests and the demo): it needs no key and no route out, and this service has
+  # neither. A real model is added with compose.llm-anthropic.yaml, which gives this service, and only
+  # this service, the key and a route out. It accepts a call only from an address in the subnet pinned
+  # on edge_agent_llmgw (CALLER_SUBNET), where only the agent is; it keeps a token budget per lease and
+  # forwards none of the agent's headers. Kubernetes uses the agent's service account token instead.
+  llm-gateway:
+    <<: *app
+    environment:
+      CALLER_AUTH: compose
+      CALLER_SUBNET: 10.250.3.0/24
+      LLM_BACKEND: scripted
+      LLM_MODEL: claude-haiku-5-5
+      LLM_TOKEN_BUDGET_PER_LEASE: "20000"
+    restart: unless-stopped
+    networks:
+      - edge_agent_llmgw
+    depends_on: []
+    command: ["python", "-m", "app.llmgw.main"]
+
+  # No database password, no key and no model key here: the agent only talks to the tool gateway, the
+  # LLM gateway and the dispatcher. It takes no ticket number: the dispatcher decides.
   agent:
     <<: *app
     profiles: ["manual"]
-    # Two edges, to the gateway and to the dispatcher: no route to the db, to a tool, to the risk
-    # engine or to the executor.
+    # Three edges, to the gateway, the LLM gateway and the dispatcher: no route to the db, to a tool,
+    # to the risk engine or to the executor.
     networks:
       - edge_agent_gateway
+      - edge_agent_llmgw
       - edge_agent_dispatcher
     depends_on:
       - tool-gateway
+      - llm-gateway
       - dispatcher
     environment:
       VULNERABLE: ${VULNERABLE:-false}
       CALLER_AUTH: compose
       GATEWAY_URL: http://tool-gateway:8080/mcp
+      LLM_GATEWAY_URL: http://llm-gateway:8083
       DISPATCHER_URL: http://dispatcher:8081
-    command: ["python", "-m", "app.agent.main", "1"]
+    command: ["python", "-m", "app.agent.main"]
