@@ -63,7 +63,7 @@ flowchart LR
     LGW -->|"one FQDN, 443"| NET
 ```
 
-How the ticket reaches the database is outside this repository (there is no customer portal; the seed data and `attacks/` put tickets in). Every arrow above is an allowed edge in the table below; everything else is denied.
+The arrows between components are the allowed edges of the table below; everything else between pods is denied. Two arrows are not chart edges: how a ticket reaches the database is outside this repository (there is no customer portal; the seed data and `attacks/` put tickets in), and staff reach the console with `kubectl port-forward`, which goes through the Kubernetes API, not through a NetworkPolicy.
 
 ## Trust zones
 
@@ -99,9 +99,9 @@ Taken from the Helm chart (`deploy/helm/assume-hijacked/templates/_helpers.tpl`,
 | 16 | register-sync → fake-register, db | 8090, 5432 | token audience `fake-register`; role `register_sync` | NP pairs |
 | tokenreview | fake-register, fake-dso, fake-sms → Kubernetes API | 443 / 6443 | RBAC: create `tokenreviews` only | CNP `edge-tokenreview-*` |
 | 18 | console → db | 5432 | role `approver`; staff sign in with Entra (`console.authMode=entra`) | NP pair |
-| 19, 20 | llm-gateway → `api.anthropic.com`, or the Foundry endpoint + `login.microsoftonline.com`; console → `login.microsoftonline.com` (Entra mode); db-migrate → `login.microsoftonline.com` (Azure) | 443 | DNS rule for those names only, plus `toFQDNs` | CNP `edge-19-20-*` |
-| db setup | postgres-init (kind) / db-migrate (Azure) → db | 5432 | bootstrap admin (kind) / Entra admin identity (Azure) | NP pair |
-| 21 | `ah-monitoring` → port 9000 in every app namespace | 9000 | none: `/metrics` and `/healthz` carry names and counts only | NP ingress half |
+| 19, 20 | llm-gateway → `api.anthropic.com`, or the Foundry endpoint + `login.microsoftonline.com`; console → `login.microsoftonline.com` (Entra mode); db-migrate → `login.microsoftonline.com` and each workload's `<vault>.vault.azure.net` (Azure, it writes the database passwords there) | 443 | DNS rule for those names only, plus `toFQDNs` | CNP `edge-19-20-*` |
+| db setup | postgres-init (kind) / db-migrate and the password rotation Job, which carries the same pod label (Azure) → db | 5432 | bootstrap admin (kind) / Entra admin identity (Azure) | NP pair |
+| 21 | `ah-monitoring` → port 9000 in `ah-intake`, `ah-agent`, `ah-gateway`, `ah-tools`, `ah-core`, `ah-staff` and `ah-fakes` (not `ah-data`) | 9000 | none: `/metrics` and `/healthz` carry names and counts only | NP ingress half |
 | 22 | every pod → CoreDNS | 53 | Cilium's DNS proxy answers REFUSED for any name outside `cluster.local` (plus a pod's own names from rows 19, 20, and `db.host` on Azure) | CNP `edge-22-*` |
 | metadata | every pod → 169.254.169.254 | any | denied in every namespace, whatever an allow says | CNP `deny-instance-metadata` (`egressDeny`) |
 
@@ -130,7 +130,7 @@ The numbered decisions are the ones the Terraform and chart comments refer to as
 |---|---|---|
 | 1 | Region | North Europe (`northeurope`). Firewall Basic for a VNet is in its price list; in Sweden Central only the Virtual Hub variant is ✓ (Retail Prices API, queried 2026-10-18) |
 | 2 | PostgreSQL networking | public access disabled, private endpoint |
-| 3 | Workload database login | a password per role. Azure: one Key Vault per workload and the Secrets Store CSI driver (synced to a Kubernetes Secret, read as an environment variable); locally a Kubernetes Secret or `.env`. Humans and the db-migrate Job use Entra on Azure |
+| 3 | Workload database login | a password per role. Azure: one Key Vault per workload and the Secrets Store CSI driver (synced to a Kubernetes Secret, read as an environment variable); locally a Kubernetes Secret or `.env`. Humans and the db-migrate Job use Entra on Azure. The passwords are set at install and changed only by the explicit rotation step |
 | 4 | Per-pod DNS rules | yes: CiliumNetworkPolicy `dns` rules (Cilium OSS on kind, Advanced Container Networking Services on AKS) and an Azure DNS security policy per VNet |
 | 5 | Who judges each tool call | the risk engine's `/decide`, called by the gateway for every call, plus effect tiers assessed after the request is filed |
 | 6 | Nodes on Azure | system pool 2 × Standard_D4als_v6 (tainted `CriticalAddonsOnly`); sandbox pool 1 × Standard_D4als_v6, Azure Linux, Kata (`kata-vm-isolation`), node count a variable (0 when nothing needs to run) |
@@ -183,7 +183,7 @@ flowchart TB
 | DNS exfiltration | internal networks have no route out | Cilium DNS rules | Cilium DNS rules and the DNS security policy on the VNet |
 | Caller identity | the network and the lease | projected tokens, TokenReview | the same |
 | Sandbox | none (containers) | the RuntimeClass exists, handler `runc`: no extra isolation | Kata micro-VM, own kernel per pod ✓ ([AKS Pod Sandboxing](https://learn.microsoft.com/en-us/azure/aks/use-pod-sandboxing)) |
-| Secrets | `.env`, one password per container | Kubernetes Secrets | Key Vault per workload, CSI driver; db-migrate sets new passwords on every deploy |
+| Secrets | `.env`, one password per container | Kubernetes Secrets | Key Vault per workload, CSI driver. db-migrate writes one password per role into its workload's vault at install only; a plain upgrade never changes them. Rotation is its own step (`scripts/azure-rotate-db-passwords.sh`): it runs the password Job, waits longer than the CSI driver's rotation interval, then restarts the pods with a database role |
 | Staff identity | dev users | dev users or a real Entra tenant | Entra, app roles |
 | Alerts | none (the console shows the alert list) | Prometheus and Alertmanager to a local mail catcher | Log Analytics alert rules to the owner's e-mail |
 
@@ -191,7 +191,7 @@ flowchart TB
 
 `python -m secops.evidence` writes one static HTML page, `reports/evidence.html`, from the JSON reports of a run: the permission assessment (`reports/permissions/`), the probe matrix (`reports/k8s-probe-matrix.json`), the attack ticket replay (`reports/attack-replay.json`), the image references (`reports/image-digests.json`, written by `--collect-images`), and on Azure the saved Log Analytics query results (`reports/kql/*.json`, optional). The CI job `evidence` builds it from the pipeline's own reports.
 
-It judges the data again instead of trusting a flag in it: a probe passes only with the wall's signature, an attack ticket only with `passed: true` and no failed check, a permission diff only with no extra or missing line, and its exit code must agree with its contents. A report that is missing is a "not run" section, and the page then says INCOMPLETE, never PASS. A file it cannot read is an error section. Every value is escaped, and the page loads and runs nothing (`Content-Security-Policy: default-src 'none'`). In CI the probe matrix and the attack replay are "not run": they need a cluster.
+It judges the data again instead of trusting a flag in it: a probe passes only with the wall's signature, an attack ticket only with `passed: true` and no failed check, a permission diff only with no extra or missing line, and its exit code must agree with its contents. A report must also be complete: the probe results must cover exactly the edges of the probe matrix and the replay exactly the tickets of the suite (both read from `attacks/`), and the page shows expected against found. An image counts as pinned only as `name:tag@sha256:<digest>`; an all-zero digest is shown as a placeholder. A report that is missing is a "not run" section; a skipped permission plane, a placeholder digest, or a report whose expected list is not available makes its section "partial". Either way the page says INCOMPLETE, never PASS. A file it cannot read is an error section. Every value is escaped, the page loads and runs nothing (`Content-Security-Policy: default-src 'none'`), and the lines it prints to a CI log carry no control characters. In CI the probe matrix and the attack replay are "not run": they need a cluster. After the merge the image section is "partial" too, on purpose: the Helm values for kind and Azure carry placeholder digests that the deploy replaces. The image list covers `FROM`, shell `*IMAGE=` variables, YAML `image:` keys, Helm `images:` maps and split `tag`/`sha` blocks; images a chart picks by itself (Cilium's, pinned by its own `useDigest`) are not listed.
 
 ## Not protected yet
 

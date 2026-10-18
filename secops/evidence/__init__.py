@@ -10,12 +10,18 @@ Sections and the files they read (paths relative to --reports):
   attacks      attack-replay.json, the attack ticket replay (python -m attacks.run replay): one
                JSON object per line, or a JSON list, of {ticket, name, passed, failures}
   images       image-digests.json: {"images": [{"reference", "sources"}]}, written by
-               --collect-images from the files that name images, or by a deploy step
+               --collect-images from the files that name images, or by a deploy step. Pinned
+               means name:tag@sha256:<64 hex>; an all-zero digest is a placeholder
   kql          kql/*.json, optional (Azure sessions only): one file per Log Analytics query,
                each the JSON list of rows that `az monitor log-analytics query` prints
 
 Rules:
   - A missing file is a "not run" section. A report with a section not run is never a pass.
+  - A report must be complete: every probe edge of the matrix and every attack ticket of the
+    suite (attacks/probes.py, attacks/tickets.py), no more and no fewer. Without those lists the
+    sections are "partial", never a pass. A permission plane that was skipped, or an image
+    with a placeholder digest, also makes its section "partial", and the skipped planes are
+    named in the summary.
   - Every section judges the data again instead of trusting a flag in it: a probe passes only
     with the wall's own signature, an attack only with passed == true and no failure, a
     permission diff only with no extra or missing line and no error.
@@ -40,6 +46,7 @@ PASS = "pass"
 FAIL = "fail"
 ERROR = "error"
 NOT_RUN = "not run"
+PARTIAL = "partial"  # what is there passed, but part of it is missing or skipped: not a pass
 
 OVERALL_PASS = "PASS"
 OVERALL_FAIL = "FAIL"
@@ -48,12 +55,31 @@ OVERALL_INCOMPLETE = "INCOMPLETE"
 # A probe's deny must carry the wall's signature (attacks/probes.py DENY_DETAIL): Cilium drops a
 # denied connection (timeout) and its DNS proxy answers REFUSED.
 DENY_DETAIL = {"tcp": "timeout", "dns": "REFUSED", "resolve": "REFUSED"}
+# Any reference that carries a sha256 digest, found anywhere on a line.
 DIGEST_REF = re.compile(r"[A-Za-z0-9][\w.\-/:]*@sha256:[0-9a-f]{64}")
+_TAG = re.compile(r"[\w][\w.\-]{0,127}")
 KQL_MAX_ROWS = 50
 
 
 class ReportError(ValueError):
     """A report file that is there but cannot be used."""
+
+
+@dataclass(frozen=True)
+class Expected:
+    """What a complete report holds. None: not known, so completeness cannot be shown."""
+    probe_edges: tuple[str, ...] | None
+    attack_tickets: tuple[int, ...] | None
+
+
+def load_expected() -> Expected:
+    """The probe matrix and the attack tickets from the attack suite in this repository."""
+    try:
+        from attacks import probes, tickets
+        return Expected(tuple(p.edge for p in probes.matrix()),
+                        tuple(t.number for t in tickets.ATTACK_TICKETS))
+    except ImportError:
+        return Expected(None, None)
 
 
 @dataclass(frozen=True)
@@ -159,7 +185,7 @@ def _p(text: str) -> str:
 
 # --- sections ------------------------------------------------------------------------------------
 
-def permissions_section(folder: Path) -> tuple[str, str, str]:
+def permissions_section(folder: Path, expected: Expected) -> tuple[str, str, str]:
     doc = _read_json(folder / "permissions" / "diff.json")
     _need(isinstance(doc, dict), "diff.json must be a JSON object")
     planes = doc.get("planes")
@@ -168,7 +194,7 @@ def permissions_section(folder: Path) -> tuple[str, str, str]:
     _need(isinstance(errors, dict) and all(isinstance(v, str) for v in errors.values()),
           "diff.json errors must map names to messages")
     warnings = _strings(doc.get("warnings", []), "diff.json warnings")
-    rows, classes, details, assessed, different = [], [], [], 0, False
+    rows, classes, details, assessed, different, skipped_planes = [], [], [], 0, False, []
     for name, plane in planes.items():
         _need(isinstance(plane, dict), f"plane {name} must be an object")
         extra = _strings(plane.get("extra", []), f"plane {name} extra")
@@ -177,6 +203,7 @@ def permissions_section(folder: Path) -> tuple[str, str, str]:
         skipped = plane.get("skipped")
         if skipped:
             state, cls = f"skipped: {skipped}", "skip"
+            skipped_planes.append(str(name))
         elif extra or missing:
             state, cls, different = "different", "bad", True
             assessed += 1
@@ -208,6 +235,10 @@ def permissions_section(folder: Path) -> tuple[str, str, str]:
         summary = "a plane could not be read" if errors else "every plane was skipped: nothing was assessed"
     elif different:
         status, summary = FAIL, "the live permissions differ from the expected file"
+    elif skipped_planes:
+        status = PARTIAL
+        summary = (f"{assessed} plane(s) equal to the expected file; "
+                   f"skipped: {', '.join(skipped_planes)} (not assessed)")
     else:
         status, summary = PASS, f"{assessed} plane(s) equal to the expected file"
     if stated != code:
@@ -225,15 +256,27 @@ def probe_passed(result: dict) -> bool:
     return observed == "allow" or detail.startswith(DENY_DETAIL[kind])
 
 
-def probes_section(folder: Path) -> tuple[str, str, str]:
+def _completeness(found: list, wanted: tuple | None, what: str) -> tuple[list, list, str]:
+    """(missing, unexpected, text) for a report against the list it should hold."""
+    if wanted is None:
+        return [], [], f"found {len(found)}; the expected list of {what} is not available"
+    missing = [w for w in wanted if w not in set(found)]
+    unexpected = [f for f in found if f not in set(wanted)]
+    return missing, unexpected, f"expected {len(wanted)}, found {len(found)}"
+
+
+def probes_section(folder: Path, expected: Expected) -> tuple[str, str, str]:
     results = _read_json(folder / "k8s-probe-matrix.json")
     _need(isinstance(results, list), "k8s-probe-matrix.json must be a JSON list of results")
     keys = ("edge", "source", "kind", "expected", "observed", "detail", "why")
     for i, r in enumerate(results):
         _need(isinstance(r, dict) and all(k in r for k in keys),
               f"probe result {i + 1} must be an object with {', '.join(keys)}")
+    edges = [str(r["edge"]) for r in results]
+    _need(len(edges) == len(set(edges)), "k8s-probe-matrix.json reports an edge more than once")
+    missing, unexpected, count = _completeness(edges, expected.probe_edges, "probe edges")
     if not results:
-        return FAIL, "the file holds no probe result: nothing was probed", _p("No probe results.")
+        return FAIL, f"the file holds no probe result: nothing was probed ({count})", _p("No probe results.")
     verdicts = [probe_passed(r) for r in results]
     failed = verdicts.count(False)
     per_source: dict[str, Counter] = {}
@@ -248,12 +291,23 @@ def probes_section(folder: Path) -> tuple[str, str, str]:
     order = sorted(range(len(rows)), key=lambda i: verdicts[i])  # failures first
     table = _table(["Edge", "Expected", "Observed", "Detail", "Wall", "Verdict"],
                    [rows[i] for i in order], ["ok" if verdicts[i] else "bad" for i in order])
-    summary = (f"{failed} of {len(results)} failed" if failed
-               else f"all {len(results)} probes match, every deny with the wall's signature")
-    return (FAIL if failed else PASS), summary, sources + table
+    gaps = ""
+    if missing:
+        gaps += f"<h4>Missing from the report ({len(missing)})</h4>" + _list(missing)
+    if unexpected:
+        gaps += f"<h4>Not in the probe matrix ({len(unexpected)})</h4>" + _list(unexpected)
+    body = _p(count) + gaps + sources + table
+    if failed or missing or unexpected:
+        parts = [f"{failed} of {len(results)} failed"] if failed else []
+        parts += [f"{len(missing)} missing"] if missing else []
+        parts += [f"{len(unexpected)} not in the matrix"] if unexpected else []
+        return FAIL, f"{', '.join(parts)} ({count})", body
+    if expected.probe_edges is None:
+        return PARTIAL, f"all {len(results)} probes match, but completeness is unknown ({count})", body
+    return PASS, f"all probes match, every deny with the wall's signature ({count})", body
 
 
-def attacks_section(folder: Path) -> tuple[str, str, str]:
+def attacks_section(folder: Path, expected: Expected) -> tuple[str, str, str]:
     lines = _read_json_lines(folder / "attack-replay.json")
     _need(isinstance(lines, list), "attack-replay.json must hold a list of results")
     rows, classes, failed = [], [], 0
@@ -266,36 +320,68 @@ def attacks_section(folder: Path) -> tuple[str, str, str]:
         rows.append([str(line["ticket"]), line["name"], "pass" if ok else "FAIL",
                      "; ".join(failures) or ("" if ok else "passed is not true")])
         classes.append("ok" if ok else "bad")
+    numbers = [line["ticket"] for line in lines]
+    _need(len(numbers) == len(set(numbers)), "attack-replay.json reports a ticket more than once")
+    missing, unexpected, count = _completeness(numbers, expected.attack_tickets, "attack tickets")
     if not rows:
-        return FAIL, "the file holds no ticket: nothing was replayed", _p("No attack results.")
+        return FAIL, f"the file holds no ticket: nothing was replayed ({count})", _p("No attack results.")
     table = _table(["Ticket (row in docs/attacks.md)", "Attack", "Verdict", "Failed checks"],
                    rows, classes)
-    summary = (f"{failed} of {len(rows)} attack tickets got through a wall" if failed
-               else f"all {len(rows)} attack tickets stopped")
-    return (FAIL if failed else PASS), summary, table
+    body = _p(count) + table
+    if failed or missing or unexpected:
+        parts = [f"{failed} of {len(rows)} attack tickets got through a wall"] if failed else []
+        parts += [f"missing tickets: {', '.join(map(str, missing))}"] if missing else []
+        parts += [f"tickets not in the suite: {', '.join(map(str, unexpected))}"] if unexpected else []
+        return FAIL, f"{'; '.join(parts)} ({count})", body
+    if expected.attack_tickets is None:
+        return PARTIAL, f"all {len(rows)} attack tickets stopped, but completeness is unknown ({count})", body
+    return PASS, f"every attack ticket stopped ({count})", body
 
 
-def images_section(folder: Path) -> tuple[str, str, str]:
+def pin_state(ref: str) -> str:
+    """pinned (name:tag@sha256:<64 hex>), placeholder (all-zero digest), no tag, or no digest."""
+    name, at, digest = ref.partition("@sha256:")
+    if not at or not re.fullmatch(r"[0-9a-f]{64}", digest) or not name:
+        return "no digest"
+    if set(digest) == {"0"}:
+        return "placeholder"
+    last = name.rsplit("/", 1)[-1]
+    if ":" not in last or not _TAG.fullmatch(last.rsplit(":", 1)[1]):
+        return "no tag"
+    return "pinned"
+
+
+_PIN_LABELS = {"pinned": "tag and digest", "placeholder": "PLACEHOLDER (all-zero digest, replaced at deploy)",
+               "no tag": "NO TAG (digest only)", "no digest": "NO DIGEST"}
+
+
+def images_section(folder: Path, expected: Expected) -> tuple[str, str, str]:
     doc = _read_json(folder / "image-digests.json")
     _need(isinstance(doc, dict) and isinstance(doc.get("images"), list),
           'image-digests.json must be {"images": [...]}')
-    rows, classes, unpinned = [], [], 0
+    rows, classes, states = [], [], Counter()
     for i, image in enumerate(doc["images"]):
         _need(isinstance(image, dict) and isinstance(image.get("reference"), str),
               f"image {i + 1} needs a reference string")
         sources = _strings(image.get("sources", []), f"image {i + 1} sources")
-        pinned = bool(DIGEST_REF.fullmatch(image["reference"]))
-        unpinned += not pinned
-        rows.append([image["reference"], ", ".join(sources), "digest" if pinned else "NO DIGEST"])
-        classes.append("ok" if pinned else "bad")
+        state = pin_state(image["reference"])
+        states[state] += 1
+        rows.append([image["reference"], ", ".join(sources), _PIN_LABELS[state]])
+        classes.append({"pinned": "ok", "placeholder": "skip"}.get(state, "bad"))
     if not rows:
         return FAIL, "the file lists no image", _p("No images.")
-    summary = (f"{unpinned} of {len(rows)} image references have no digest" if unpinned
-               else f"all {len(rows)} image references are pinned by digest")
-    return (FAIL if unpinned else PASS), summary, _table(["Image", "Named in", "Pinned"], rows, classes)
+    table = _table(["Image", "Named in", "Pinned"], rows, classes)
+    bad = states["no tag"] + states["no digest"]
+    if bad:
+        return FAIL, (f"{bad} of {len(rows)} image references are not pinned by tag and digest "
+                      f"({states['no tag']} no tag, {states['no digest']} no digest)"), table
+    if states["placeholder"]:
+        return PARTIAL, (f"{states['pinned']} pinned by tag and digest, {states['placeholder']} "
+                         "placeholder(s) with an all-zero digest, not pinned"), table
+    return PASS, f"all {len(rows)} image references are pinned by tag and digest", table
 
 
-def kql_section(folder: Path) -> tuple[str, str, str]:
+def kql_section(folder: Path, expected: Expected) -> tuple[str, str, str]:
     files = sorted((folder / "kql").glob("*.json"))
     if not files:
         raise FileNotFoundError("kql/*.json")
@@ -318,7 +404,7 @@ def _cell(value: object) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
-SECTIONS: tuple[tuple[str, str, str, bool, Callable[[Path], tuple[str, str, str]]], ...] = (
+SECTIONS: tuple[tuple[str, str, str, bool, Callable[[Path, Expected], tuple[str, str, str]]], ...] = (
     ("permissions", "Permission assessment", "permissions/diff.json", True, permissions_section),
     ("probes", "Network probe matrix", "k8s-probe-matrix.json", True, probes_section),
     ("attacks", "Attack ticket replay", "attack-replay.json", True, attacks_section),
@@ -327,11 +413,13 @@ SECTIONS: tuple[tuple[str, str, str, bool, Callable[[Path], tuple[str, str, str]
 )
 
 
-def build(folder: Path, generated: str, commit: str | None = None) -> Report:
+def build(folder: Path, generated: str, commit: str | None = None,
+          expected: Expected | None = None) -> Report:
+    expected = load_expected() if expected is None else expected
     sections = []
     for key, title, source, required, read in SECTIONS:
         try:
-            status, summary, body = read(folder)
+            status, summary, body = read(folder, expected)
         except FileNotFoundError:
             status, summary = NOT_RUN, f"not run: no {source}"
             body = _p(f"{source} is not in the reports folder, so this part was not run "
@@ -372,7 +460,7 @@ tr.bad td { background: var(--row-bad); } tr.skip td { color: var(--muted); }
 code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .status { font-weight: 600; text-transform: uppercase; }
-.pass { color: var(--ok); } .fail, .error { color: var(--bad); } .not-run { color: var(--warn); }
+.pass { color: var(--ok); } .fail, .error { color: var(--bad); } .not-run, .partial { color: var(--warn); }
 .overall { font-size: 1.3rem; }
 </style>
 </head>
@@ -388,7 +476,7 @@ $sections
 </html>
 """)
 
-_CLASSES = {PASS: "pass", FAIL: "fail", ERROR: "error", NOT_RUN: "not-run",
+_CLASSES = {PASS: "pass", FAIL: "fail", ERROR: "error", NOT_RUN: "not-run", PARTIAL: "partial",
             OVERALL_PASS: "pass", OVERALL_FAIL: "fail", OVERALL_INCOMPLETE: "not-run"}
 
 
@@ -414,29 +502,85 @@ def render(report: Report) -> str:
 # --- image references ----------------------------------------------------------------------------
 
 # Files that name images, relative to the repository root; globs allowed.
-IMAGE_FILES = ("Dockerfile", "ci/*.Dockerfile", "compose.yaml", ".gitlab-ci.yml", "ci/lib.sh",
-               "deploy/**/*.yaml", "deploy/**/*.json", "scripts/*.sh")
-# A line that names one image without a digest: `image: x` (Compose, CI) or `FROM x`.
-_UNPINNED_LINE = re.compile(r"""^\s*(?:-\s*)?(?:image:\s*|FROM\s+)["']?(?P<ref>[A-Za-z0-9][\w.\-/:]*)""")
+IMAGE_FILES = ("**/Dockerfile", "**/*.Dockerfile", "compose.yaml", ".gitlab-ci.yml", "ci/*.sh",
+               "deploy/**/*.yaml", "deploy/**/*.yml", "deploy/**/*.json", "scripts/*.sh")
+_SKIP_DIRS = {".git", ".venv", "venv", "mutants", ".terraform", "reports", "node_modules"}
+_FROM = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(?P<ref>\S+)", re.IGNORECASE)
+_SHELL_IMAGE = re.compile(r"""^\s*(?:export\s+)?[A-Z_]*IMAGE=["']?(?P<ref>[^"'\s]+)""")
+_YAML_KEY = re.compile(r"""^(?P<indent>\s*)(?:-\s+)?(?P<key>[\w.\-]+):\s*(?P<value>.*?)\s*$""")
+
+
+def _ref_like(value: str) -> bool:
+    """A value that names an image: has a tag, digest or path, no template, no build stage name."""
+    value = value.strip("\"'")
+    if not value or any(c in value for c in "${} ") or value.lower() == "scratch":
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9][\w.\-/:@]*", value)) and any(c in value for c in ":/@")
+
+
+def _yaml_refs(lines: list[str]) -> list[str]:
+    """Image references in YAML without a YAML parser: `image: x`, `name: x` under `image:`,
+    every value of an `images:` map (Helm values), and split `image: {tag, sha}` blocks (the
+    repository then comes from the chart's default; the path to the block stands for it)."""
+    refs: list[str] = []
+    stack: list[tuple[int, str]] = []  # (indent, key) of the open parents
+    split: dict[tuple[str, ...], dict[str, str]] = {}
+    for raw in lines:
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        m = _YAML_KEY.match(raw.split(" #", 1)[0])
+        if not m:
+            continue
+        indent = len(m["indent"]) + (2 if raw.lstrip().startswith("- ") else 0)
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        key, value = m["key"], m["value"].strip("\"'")
+        parent = stack[-1][1] if stack else ""
+        if not m["value"]:
+            stack.append((indent, key))
+            continue
+        path = tuple(k for _, k in stack)
+        if key == "image" or (key == "name" and parent in ("image", "services")):
+            if _ref_like(value):
+                refs.append(value)
+        elif parent == "images" and _ref_like(value):
+            refs.append(value)
+        elif (parent == "image" or parent.endswith("Image")) and key in ("tag", "sha", "digest", "repository"):
+            split.setdefault(path, {})[key] = value
+    for path, fields in split.items():
+        if "tag" not in fields and "sha" not in fields and "digest" not in fields:
+            continue
+        name = fields.get("repository") or ".".join(path)
+        ref = f"{name}:{fields['tag']}" if "tag" in fields else name
+        digest = fields.get("sha") or fields.get("digest", "")
+        digest = digest.removeprefix("sha256:")
+        refs.append(f"{ref}@sha256:{digest}" if digest else ref)
+    return refs
 
 
 def collect_images(root: Path) -> dict:
-    """Every pinned image reference in the files that name images, and every `image:` or
-    `FROM` line whose reference has no digest (it would fail the images section)."""
+    """Every image reference in the files that name images, pinned or not: Dockerfile `FROM`,
+    shell `*IMAGE=` variables, YAML `image:` keys, Helm `images:` maps and split tag/sha blocks,
+    and any reference with a sha256 digest anywhere else in those files."""
     found: dict[str, list[str]] = {}
+    seen: set[Path] = set()
     for pattern in IMAGE_FILES:
         for path in sorted(root.glob(pattern)):
-            if not path.is_file():
+            rel = path.relative_to(root)
+            if not path.is_file() or path in seen or _SKIP_DIRS & set(rel.parts):
                 continue
-            name = path.relative_to(root).as_posix()
-            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                refs = DIGEST_REF.findall(line)
-                if not refs and "$" not in line and "{{" not in line:
-                    m = _UNPINNED_LINE.match(line)
-                    refs = [m["ref"]] if m and (":" in m["ref"] or "/" in m["ref"]) else []  # not a build stage name
-                for ref in refs:
-                    sources = found.setdefault(ref, [])
-                    if name not in sources:
-                        sources.append(name)
+            seen.add(path)
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            refs = [r for line in lines for r in DIGEST_REF.findall(line)]
+            if path.name.endswith("Dockerfile"):
+                refs += [m["ref"] for line in lines if (m := _FROM.match(line)) and _ref_like(m["ref"])]
+            elif path.suffix == ".sh":
+                refs += [m["ref"] for line in lines if (m := _SHELL_IMAGE.match(line)) and _ref_like(m["ref"])]
+            elif path.suffix in (".yaml", ".yml"):
+                refs += _yaml_refs(lines)
+            for ref in refs:
+                sources = found.setdefault(ref, [])
+                if rel.as_posix() not in sources:
+                    sources.append(rel.as_posix())
     return {"generated_by": "python -m secops.evidence --collect-images",
             "images": [{"reference": r, "sources": s} for r, s in sorted(found.items())]}

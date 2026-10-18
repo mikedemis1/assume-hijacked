@@ -47,9 +47,9 @@ The probe matrix (`attacks/probes.py`, live run `tests/k8s/test_walls.py`) and t
 | A tool or agent pod outside the sandbox runtime | `test_admission_rejects_tool_pod_without_runtimeclass` | none | ASI05 | T1611 | AML.T0105 |
 | The dispatcher (which may create Jobs) creates an agent Job that runs as another ServiceAccount, mounts a Secret or asks for another token | `test_admission_rejects_agent_job_off_template`, control `test_dispatcher_can_create_the_agent_job` | LLM06 | ASI03 | T1610 | none |
 
-## Walls whose tests are not merged yet
+## Walls with no test listed yet
 
-These walls are in the design and the chart, but their code and tests are still being built, so they have no test name here. They map as follows once they land.
+These walls are part of the design, but no test is listed for them here yet.
 
 | Wall | OWASP LLM | OWASP ASI | ATT&CK | ATLAS |
 |---|---|---|---|---|
@@ -118,28 +118,28 @@ ASI02's mitigations include a policy enforcement middleware it calls an "Intent 
 
 ✓ each page on attack.mitre.org. One id changed: T1656 Impersonation now redirects to T1684.001, so this page uses the new id.
 
-| Id | Name | Platforms (from the page, where it matters) |
-|---|---|---|
-| [T1036.005](https://attack.mitre.org/techniques/T1036/005/) | Masquerading: Match Legitimate Resource Name or Location | |
-| [T1046](https://attack.mitre.org/techniques/T1046/) | Network Service Discovery | |
-| [T1048](https://attack.mitre.org/techniques/T1048/) | Exfiltration Over Alternative Protocol | |
-| [T1070](https://attack.mitre.org/techniques/T1070/) | Indicator Removal | |
-| [T1071.004](https://attack.mitre.org/techniques/T1071/004/) | Application Layer Protocol: DNS | |
-| [T1105](https://attack.mitre.org/techniques/T1105/) | Ingress Tool Transfer | |
-| [T1213.006](https://attack.mitre.org/techniques/T1213/006/) | Data from Information Repositories: Databases | IaaS, Linux, SaaS, Windows, macOS |
-| [T1496.004](https://attack.mitre.org/techniques/T1496/004/) | Resource Hijacking: Cloud Service Hijacking | |
-| [T1499.003](https://attack.mitre.org/techniques/T1499/003/) | Endpoint Denial of Service: Application Exhaustion Flood | |
-| [T1525](https://attack.mitre.org/techniques/T1525/) | Implant Internal Image | |
-| [T1550.001](https://attack.mitre.org/techniques/T1550/001/) | Use Alternate Authentication Material: Application Access Token | |
-| [T1552.005](https://attack.mitre.org/techniques/T1552/005/) | Unsecured Credentials: Cloud Instance Metadata API | IaaS |
-| [T1552.007](https://attack.mitre.org/techniques/T1552/007/) | Unsecured Credentials: Container API | |
-| [T1565.001](https://attack.mitre.org/techniques/T1565/001/) | Data Manipulation: Stored Data Manipulation | Linux, Windows, macOS |
-| [T1567](https://attack.mitre.org/techniques/T1567/) | Exfiltration Over Web Service | |
-| [T1610](https://attack.mitre.org/techniques/T1610/) | Deploy Container | Containers |
-| [T1611](https://attack.mitre.org/techniques/T1611/) | Escape to Host | Containers, ESXi, Linux, Windows |
-| [T1613](https://attack.mitre.org/techniques/T1613/) | Container and Resource Discovery | Containers |
-| [T1657](https://attack.mitre.org/techniques/T1657/) | Financial Theft | |
-| [T1684.001](https://attack.mitre.org/techniques/T1684/001/) | Social Engineering: Impersonation | |
+| Id | Name |
+|---|---|
+| [T1036.005](https://attack.mitre.org/techniques/T1036/005/) | Masquerading: Match Legitimate Resource Name or Location |
+| [T1046](https://attack.mitre.org/techniques/T1046/) | Network Service Discovery |
+| [T1048](https://attack.mitre.org/techniques/T1048/) | Exfiltration Over Alternative Protocol |
+| [T1070](https://attack.mitre.org/techniques/T1070/) | Indicator Removal |
+| [T1071.004](https://attack.mitre.org/techniques/T1071/004/) | Application Layer Protocol: DNS |
+| [T1105](https://attack.mitre.org/techniques/T1105/) | Ingress Tool Transfer |
+| [T1213.006](https://attack.mitre.org/techniques/T1213/006/) | Data from Information Repositories: Databases |
+| [T1496.004](https://attack.mitre.org/techniques/T1496/004/) | Resource Hijacking: Cloud Service Hijacking |
+| [T1499.003](https://attack.mitre.org/techniques/T1499/003/) | Endpoint Denial of Service: Application Exhaustion Flood |
+| [T1525](https://attack.mitre.org/techniques/T1525/) | Implant Internal Image |
+| [T1550.001](https://attack.mitre.org/techniques/T1550/001/) | Use Alternate Authentication Material: Application Access Token |
+| [T1552.005](https://attack.mitre.org/techniques/T1552/005/) | Unsecured Credentials: Cloud Instance Metadata API |
+| [T1552.007](https://attack.mitre.org/techniques/T1552/007/) | Unsecured Credentials: Container API |
+| [T1565.001](https://attack.mitre.org/techniques/T1565/001/) | Data Manipulation: Stored Data Manipulation |
+| [T1567](https://attack.mitre.org/techniques/T1567/) | Exfiltration Over Web Service |
+| [T1610](https://attack.mitre.org/techniques/T1610/) | Deploy Container |
+| [T1611](https://attack.mitre.org/techniques/T1611/) | Escape to Host |
+| [T1613](https://attack.mitre.org/techniques/T1613/) | Container and Resource Discovery |
+| [T1657](https://attack.mitre.org/techniques/T1657/) | Financial Theft |
+| [T1684.001](https://attack.mitre.org/techniques/T1684/001/) | Social Engineering: Impersonation |
 
 ### MITRE ATLAS (2026.09)
 

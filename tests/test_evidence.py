@@ -36,8 +36,16 @@ def reports(tmp_path) -> Path:
     return folder
 
 
-def build(folder: Path) -> evidence.Report:
-    return evidence.build(folder, generated=NOW, commit="0123abcd")
+# What the fixtures cover: the probe edges and attack tickets the reports must hold.
+FIXTURE_EXPECTED = evidence.Expected(
+    probe_edges=("agent -> tool-gateway:8080", "agent -> postgres:5432",
+                 "agent dns {random}.exfil.example.", "agent resolve kubernetes.default",
+                 "tool-lookup-account -> imds:80"),
+    attack_tickets=(1, 4, 9))
+
+
+def build(folder: Path, expected: evidence.Expected = FIXTURE_EXPECTED) -> evidence.Report:
+    return evidence.build(folder, generated=NOW, commit="0123abcd", expected=expected)
 
 
 def section(report: evidence.Report, key: str) -> evidence.Section:
@@ -176,13 +184,19 @@ def test_an_empty_probe_matrix_is_not_a_pass(reports):
     {"ticket": 3, "name": "flag changed", "failures": []},
 ])
 def test_an_attack_passes_only_when_passed_is_true_and_nothing_failed(reports, line):
+    # The suite expects ticket 3 only, so completeness cannot be what fails these.
+    only_3 = evidence.Expected(FIXTURE_EXPECTED.probe_edges, (3,))
     write(reports / "attack-replay.json", json.dumps(line) + "\n")
-    assert section(build(reports), "attacks").status == evidence.FAIL
+    assert section(build(reports, expected=only_3), "attacks").status == evidence.FAIL
+    control = {"ticket": 3, "name": "flag changed", "passed": True, "failures": []}
+    write(reports / "attack-replay.json", json.dumps(control) + "\n")
+    assert section(build(reports, expected=only_3), "attacks").status == evidence.PASS
 
 
 def test_attack_results_read_as_a_json_list_too(reports):
     write(reports / "attack-replay.json", [{"ticket": 1, "name": "x", "passed": True, "failures": []}])
-    assert section(build(reports), "attacks").status == evidence.PASS
+    one = evidence.Expected(FIXTURE_EXPECTED.probe_edges, (1,))
+    assert section(build(reports, expected=one), "attacks").status == evidence.PASS
 
 
 def test_an_empty_attack_report_is_not_a_pass(reports):
@@ -251,7 +265,7 @@ def hostile_reports(folder: Path) -> None:
     write(folder / "k8s-probe-matrix.json", [{"edge": HOSTILE, "source": HOSTILE, "kind": "tcp",
                                               "expected": HOSTILE, "observed": HOSTILE,
                                               "detail": HOSTILE, "why": HOSTILE}])
-    write(folder / "attack-replay.json", [{"ticket": HOSTILE, "name": HOSTILE, "passed": False,
+    write(folder / "attack-replay.json", [{"ticket": 1, "name": HOSTILE, "passed": False,
                                            "failures": [HOSTILE]}])
     write(folder / "image-digests.json", {"images": [{"reference": HOSTILE, "sources": [HOSTILE]}]})
     write(folder / "kql" / "q.json", [{HOSTILE: HOSTILE}])
@@ -259,8 +273,13 @@ def hostile_reports(folder: Path) -> None:
 
 def test_every_value_from_a_report_is_escaped(reports):
     hostile_reports(reports)
-    html = evidence.render(evidence.build(reports, generated=HOSTILE, commit=HOSTILE))
+    report = evidence.build(reports, generated=HOSTILE, commit=HOSTILE, expected=FIXTURE_EXPECTED)
+    html = evidence.render(report)
     assert "<script" not in html and "<img" not in html
+    # The attack table itself renders the hostile name and failure, escaped.
+    attacks = section(report, "attacks")
+    assert attacks.status == evidence.FAIL
+    assert attacks.body.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 2
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "&quot;&gt;&lt;img src=x onerror=alert(2)&gt;" in html
     assert "&amp;amp;" in html  # an entity in the data stays text
@@ -305,7 +324,13 @@ def test_collect_images_reports_an_image_line_without_a_digest(tmp_path):
 
 # --- command line --------------------------------------------------------------------------------
 
-def test_cli_writes_the_page_and_exits_zero_unless_strict(reports, capsys):
+@pytest.fixture
+def fixture_expectations(monkeypatch):
+    """The CLI asks the attack suite what to expect; the fixtures cover a few edges only."""
+    monkeypatch.setattr(evidence, "load_expected", lambda: FIXTURE_EXPECTED)
+
+
+def test_cli_writes_the_page_and_exits_zero_unless_strict(reports, capsys, fixture_expectations):
     out = reports / "evidence.html"
     (reports / "attack-replay.json").unlink()
     assert cli.main(["--reports", str(reports), "--out", str(out)]) == 0
@@ -314,7 +339,7 @@ def test_cli_writes_the_page_and_exits_zero_unless_strict(reports, capsys):
     assert cli.main(["--reports", str(reports), "--out", str(out), "--strict"]) == 1
 
 
-def test_cli_strict_passes_on_complete_reports(reports):
+def test_cli_strict_passes_on_complete_reports(reports, fixture_expectations):
     assert cli.main(["--reports", str(reports), "--out", str(reports / "e.html"), "--strict"]) == 0
 
 
@@ -325,3 +350,155 @@ def test_cli_collects_images_first_when_asked(tmp_path):
                      "--collect-images", str(tmp_path)]) == 0
     doc = json.loads((folder / "image-digests.json").read_text(encoding="utf-8"))
     assert doc["images"][0]["sources"] == ["Dockerfile"]
+
+
+# --- completeness: a partial report is never a pass ----------------------------------------------
+
+def test_fewer_probe_results_than_the_matrix_fail_and_name_the_missing_edges(reports):
+    results = json.loads((reports / "k8s-probe-matrix.json").read_text(encoding="utf-8"))
+    write(reports / "k8s-probe-matrix.json", results[:1])
+    s = section(build(reports), "probes")
+    assert s.status == evidence.FAIL
+    assert "expected 5, found 1" in s.summary
+    assert "tool-lookup-account -&gt; imds:80" in s.body
+
+
+def test_a_probe_result_that_is_not_in_the_matrix_fails(reports):
+    results = json.loads((reports / "k8s-probe-matrix.json").read_text(encoding="utf-8"))
+    results.append(dict(results[0], edge="agent -> somewhere:1"))
+    write(reports / "k8s-probe-matrix.json", results)
+    s = section(build(reports), "probes")
+    assert s.status == evidence.FAIL and "agent -&gt; somewhere:1" in s.body
+
+
+def test_a_probe_edge_reported_twice_is_an_error(reports):
+    results = json.loads((reports / "k8s-probe-matrix.json").read_text(encoding="utf-8"))
+    write(reports / "k8s-probe-matrix.json", results + results[:1])
+    assert section(build(reports), "probes").status == evidence.ERROR
+
+
+def test_fewer_attack_tickets_than_the_suite_fail_and_name_the_missing_ones(reports):
+    write(reports / "attack-replay.json",
+          '{"ticket": 1, "name": "x", "passed": true, "failures": []}\n')
+    s = section(build(reports), "attacks")
+    assert s.status == evidence.FAIL
+    assert "expected 3, found 1" in s.summary and "missing tickets: 4, 9" in s.summary
+
+
+def test_an_attack_ticket_reported_twice_is_an_error(reports):
+    line = '{"ticket": 1, "name": "x", "passed": true, "failures": []}\n'
+    write(reports / "attack-replay.json", line * 2 + line.replace("1", "4", 1) + line.replace("1", "9", 1))
+    assert section(build(reports), "attacks").status == evidence.ERROR
+
+
+def test_without_the_expected_lists_probes_and_attacks_are_partial_never_pass(reports):
+    report = build(reports, expected=evidence.Expected(probe_edges=None, attack_tickets=None))
+    assert section(report, "probes").status == evidence.PARTIAL
+    assert section(report, "attacks").status == evidence.PARTIAL
+    assert report.overall == evidence.OVERALL_INCOMPLETE
+
+
+def test_expected_lists_come_from_the_attack_suite(monkeypatch):
+    import sys
+    import types
+
+    probes = types.ModuleType("attacks.probes")
+    probes.matrix = lambda: [types.SimpleNamespace(edge="a -> b:1"), types.SimpleNamespace(edge="a dns x.")]
+    tickets = types.ModuleType("attacks.tickets")
+    tickets.ATTACK_TICKETS = tuple(types.SimpleNamespace(number=n) for n in (1, 2, 3))
+    package = types.ModuleType("attacks")
+    package.probes, package.tickets = probes, tickets
+    monkeypatch.setitem(sys.modules, "attacks", package)
+    monkeypatch.setitem(sys.modules, "attacks.probes", probes)
+    monkeypatch.setitem(sys.modules, "attacks.tickets", tickets)
+    assert evidence.load_expected() == evidence.Expected(("a -> b:1", "a dns x."), (1, 2, 3))
+
+
+def test_without_the_attack_suite_nothing_is_expected(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "attacks", None)  # makes the import fail
+    assert evidence.load_expected() == evidence.Expected(None, None)
+
+
+def test_a_skipped_plane_next_to_an_assessed_one_is_partial_and_named(reports):
+    diff = json.loads((reports / "permissions" / "diff.json").read_text(encoding="utf-8"))
+    diff["planes"]["azure"] = {"extra": [], "missing": [], "not_deployed": [],
+                               "skipped": "not logged in to Azure"}
+    write(reports / "permissions" / "diff.json", diff)
+    report = build(reports)
+    s = section(report, "permissions")
+    assert s.status == evidence.PARTIAL
+    assert "skipped: azure" in s.summary
+    assert report.overall == evidence.OVERALL_INCOMPLETE
+
+
+# --- image pinning -------------------------------------------------------------------------------
+
+DIGEST = "a" * 64
+
+
+@pytest.mark.parametrize("ref, state", [
+    (f"python:3.12-slim@sha256:{DIGEST}", "pinned"),
+    (f"ghcr.io/org/tool:v1@sha256:{DIGEST}", "pinned"),
+    (f"localhost:5001/app:1.0@sha256:{DIGEST}", "pinned"),
+    (f"localhost:5001/assume-hijacked@sha256:{DIGEST}", "no tag"),
+    (f"python@sha256:{DIGEST}", "no tag"),
+    ("python:3.12-slim@sha256:" + "0" * 64, "placeholder"),
+    ("acr.azurecr.io/azure-cli@sha256:" + "0" * 64, "placeholder"),
+    ("python:3.12-slim", "no digest"),
+    ("localhost:5001/app", "no digest"),
+    (f"python:3.12-slim@sha256:{DIGEST[:63]}", "no digest"),
+])
+def test_image_pin_state(ref, state):
+    assert evidence.pin_state(ref) == state
+
+
+def test_a_reference_without_a_tag_fails(reports):
+    write(reports / "image-digests.json", {"images": [
+        {"reference": f"localhost:5001/assume-hijacked@sha256:{DIGEST}", "sources": ["values"]}]})
+    s = section(build(reports), "images")
+    assert s.status == evidence.FAIL and "NO TAG" in s.body
+
+
+def test_an_all_zero_digest_is_a_labelled_placeholder_never_a_pin(reports):
+    doc = json.loads((reports / "image-digests.json").read_text(encoding="utf-8"))
+    doc["images"].append({"reference": "acr.azurecr.io/app:1@sha256:" + "0" * 64,
+                          "sources": ["values-azure.yaml"]})
+    write(reports / "image-digests.json", doc)
+    s = section(build(reports), "images")
+    assert s.status == evidence.PARTIAL
+    assert "PLACEHOLDER" in s.body and "1 placeholder" in s.summary
+
+
+def test_collect_images_reads_helm_image_maps_split_tags_and_shell_variables(tmp_path):
+    write(tmp_path / "deploy" / "helm" / "c" / "values.yaml",
+          "images:\n  # a comment\n  app: repo/app:1.0\n  db: postgres:17@sha256:" + DIGEST + "\n"
+          'registry: ""\nother:\n  app: not-an-image\n')
+    write(tmp_path / "deploy" / "monitoring" / "values.yaml",
+          "prometheusOperator:\n  image:\n    tag: v0.94.1\n    sha: " + DIGEST + "\n"
+          "alertmanager:\n  spec:\n    image:\n      tag: v0.34.1\n")
+    write(tmp_path / "scripts" / "registry.sh", 'IMAGE="registry:3"\n')
+    write(tmp_path / "attacks" / "Dockerfile", "FROM scratch AS wheels\nFROM python:3.12-slim\n")
+    refs = {i["reference"]: i["sources"] for i in evidence.collect_images(tmp_path)["images"]}
+    assert refs["repo/app:1.0"] == ["deploy/helm/c/values.yaml"]
+    assert f"postgres:17@sha256:{DIGEST}" in refs
+    assert f"prometheusOperator.image:v0.94.1@sha256:{DIGEST}" in refs
+    assert "alertmanager.spec.image:v0.34.1" in refs
+    assert refs["registry:3"] == ["scripts/registry.sh"]
+    assert refs["python:3.12-slim"] == ["attacks/Dockerfile"]
+    assert "not-an-image" not in refs and "scratch" not in refs
+
+
+# --- the command line never echoes control characters ------------------------------------------
+
+def test_cli_output_has_no_control_characters_from_the_reports(reports, capsys, fixture_expectations):
+    diff = json.loads((reports / "permissions" / "diff.json").read_text(encoding="utf-8"))
+    hostile = "azure\x1b[2J\x1b]0;owned\x07\nresult: PASS\r\x85 "
+    diff["planes"][hostile] = {"extra": [], "missing": [], "not_deployed": [], "skipped": "no login"}
+    write(reports / "permissions" / "diff.json", diff)
+    cli.main(["--reports", str(reports), "--out", str(reports / "e.html")])
+    out = capsys.readouterr().out
+    assert not any(not c.isprintable() and c != "\n" for c in out)
+    assert "skipped: azure" in out and "owned" in out  # the name is shown, made harmless
+    assert len(out.split("\n")) == 7  # one line per section, the result line, the final newline

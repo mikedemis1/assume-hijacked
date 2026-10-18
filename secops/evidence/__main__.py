@@ -20,6 +20,14 @@ from pathlib import Path
 from secops import evidence
 
 
+def plain(text: str, limit: int = 300) -> str:
+    """A summary can quote report data (a plane name, a ticket name). In a CI log a control
+    character could move the cursor, clear the screen or start a fake line, so every character
+    that is not printable is written as its code point, and the line is cut at limit."""
+    out = "".join(c if c.isprintable() else f"<U+{ord(c):04X}>" for c in text)
+    return out if len(out) <= limit else out[:limit] + "..."
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m secops.evidence",
                                      description="Build the static evidence report.")
@@ -44,8 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(evidence.render(report), encoding="utf-8")
     for s in report.sections:
-        print(f"{s.key}: {s.status} ({s.summary})")
-    print(f"result: {report.overall}, written to {args.out}")
+        print(f"{s.key}: {s.status} ({plain(s.summary)})")
+    print(f"result: {report.overall}, written to {plain(str(args.out))}")
     if args.strict and report.overall != evidence.OVERALL_PASS:
         return 1
     return 0
