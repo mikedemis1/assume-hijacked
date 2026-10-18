@@ -183,6 +183,14 @@ services:
       - edge_executor_db
       - edge_executor_dso
       - edge_executor_sms
+    # The fakes first, so the first notice or order after a restart finds its peer listening.
+    depends_on:
+      db:
+        condition: service_healthy
+      fake-dso:
+        condition: service_started
+      fake-sms:
+        condition: service_started
     command: ["python", "-m", "app.executor.main"]
 
   # Judges every tool call (POST /decide on 8082) and gives every pending effect request a risk

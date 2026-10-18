@@ -163,7 +163,11 @@ def demo_vulnerable(admin):
 
 
 def reset_db(conn) -> None:
-    conn.execute(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY CASCADE")
+    # The register tables refuse TRUNCATE, even from the superuser (db/sql/07-register.sql). The
+    # reset turns triggers off for its own transaction only, which only a superuser can do.
+    with conn.transaction():
+        conn.execute("SET LOCAL session_replication_role = replica")
+        conn.execute(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY CASCADE")
     conn.execute(SEED_SQL)
 
 

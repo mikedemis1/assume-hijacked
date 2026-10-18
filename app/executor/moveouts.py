@@ -22,9 +22,9 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg
 
+from app.common.events import security_event
 from app.common.ops import Metrics
 from app.config import Settings
-from app.agent.events import security_event
 from app.executor.alerts import raise_alert_once
 from app.executor.approvals import approvals_met
 from app.executor.credits import risk_reason
@@ -120,22 +120,39 @@ def _decide_one(conn, settings: Settings, req, now: datetime, hour_ago: datetime
     return None
 
 
+def _call_detail(call: tuple[str, dict]) -> str:
+    target, payload = call
+    return f"{target} move_out request={payload['request_id']}"
+
+
+def _call_due(conn: psycopg.Connection, outside: OutsideCalls | None, call: OutsideCall) -> OutsideCall:
+    """Inside the request's transaction: record that a call is owed, so it commits with the row it
+    reports on. A due event with no sent or failed event after it is a call lost to a crash
+    between the commit and the call; staff find it there and resend by hand."""
+    if outside is None or call is None or not outside.wants(call[0]):
+        return None
+    conn.execute("INSERT INTO events (kind, detail) VALUES ('outside_call_due', %s)", (_call_detail(call),))
+    return call
+
+
 def _tell_outside(
     conn: psycopg.Connection, outside: OutsideCalls | None, call: OutsideCall, metrics: Metrics | None
 ) -> None:
-    """One call, after the commit. A failure is logged and counted, never retried."""
+    """One call, after the commit, then its outcome as an event. A failure is logged and counted,
+    never retried."""
     if outside is None or call is None:
         return
     target, payload = call
     try:
-        if not outside.send(target, payload):
-            return
-        outcome = "sent"
+        outside.send(target, payload)
     except Exception as exc:
         outcome = "error"
-        detail = f"{target} move_out request={payload['request_id']}: {type(exc).__name__}"
+        detail = f"{_call_detail(call)}: {type(exc).__name__}"
         conn.execute("INSERT INTO events (kind, detail) VALUES ('outside_call_failed', %s)", (detail,))
         security_event("outside_call_failed", target=target, request=payload["request_id"], error=type(exc).__name__)
+    else:
+        outcome = "sent"
+        conn.execute("INSERT INTO events (kind, detail) VALUES ('outside_call_sent', %s)", (_call_detail(call),))
     if metrics is not None:
         metrics.inc("executor_outside_calls_total", {"target": target, "outcome": outcome})
 
@@ -161,6 +178,7 @@ def process_moveouts(
             # One transaction per request: the row written and the status change land together or not at all.
             with conn.transaction():
                 status, call = _process_one(conn, settings, req, now, hour_ago)
+                call = _call_due(conn, outside, call)
             if status is not None:
                 count_request(metrics, "move_out", status)
         except Exception as exc:

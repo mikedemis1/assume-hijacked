@@ -34,8 +34,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from app.agent.events import security_event
 from app.common.calls import MODES, caller_auth_mode
+from app.common.events import security_event
 from app.common.ops import Heartbeat, Metrics, start_ops_server
 
 OPS_PORT = 9000

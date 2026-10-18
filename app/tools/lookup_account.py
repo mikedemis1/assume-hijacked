@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import psycopg
 
-from app.agent.events import security_event
+from app.common.events import security_event
 from app.tools.common import call_api
 
 

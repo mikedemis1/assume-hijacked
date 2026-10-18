@@ -3,7 +3,7 @@ GET /healthz (200, or 503 when the service's heartbeat is stale) and GET /metric
 text format, written by hand: https://prometheus.io/docs/instrumenting/exposition_formats/).
 
 Metric names, label names and label values are names, ids and categories only. Never ticket text,
-argument values, health data or tokens (the rule in app/agent/events.py).
+argument values, health data or tokens (the rule in app/common/events.py).
 """
 
 from __future__ import annotations

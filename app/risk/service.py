@@ -13,7 +13,7 @@ Two jobs, one process (app/risk/main.py):
 
 The lease is a bearer secret. It is hashed as soon as it arrives and never logged, never put in a
 metric, never sent to the database: risk_lease_facts takes the hash. Logs and metrics carry
-categories and ids only (the rule in app/agent/events.py).
+categories and ids only (the rule in app/common/events.py).
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from app import db
-from app.agent.events import security_event
+from app.common.events import security_event
 from app.common.ops import Metrics
 from app.config import Settings
 from app.risk.rules import ENGINE_VERSION, EFFECT_TOOLS, CallFacts, EffectFacts, assess_call, assess_effect

@@ -1,11 +1,19 @@
 """Register sync: reads the state register of homes with life-support equipment and adds their
 protection flags. It only ever adds (db/sql/07-register.sql): a home the register stops listing
-keeps its flag until two SeniorApprovers remove it. A hijacked or broken register, or this process,
-can at worst add flags, which only sends more homes to a person.
+keeps its flag until two SeniorApprovers remove it, so neither the register nor this process can
+take a flag away.
+
+The trust it does carry: the heartbeat says "every home the register lists is flagged", and the
+register is believed about which homes those are. A register that answers an empty or short list,
+or a hijacked register-sync that calls sync_heartbeat without adding anything, keeps the register
+fresh while a newly listed home stays unflagged, and that home then counts as not protected. Flags
+already in place are never at risk; homes added to the register since are. That is accepted: the
+register is the source of truth for new homes, and the sync can only be as right as it is.
 
 Each round (every SYNC_SECONDS):
   1. GET the register's list (REGISTER_URL; the fake in this project, app/fakes).
-  2. sync_add_flag for each listed home. A home this supplier does not serve is counted and skipped.
+  2. sync_add_flag for each listed home; it answers added, present or unknown (a home this
+     supplier does not serve), and each answer is counted. No error, so no home id in a log.
   3. sync_heartbeat: the register is fresh. Only after a complete read. If the register cannot be
      read or its answer is not a clean list, the round stops here: the register age keeps growing,
      and after 24 hours every unflagged home counts as UNKNOWN (fail closed).
@@ -25,8 +33,8 @@ from datetime import datetime, timezone
 import psycopg
 
 from app import config, db
-from app.agent.events import security_event
 from app.common import calls
+from app.common.events import security_event
 from app.common.ops import Heartbeat, Metrics, start_ops_server
 
 ROLE = "register_sync"
@@ -64,16 +72,11 @@ def fetch_register(url: str, headers: dict[str, str], timeout_s: float = TIMEOUT
 
 
 def sync_once(conn: psycopg.Connection, homes: list[str], metrics: Metrics) -> None:
-    """Add every listed home's flag, then mark the register fresh. A database error other than an
-    unknown home propagates: no heartbeat for a sync that did not finish."""
+    """Add every listed home's flag, then mark the register fresh. A database error propagates: no
+    heartbeat for a sync that did not finish."""
     for sp in homes:
-        try:
-            with conn.transaction():
-                conn.execute("SELECT sync_add_flag(%s, %s)", (sp, SOURCE))
-        except psycopg.errors.NoDataFound:
-            metrics.inc("register_sync_flags_total", {"outcome": "unknown_supply_point"})
-            continue
-        metrics.inc("register_sync_flags_total", {"outcome": "seen"})
+        outcome = conn.execute("SELECT sync_add_flag(%s, %s) AS outcome", (sp, SOURCE)).fetchone()["outcome"]
+        metrics.inc("register_sync_flags_total", {"outcome": outcome})
     conn.execute("SELECT sync_heartbeat()")
 
 

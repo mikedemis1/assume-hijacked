@@ -384,3 +384,43 @@ def test_k8s_caller_reaches_a_k8s_fake_end_to_end(run_fake, tmp_path):
     headers = calls.auth_headers("fake-dso", "k8s", token_dir=tmp_path)
     assert calls.post_json(f"http://127.0.0.1:{server.port}/orders", ORDER, headers, timeout_s=5) == 202
     assert recorded(server)[0]["caller"] == EXECUTOR
+
+
+# --- how the components are put together ---
+
+def test_components_that_talk_to_the_outside_do_not_load_the_agent_package():
+    # The executor, the register sync and the fakes run with database rights or stand for outside
+    # systems; none of them needs, or should carry, the agent's code.
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = (
+        "import sys\n"
+        "import app.executor.main, app.register.sync, app.fakes.register, app.fakes.dso, app.fakes.sms, app.risk.main\n"
+        "print(sorted(m for m in sys.modules if m == 'app.agent' or m.startswith('app.agent.')))\n"
+    )
+    root = Path(__file__).resolve().parent.parent
+    done = subprocess.run([sys.executable, "-c", script], cwd=root, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "[]"
+
+
+def test_the_agent_still_logs_security_events():
+    from app.agent.events import security_event
+    from app.common.events import security_event as common_security_event
+
+    assert security_event is common_security_event
+
+
+def test_executor_starts_after_the_fakes_it_calls():
+    from pathlib import Path
+
+    import yaml
+
+    compose_file = Path(__file__).resolve().parent.parent / "compose.yaml"
+    services = yaml.safe_load(compose_file.read_text(encoding="utf-8"))["services"]
+    depends = services["executor"]["depends_on"]
+    assert depends["fake-dso"] == {"condition": "service_started"}
+    assert depends["fake-sms"] == {"condition": "service_started"}
+    assert depends["db"] == {"condition": "service_healthy"}

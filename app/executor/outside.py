@@ -5,9 +5,11 @@ committed:
   dso     DSO_URL      fake-dso  a disconnection order was written: the grid operator carries it out
   sms     SMS_URL      fake-sms  an occupier notice was written: the SMS provider sends it
 
-At most once. The row is the record; the call is made once, right after the commit. A call that
-fails is logged (events: outside_call_failed) and counted, and never retried: a retry loop is how
-one order becomes two at the grid operator. Staff resend by hand.
+At most once. The row is the record; the call is made once, right after the commit. Three events
+tell its story: outside_call_due commits with the row, then outside_call_sent or
+outside_call_failed follows the call. A failure is also counted, and never retried: a retry loop
+is how one order becomes two at the grid operator. A due event with nothing after it is a call
+lost to a crash between the commit and the call. Staff resend by hand in both cases.
 
 The payload carries ids only (request, order or notice, supply point). The executor holds no
 phone number or address, so it cannot send one.
@@ -41,14 +43,17 @@ class OutsideCalls:
         self.token_dir = token_dir
         self._post = post
 
-    def send(self, target: str, payload: dict) -> bool:
-        """True when sent, False when no URL is set for the target. Any failure raises."""
+    def wants(self, target: str) -> bool:
+        """Is there anyone to call for this target (a URL set)?"""
+        return bool(self.urls[target])
+
+    def send(self, target: str, payload: dict) -> None:
+        """One POST to the target. Any failure raises; a target without a URL is an error."""
         url = self.urls[target]
         if not url:
-            return False
+            raise ValueError(f"no URL for {target}")
         headers = calls.auth_headers(self.audiences[target], self.caller_auth, self.token_dir)
         self._post(url, payload, headers, timeout_s=self.timeout_s)
-        return True
 
 
 def outside_calls(settings: Settings) -> OutsideCalls | None:

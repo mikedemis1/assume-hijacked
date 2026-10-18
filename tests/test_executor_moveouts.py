@@ -773,3 +773,53 @@ def test_a_failed_outside_call_is_attempted_exactly_once(admin, as_role, setting
         process_moveouts(ex, settings, now, outside=outside)
     assert attempts == [rid] and orders(admin) == 1
     assert outside_failures(admin) == [f"dso move_out request={rid}: TimeoutError"]
+
+
+def outside_events(admin):
+    return [(r["kind"], r["detail"]) for r in admin.execute(
+        "SELECT kind, detail FROM events WHERE kind LIKE 'outside_call_%' ORDER BY id")]
+
+
+def test_each_outside_call_is_due_before_it_is_sent(admin, as_role, settings, now, outside_world):
+    # The due event commits with the notice; the sent event follows the call. A due without a
+    # sent or failed after it is a call lost to a crash, for staff to resend by hand.
+    _, _, outside = outside_world
+    rid = add_moveout(admin)
+    process_moveouts(as_role("executor"), settings, now, outside=outside)
+    detail = f"sms move_out request={rid}"
+    assert outside_events(admin) == [("outside_call_due", detail), ("outside_call_sent", detail)]
+
+
+def test_a_failed_outside_call_is_due_then_failed(admin, as_role, settings, now):
+    from app.executor.outside import OutsideCalls
+
+    down = f"http://127.0.0.1:{closed_port()}"
+    rid = add_moveout(admin)
+    process_moveouts(as_role("executor"), settings, now, outside=OutsideCalls(f"{down}/orders", f"{down}/messages",
+                                                                                 timeout_s=2))
+    assert outside_events(admin) == [("outside_call_due", f"sms move_out request={rid}"),
+                                     ("outside_call_failed", f"sms move_out request={rid}: URLError")]
+
+
+def test_a_call_lost_to_a_crash_leaves_its_due_event(admin, as_role, settings, now):
+    from app.executor.outside import OutsideCalls
+
+    def crash(url, payload, headers, timeout_s):
+        raise SystemExit("the executor process dies here")
+
+    rid = add_moveout(admin)
+    with pytest.raises(SystemExit):
+        process_moveouts(as_role("executor"), settings, now, outside=OutsideCalls("", "http://sms/messages", post=crash))
+    assert status(admin, rid) == "notice_sent"
+    assert outside_events(admin) == [("outside_call_due", f"sms move_out request={rid}")]
+
+
+def test_no_due_event_when_there_is_nobody_to_call(admin, as_role, settings, now):
+    from app.executor.outside import OutsideCalls
+
+    add_moveout(admin)
+    add_moveout(admin, ticket_id=2)
+    ex = as_role("executor")
+    process_moveouts(ex, settings, now)  # no outside world at all
+    process_moveouts(ex, settings, now, outside=OutsideCalls("http://dso/orders", ""))  # no SMS URL
+    assert outside_events(admin) == []

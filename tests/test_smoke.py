@@ -453,26 +453,66 @@ def fake_calls(fake):
     return json.loads(done.stdout)["calls"]
 
 
+def stack_moveout_limit():
+    """The risk engine's flood limit (MOVEOUT_MAX_PER_HOUR) as the running container sees it."""
+    script = "from app import config; print(config.load().moveout_max_per_hour)"
+    done = compose("exec", "-T", "risk-engine", "python", "-c", script, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return int(done.stdout.strip())
+
+
+def wait_for_executor_rounds(conn, after, rounds=2, seconds=60):
+    """Wait until the executor has finished `rounds` more trips round its loop after `after` (its
+    database heartbeat, written at the end of each trip). Two, so at least one whole trip started
+    after `after`."""
+    seen = after
+    for _ in range(rounds):
+        row = wait_for(conn, "SELECT last_beat FROM heartbeats WHERE component = 'executor'", (),
+                       lambda r, since=seen: r is not None and r[0] > since, seconds)
+        assert row is not None and row[0] > seen, f"the executor did not beat after {seen}"
+        seen = row[0]
+
+
 def test_executor_calls_fake_dso_once_per_order():
     # A move-out for SP-1001 (not protected), assessed by the real risk engine. The executor sends
     # the notice (one SMS call); the test then makes the notice 73 hours old and two people approve,
-    # so the executor writes the order (one DSO call). A later round makes no second call.
+    # so the executor writes the order (one DSO call). Later rounds make no second call.
     with stack_db() as conn:
+        # Each run files a move-out in the stack database. The rows stay (effects and assessments
+        # cannot be deleted), so the test moves its request out of the flood window when it ends;
+        # otherwise enough runs within an hour would trip the flood rule and every move-out after
+        # them would be held.
+        limit = stack_moveout_limit()
+        recent = conn.execute(
+            "SELECT count(*) FROM action_requests WHERE kind = 'move_out' AND created_at >= now() - interval '1 hour'"
+        ).fetchone()[0]
+        assert recent < limit, f"{recent} move-outs in the last hour (limit {limit}): re-initialise the stack db"
         rid = conn.execute(
             "INSERT INTO action_requests (kind, ticket_id, account_id, move_out_date) "
             "VALUES ('move_out', 1, 1, (now() AT TIME ZONE 'UTC')::date) RETURNING id"
         ).fetchone()[0]
-        row = wait_for(conn, "SELECT status FROM action_requests WHERE id = %s", (rid,), lambda r: r[0] != "pending")
-        assert row == ("notice_sent",), row
-        conn.execute("UPDATE occupier_notices SET sent_at = now() - interval '73 hours' WHERE request_id = %s", (rid,))
-        for who in ("smoke.anna", "smoke.petros"):  # T1 needs one, T2 two
-            conn.execute("INSERT INTO approvals (request_id, approver) VALUES (%s, %s)", (rid, who))
-        row = wait_for(conn, "SELECT status FROM action_requests WHERE id = %s", (rid,), lambda r: r[0] != "notice_sent")
-        assert row == ("executed",), row
-        order_id = conn.execute("SELECT id FROM disconnection_orders WHERE request_id = %s", (rid,)).fetchone()[0]
-    time.sleep(6)  # one more executor round (every 5 s)
+        try:
+            row = wait_for(conn, "SELECT status FROM action_requests WHERE id = %s", (rid,), lambda r: r[0] != "pending")
+            assert row == ("notice_sent",), row
+            conn.execute("UPDATE occupier_notices SET sent_at = now() - interval '73 hours' WHERE request_id = %s", (rid,))
+            for who in ("smoke.anna", "smoke.petros"):  # T1 needs one, T2 two
+                conn.execute("INSERT INTO approvals (request_id, approver) VALUES (%s, %s)", (rid, who))
+            row = wait_for(conn, "SELECT status FROM action_requests WHERE id = %s", (rid,),
+                           lambda r: r[0] != "notice_sent")
+            assert row == ("executed",), row
+            order_id = conn.execute("SELECT id FROM disconnection_orders WHERE request_id = %s", (rid,)).fetchone()[0]
+            wait_for_executor_rounds(conn, conn.execute("SELECT now()").fetchone()[0])
+            events = conn.execute(
+                "SELECT kind, detail FROM events WHERE kind LIKE 'outside_call_%%' AND detail LIKE %s ORDER BY id",
+                (f"% move_out request={rid}",),
+            ).fetchall()
+        finally:
+            conn.execute("UPDATE action_requests SET created_at = created_at - interval '2 hours' WHERE id = %s",
+                         (rid,))
     to_dso = [c for c in fake_calls("fake-dso") if c["body"]["request_id"] == rid]
     assert [c["body"] for c in to_dso] == [{"request_id": rid, "order_id": order_id, "supply_point_id": "SP-1001"}]
     assert [c["caller"] for c in to_dso] == ["network"]
     to_sms = [c for c in fake_calls("fake-sms") if c["body"]["request_id"] == rid]
     assert len(to_sms) == 1, to_sms
+    assert events == [(kind, f"{target} move_out request={rid}") for target in ("sms", "dso")
+                      for kind in ("outside_call_due", "outside_call_sent")]

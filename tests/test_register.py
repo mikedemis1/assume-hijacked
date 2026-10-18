@@ -21,7 +21,11 @@ import pytest
 from app.common.ops import Heartbeat, Metrics
 from app.register import sync
 
-SENIOR_A, SENIOR_B = "senior.anna", "senior.petros"
+# Staff are named by their Entra object id (a UUID), so one person has one spelling.
+SENIOR_A = "0f8a3c1e-2b4d-4e6f-8a1b-3c5d7e9f0a11"
+SENIOR_B = "1a2b3c4d-5e6f-4a1b-9c2d-3e4f5a6b7c22"
+SENIOR_C = "2b3c4d5e-6f7a-4b2c-8d3e-4f5a6b7c8d33"
+REQUESTER = "3c4d5e6f-7a8b-4c3d-9e4f-5a6b7c8d9e44"
 REASON = "register says the equipment was returned"
 
 
@@ -52,7 +56,7 @@ def staff(as_role):
     return as_role("approver")
 
 
-def request_removal(staff, sp="SP-1003", reason=REASON, by="staff.ioanna"):
+def request_removal(staff, sp="SP-1003", reason=REASON, by=REQUESTER):
     return staff.execute("SELECT request_flag_removal(%s, %s, %s) AS id", (sp, reason, by)).fetchone()["id"]
 
 
@@ -62,11 +66,15 @@ def approve_removal(staff, request_id, who):
 
 # --- register-sync: add only ---
 
+def add_flag(syncer, sp):
+    return syncer.execute("SELECT sync_add_flag(%s, 'state_register') AS s", (sp,)).fetchone()["s"]
+
+
 def test_sync_can_only_add_flags(admin, syncer):
     admin.execute("UPDATE register_sync SET last_success = now() - interval '30 hours'")
-    syncer.execute("SELECT sync_add_flag('SP-1001', 'state_register')")
-    syncer.execute("SELECT sync_add_flag('SP-1001', 'state_register')")  # again: still one flag
-    syncer.execute("SELECT sync_add_flag('SP-1003', 'state_register')")  # already there: unchanged
+    assert add_flag(syncer, "SP-1001") == "added"
+    assert add_flag(syncer, "SP-1001") == "present"  # again: still one flag
+    assert add_flag(syncer, "SP-1003") == "present"  # already there: unchanged
     assert flags(admin) == {"SP-1001": "state_register", "SP-1003": "state_register"}
     syncer.execute("SELECT sync_heartbeat()")
     fresh = admin.execute("SELECT last_success > now() - interval '1 minute' AS ok FROM register_sync").fetchone()
@@ -80,8 +88,8 @@ def test_sync_can_only_add_flags(admin, syncer):
         "DELETE FROM flags",
         "TRUNCATE flags",
         "UPDATE register_sync SET last_success = now() + interval '1 year'",
-        "SELECT request_flag_removal('SP-1003', 'x', 'y')",
-        "SELECT approve_flag_removal(1, 'y')",
+        f"SELECT request_flag_removal('SP-1003', 'x', '{REQUESTER}')",
+        f"SELECT approve_flag_removal(1, '{SENIOR_A}')",
     ):
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             syncer.execute(statement)
@@ -129,12 +137,18 @@ def test_nobody_but_the_removal_function_owner_holds_delete_on_flags(admin):
     assert rows == []
 
 
-def test_sync_add_flag_refuses_unknown_homes_and_free_text_sources(admin, syncer):
-    with pytest.raises(psycopg.errors.NoDataFound, match="unknown supply point"):
-        syncer.execute("SELECT sync_add_flag('SP-9999', 'state_register')")
+def test_sync_add_flag_answers_unknown_for_a_home_it_does_not_serve(admin, syncer):
+    # No error: an error message would carry the home id into the server log every 30 s, and being
+    # on the life-support register is health data. The sync counts the answer instead.
+    assert add_flag(syncer, "SP-9999") == "unknown"
+    assert flags(admin) == {"SP-1003": "state_register"}
+
+
+def test_sync_add_flag_refuses_free_text_sources_without_echoing_them(admin, syncer):
     for source in ("", "Life support: oxygen concentrator", "x" * 41, None):
-        with pytest.raises(psycopg.errors.RaiseException, match="source"):
+        with pytest.raises(psycopg.errors.RaiseException, match="source") as refused:
             syncer.execute("SELECT sync_add_flag('SP-1001', %s)", (source,))
+        assert "oxygen" not in str(refused.value) and "SP-1001" not in str(refused.value)
     assert flags(admin) == {"SP-1003": "state_register"}
 
 
@@ -157,7 +171,7 @@ def test_sync_heartbeat_marks_the_register_fresh(admin, syncer):
     before = last_success(admin)
     syncer.execute("SELECT sync_heartbeat()")
     assert last_success(admin) > before
-    admin.execute("TRUNCATE register_sync")  # no row at all: the heartbeat writes it
+    admin.execute("DELETE FROM register_sync")  # no row at all: the heartbeat writes it
     syncer.execute("SELECT sync_heartbeat()")
     assert admin.execute("SELECT count(*) AS n FROM register_sync").fetchone()["n"] == 1
 
@@ -168,8 +182,9 @@ def test_flag_removal_needs_two_distinct_seniors_and_alerts(admin, staff):
     rid = request_removal(staff)
     assert approve_removal(staff, rid, SENIOR_A) is False
     assert flags(admin) == {"SP-1003": "state_register"}
-    # The same person again, in other case and spacing: still one person.
-    assert approve_removal(staff, rid, " Senior.Anna ") is False
+    # The same person again, spelled another way: still one person.
+    for same in (SENIOR_A.upper(), "{" + SENIOR_A + "}", SENIOR_A.replace("-", "")):
+        assert approve_removal(staff, rid, same) is False
     assert flags(admin) == {"SP-1003": "state_register"} and alerts(admin) == []
     assert approve_removal(staff, rid, SENIOR_B) is True
     assert flags(admin) == {}
@@ -177,14 +192,15 @@ def test_flag_removal_needs_two_distinct_seniors_and_alerts(admin, staff):
     assert alerts(admin) == [{"actor": "flags_remover",
                               "detail": f"protection flag removed supply_point=SP-1003 request={rid}"}]
     approvals = admin.execute(
-        "SELECT approver, approver_role FROM flag_removal_approvals WHERE request_id = %s ORDER BY approver", (rid,)
+        "SELECT approver::text AS approver, approver_role FROM flag_removal_approvals WHERE request_id = %s "
+        "ORDER BY 1", (rid,)
     ).fetchall()
     assert approvals == [{"approver": SENIOR_A, "approver_role": "SeniorApprover"},
                          {"approver": SENIOR_B, "approver_role": "SeniorApprover"}]
     # A finished request is closed: a third approval cannot remove a flag the register adds back.
     admin.execute("INSERT INTO flags (supply_point_id, source) VALUES ('SP-1003', 'state_register')")
-    with pytest.raises(psycopg.errors.RaiseException, match="already"):
-        approve_removal(staff, rid, "senior.ioanna")
+    with pytest.raises(psycopg.errors.RaiseException, match="closed"):
+        approve_removal(staff, rid, SENIOR_C)
     assert flags(admin) == {"SP-1003": "state_register"}
 
 
@@ -198,13 +214,14 @@ def test_each_removal_request_needs_its_own_two_seniors(admin, staff):
 
 def test_flag_removal_request_needs_a_flag_a_reason_and_a_requester(admin, staff):
     for sp, reason, by, message in (
-        ("SP-1001", REASON, "staff.ioanna", "no protection flag"),
-        ("SP-9999", REASON, "staff.ioanna", "no protection flag"),
-        ("SP-1003", "  ", "staff.ioanna", "reason"),
-        ("SP-1003", None, "staff.ioanna", "reason"),
-        ("SP-1003", "x" * 501, "staff.ioanna", "reason"),
+        ("SP-1001", REASON, REQUESTER, "no protection flag"),
+        ("SP-9999", REASON, REQUESTER, "no protection flag"),
+        ("SP-1003", "  ", REQUESTER, "reason"),
+        ("SP-1003", None, REQUESTER, "reason"),
+        ("SP-1003", "x" * 501, REQUESTER, "reason"),
         ("SP-1003", REASON, " ", "requester"),
         ("SP-1003", REASON, None, "requester"),
+        ("SP-1003", REASON, "staff.ioanna", "requester"),  # not an Entra object id
     ):
         with pytest.raises(psycopg.errors.RaiseException, match=message):
             request_removal(staff, sp, reason, by)
@@ -215,9 +232,84 @@ def test_flag_removal_approval_refuses_unknown_requests_and_blank_approvers(admi
     with pytest.raises(psycopg.errors.RaiseException, match="unknown"):
         approve_removal(staff, 999, SENIOR_A)
     rid = request_removal(staff)
-    for who in ("", " \t", None):
+    # Blank, a name, or a UUID with a no-break space or a Cyrillic "a" in it: none is an object id,
+    # so none can pass for a second person.
+    for who in ("", " \t", None, "senior.anna", SENIOR_A + "\u00a0", SENIOR_A.replace("a", "\u0430", 1)):
         with pytest.raises(psycopg.errors.RaiseException, match="approver"):
             approve_removal(staff, rid, who)
+    assert flags(admin) == {"SP-1003": "state_register"}
+    assert admin.execute("SELECT count(*) AS n FROM flag_removal_approvals").fetchone()["n"] == 0
+
+
+def test_the_requester_cannot_approve_their_own_removal(admin, staff):
+    rid = request_removal(staff)
+    for same in (REQUESTER, REQUESTER.upper()):
+        with pytest.raises(psycopg.errors.RaiseException, match="requester"):
+            approve_removal(staff, rid, same)
+    assert approve_removal(staff, rid, SENIOR_A) is False
+    with pytest.raises(psycopg.errors.RaiseException, match="requester"):
+        approve_removal(staff, rid, REQUESTER)
+    assert flags(admin) == {"SP-1003": "state_register"}
+    assert approve_removal(staff, rid, SENIOR_B) is True  # control: two other people
+
+
+def closed(admin, rid):
+    row = admin.execute(
+        "SELECT done_at IS NOT NULL AS done, closed_reason FROM flag_removal_requests WHERE id = %s", (rid,)
+    ).fetchone()
+    return row["done"], row["closed_reason"]
+
+
+def test_a_stale_removal_request_cannot_remove_a_flag_added_later(admin, staff, syncer):
+    # Two requests for the same home. The first removes the flag, the register adds it back, and
+    # the second must not remove the new flag: it was raised against the old one.
+    first, second = request_removal(staff), request_removal(staff, reason="second request")
+    approve_removal(staff, first, SENIOR_A)
+    assert approve_removal(staff, first, SENIOR_B) is True
+    assert add_flag(syncer, "SP-1003") == "added"
+    for who in (SENIOR_A, SENIOR_B):
+        with pytest.raises(psycopg.errors.RaiseException, match="closed"):
+            approve_removal(staff, second, who)
+    assert flags(admin) == {"SP-1003": "state_register"}
+    assert len(alerts(admin)) == 1
+
+
+def test_a_removal_closes_every_other_open_request_for_the_home(admin, staff):
+    first, second = request_removal(staff), request_removal(staff, reason="second request")
+    approve_removal(staff, first, SENIOR_A)
+    approve_removal(staff, first, SENIOR_B)
+    assert closed(admin, first) == (True, "removed") and closed(admin, second) == (True, "superseded")
+
+
+def replace_flag_behind_the_functions(admin, sp="SP-1003"):
+    """A flag deleted and added again without the removal functions (only the superuser can, with
+    the triggers off), so an open request now points at a newer flag than the one it was raised on."""
+    with admin.transaction():
+        admin.execute("SET LOCAL session_replication_role = replica")
+        admin.execute("DELETE FROM flags WHERE supply_point_id = %s", (sp,))
+        admin.execute(
+            "INSERT INTO flags (supply_point_id, source, created_at) "
+            "VALUES (%s, 'state_register', now() + interval '1 second')", (sp,)
+        )
+
+
+def test_a_request_whose_flag_was_replaced_is_closed_without_removing_the_new_flag(admin, staff):
+    rid = request_removal(staff)
+    replace_flag_behind_the_functions(admin)
+    assert approve_removal(staff, rid, SENIOR_A) is False
+    assert closed(admin, rid) == (True, "stale")
+    with pytest.raises(psycopg.errors.RaiseException, match="closed"):
+        approve_removal(staff, rid, SENIOR_B)
+    assert flags(admin) == {"SP-1003": "state_register"} and alerts(admin) == []
+    assert admin.execute("SELECT count(*) AS n FROM flag_removal_approvals").fetchone()["n"] == 0
+    events = admin.execute("SELECT kind, detail FROM events WHERE kind = 'flag_removal_closed'").fetchall()
+    assert events == [{"kind": "flag_removal_closed", "detail": f"request={rid} supply_point=SP-1003 reason=stale"}]
+
+
+@pytest.mark.parametrize("table", ["flags", "register_sync", "flag_removal_requests", "flag_removal_approvals"])
+def test_register_tables_cannot_be_truncated_even_by_the_superuser(admin, table):
+    with pytest.raises(psycopg.errors.RaiseException, match="truncate"):
+        admin.execute(f"TRUNCATE {table} CASCADE")
     assert flags(admin) == {"SP-1003": "state_register"}
 
 
@@ -245,8 +337,8 @@ def test_two_seniors_approving_at_the_same_moment_still_remove_the_flag(admin, a
 
 
 REMOVAL_CALLS = {
-    "request": "SELECT request_flag_removal('SP-1003', 'r', 'staff.ioanna')",
-    "approve": "SELECT approve_flag_removal(1, 'senior.anna')",
+    "request": f"SELECT request_flag_removal('SP-1003', 'r', '{REQUESTER}')",
+    "approve": f"SELECT approve_flag_removal(1, '{SENIOR_A}')",
 }
 
 
@@ -295,8 +387,8 @@ def test_register_functions_are_definers_with_a_fixed_search_path_and_named_call
     [
         ("sync_add_flag(text,text)", "sync_add_flag('SP-1001', 'state_register')"),
         ("sync_heartbeat()", "sync_heartbeat()"),
-        ("request_flag_removal(text,text,text)", "request_flag_removal('SP-1003', 'r', 'x')"),
-        ("approve_flag_removal(integer,text)", "approve_flag_removal(1, 'x')"),
+        ("request_flag_removal(text,text,text)", f"request_flag_removal('SP-1003', 'r', '{REQUESTER}')"),
+        ("approve_flag_removal(integer,text)", f"approve_flag_removal(1, '{SENIOR_A}')"),
     ],
 )
 def test_register_functions_check_the_caller_not_only_the_grant(admin, signature, call):
@@ -358,8 +450,9 @@ def test_poll_adds_the_register_flags_and_marks_the_sync(admin, syncer):
     assert flags(admin) == {"SP-1001": "state_register", "SP-1003": "state_register"}
     assert last_success(admin) > before
     lines = metrics.render().splitlines()
-    assert "register_sync_flags_total{outcome=\"seen\"} 2" in lines
-    assert "register_sync_flags_total{outcome=\"unknown_supply_point\"} 1" in lines
+    assert 'register_sync_flags_total{outcome="added"} 1' in lines
+    assert 'register_sync_flags_total{outcome="present"} 1' in lines
+    assert 'register_sync_flags_total{outcome="unknown"} 1' in lines
     beat = admin.execute("SELECT component FROM heartbeats").fetchall()
     assert beat == [{"component": "register-sync"}]
 
