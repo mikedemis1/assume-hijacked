@@ -102,16 +102,26 @@ def _replace_vulnerable(settings, vulnerable: bool):
 
 # --- the MCP edge: what the agent talks to ---
 
+# The subnet of the agent's edge network (compose.yaml) and an address in it: the harness reaches the
+# gateway app as if from there.
+AGENT_SUBNET = "10.250.1.0/24"
+AGENT_IP = "10.250.1.5"
+
+
 def compose_auth() -> CallerAuth:
-    return CallerAuth(mode="compose")
+    return CallerAuth(mode="compose", allowed_subnet=AGENT_SUBNET)
+
+
+def from_agent(app) -> httpx2.ASGITransport:
+    """A transport to the gateway app whose requests come from the agent's address."""
+    return httpx2.ASGITransport(app=app, client=(AGENT_IP, 50000))
 
 
 @asynccontextmanager
 async def agent_session(app, headers: dict[str, str]):
     """An MCP client of the gateway app, in process, sending `headers` on every request."""
     async with running(app):
-        transport = httpx2.ASGITransport(app=app)
-        async with httpx2.AsyncClient(transport=transport, base_url="http://gateway.test", headers=headers) as http:
+        async with httpx2.AsyncClient(transport=from_agent(app), base_url="http://gateway.test", headers=headers) as http:
             async with Client(streamable_http_client(URL, http_client=http)) as client:
                 yield client
 
@@ -128,7 +138,7 @@ class AppGatewayClient(ToolGateway):
     async def _transport(self):
         app = build_app(self._built.gateway, self._auth)
         async with running(app):
-            yield RecordingTransport(httpx2.ASGITransport(app=app), self.sent)
+            yield RecordingTransport(from_agent(app), self.sent)
 
     def wire_bodies(self) -> list[dict]:
         return [json.loads(body) for _, body in self.sent if body]

@@ -91,7 +91,7 @@ Each row, its tests and its limits: [docs/attacks.md](docs/attacks.md).
 ## Not protected yet
 
 - A hijacked agent can pass another ticket's id. There is no signed ticket context yet, so grants are per column, not per row.
-- In Compose the tool gateway tells the agent from other callers by the network alone: the five tools and the risk engine share an edge with the gateway and could open its port with a lease they have seen. Kubernetes closes that with the agent's service account token. No workload identity or NetworkPolicy until AKS.
+- In Compose the tool gateway tells the agent from its neighbours by source address: only the agent is on the pinned subnet of its edge, and the tools and the risk engine, which share other edges with the gateway, get 401. Kubernetes uses the agent's service account token and the lease's bound pod. No workload identity or NetworkPolicy until AKS.
 - Approvals are names, not people. Staff identity comes with Entra ID.
 - The reply guard works from word lists. A spelling nobody listed gets through; templated replies would fix it.
 - The executor serves `/healthz` and `/metrics` (port 9000, nothing publishes it), but nothing scrapes them or alerts yet. If it hangs, nothing goes out, but nobody is told.

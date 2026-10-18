@@ -348,6 +348,23 @@ def test_the_agent_has_one_edge_and_it_leads_to_the_gateway():
         assert not agent_networks & set(services[component]["networks"]), component
 
 
+def test_the_agents_edge_has_a_pinned_subnet_and_the_gateway_is_told_it():
+    import ipaddress
+
+    config = compose()
+    pinned = config["networks"]["edge_agent_gateway"]["ipam"]["config"]
+    assert len(pinned) == 1
+    subnet = pinned[0]["subnet"]
+    assert ipaddress.ip_network(subnet, strict=True).prefixlen >= 24
+    assert config["services"]["tool-gateway"]["environment"]["CALLER_SUBNET"] == subnet
+    # Only the agent and the gateway are on it, and no other network pins the same range.
+    assert sorted(name for name, s in config["services"].items() if "edge_agent_gateway" in s.get("networks", [])) == [
+        "agent", "tool-gateway"]
+    others = [n["ipam"]["config"][0]["subnet"] for name, n in config["networks"].items()
+              if name != "edge_agent_gateway" and n.get("ipam")]
+    assert subnet not in others
+
+
 def test_the_gateway_is_the_only_service_on_a_tools_gateway_edge():
     services = compose()["services"]
     for tool, component in TOOL_COMPONENTS.items():

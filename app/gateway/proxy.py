@@ -371,7 +371,10 @@ class Gateway:
             category = toolerrors.LEASE if reason in ("lease", "tool_not_in_lease") else toolerrors.DENIED
             return await self._refuse(record, reason, category)
 
-        # 7, 8: the description, then the call.
+        # 7, 8: the description, then the call. The description is checked after /decide (cheaper
+        # refusals first), so a tool that has drifted still spends the lease's one effect in the
+        # engine's count before it is refused. That fails safe: the call is not made, the agent
+        # may not try a second effect on this ticket, and the denial is recorded.
         try:
             reply = await self._tools.invoke(tool, forwarded, lease, spec.expected_sha256(self.vulnerable))
         except DescriptorChanged:

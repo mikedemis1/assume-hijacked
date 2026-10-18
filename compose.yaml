@@ -68,7 +68,14 @@ secrets:
 # The tests and psql on this PC need the db port, so the db is also on `hostaccess`, a normal
 # network that nothing else joins. Only the db has a route out; nothing else is on hostaccess.
 networks:
-  edge_agent_gateway: {internal: true}
+  # The subnet is pinned because the gateway tells the agent from the other containers on its
+  # other edges by source address (CALLER_SUBNET below, app/gateway/auth.py): only the agent is on
+  # this network, so a call from any other address is refused.
+  edge_agent_gateway:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.250.1.0/24
   edge_gateway_read_ticket: {internal: true}
   edge_gateway_lookup_account: {internal: true}
   edge_gateway_request_disconnection: {internal: true}
@@ -293,14 +300,18 @@ services:
   # The tool gateway (8080 /mcp, 9000 ops): the one way from the agent to a tool. Checks the lease,
   # the stop switch and the arguments, asks the risk engine about every call, compares the tool's
   # description with the reviewed one and signs a token the tool accepts once. The only holder of
-  # the signing key. In Compose the agent is not asked who it is (CALLER_AUTH=compose): the network
-  # is the wall, the agent and the gateway share one internal network and nothing else is on it.
+  # the signing key. In Compose there is no token, so the gateway accepts a call only from an
+  # address in the subnet pinned on edge_agent_gateway (CALLER_SUBNET), where only the agent is.
+  # The tools and the risk engine share an edge with the gateway too, but reach it from their own
+  # networks' addresses and are refused with 401. Kubernetes uses the agent's service account
+  # token and the bound pod instead.
   tool-gateway:
     <<: *app
     environment:
       <<: *db-common
       DB_PASSWORD_GATEWAY: ${DB_PASSWORD_GATEWAY:?set DB_PASSWORD_GATEWAY in .env}
       CALLER_AUTH: compose
+      CALLER_SUBNET: 10.250.1.0/24
       GATEWAY_SIGNING_KEY_FILE: /run/secrets/gateway_signing_key
       RISK_URL: http://risk-engine:8082
       TOOL_URL_READ_TICKET: http://tool-read-ticket:8000/mcp

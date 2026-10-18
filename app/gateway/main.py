@@ -5,7 +5,7 @@
 
 Environment: GATEWAY_SIGNING_KEY_FILE (EC P-256 private key, PEM: the only copy of the key the
 tools check), RISK_URL (http://risk-engine:8082), TOOL_URL_<TOOL> for each of the five tools,
-DB_PASSWORD_GATEWAY, CALLER_AUTH (compose|k8s), VULNERABLE (the demo build), CAPABILITIES_DIR (the
+DB_PASSWORD_GATEWAY, CALLER_AUTH (compose|k8s), CALLER_SUBNET (compose only: the agent's edge network), VULNERABLE (the demo build), CAPABILITIES_DIR (the
 reviewed manifests; default: security/capabilities next to the code).
 
 It does not start without any of these: a gateway that cannot sign, cannot ask the risk engine or
@@ -79,6 +79,11 @@ def main() -> None:
     except manifest.ManifestError as err:
         raise SystemExit(f"the capability manifests are not usable: {err}") from None
 
+    try:
+        auth = CallerAuth(mode=settings.caller_auth, allowed_subnet=os.environ.get("CALLER_SUBNET") or None)
+    except ValueError as err:
+        raise SystemExit(str(err)) from None
+
     metrics = Metrics()
     init_metrics(metrics, specs)
     heartbeat = Heartbeat()
@@ -97,11 +102,14 @@ def main() -> None:
         metrics=metrics,
         vulnerable=settings.vulnerable,
     )
-    app = build_app(gateway, CallerAuth(mode=settings.caller_auth))
+    app = build_app(gateway, auth)
     # All interfaces of the container: the agent reaches it from another container or pod. The
     # network is the wall (edge_agent_gateway in compose.yaml, NetworkPolicy in Kubernetes); no
     # access log, so nothing about a request but the process's own security events is written.
-    uvicorn.run(app, host="0.0.0.0", port=PORT, access_log=False, log_level="warning")  # nosec B104
+    # proxy_headers off: the caller check reads the peer address of the connection, never a header.
+    uvicorn.run(  # nosec B104
+        app, host="0.0.0.0", port=PORT, access_log=False, log_level="warning", proxy_headers=False
+    )
 
 
 if __name__ == "__main__":

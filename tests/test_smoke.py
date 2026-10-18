@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psycopg
@@ -403,11 +404,10 @@ def test_agent_cannot_reach_the_risk_engine():
 
 
 @pytest.mark.parametrize("source", ["executor", "register-sync", *FAKE_PORTS])
-def test_only_the_agent_reaches_the_gateways_port(source):
-    # In Compose the network is the agent check, so the gateway's port is open to the agent and to
-    # nothing else except its own peers: the five tools and the risk engine share an edge with the
-    # gateway and can open that port too (documented in docs/attacks.md, closed in Kubernetes by
-    # the agent's service account token).
+def test_nothing_without_an_edge_to_the_gateway_reaches_its_port(source):
+    # The containers that share no network with the gateway cannot open its port at all. The five
+    # tools and the risk engine do share one and can connect; what refuses them is the gateway's
+    # check of the source address (test_a_neighbour_of_the_gateway_is_refused_and_the_agent_is_not).
     assert_blocked(source, service_targets("tool-gateway", GATEWAY_PORT))
 
 
@@ -679,15 +679,25 @@ def last_call_id():
         return conn.execute("SELECT coalesce(max(id), 0) FROM tool_calls").fetchone()[0]
 
 
+def gateway_log_since(moment):
+    done = compose("logs", "--no-log-prefix", "--since", moment, "tool-gateway", timeout=60)
+    assert done.returncode == 0, done.stderr
+    return done.stdout + done.stderr
+
+
 def test_a_ticket_through_the_gateway_leaves_a_record_of_names_only():
     after = last_call_id()
+    started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     done = run_agent(4)  # ticket 4 asks for customer 1002 with a customer_id argument
     assert "Nikos" not in done.stdout, done.stderr
     rows = stack_calls(after)
     assert [(r[0], r[3], r[5]) for r in rows] == [("read_ticket", "ok", "gateway"), ("lookup_account", "ok", "gateway")]
     # The agent's own code already dropped customer_id, so the gateway had nothing left to drop here.
     assert all(r[2] == [] for r in rows)
-    assert "gateway_denied" not in done.stderr
+    # The gateway's own log (another container): an honest ticket is refused nowhere.
+    log = gateway_log_since(started)
+    assert "gateway_denied" not in log and "gateway_error" not in log, log
+    assert "heart" not in log and "Eleni" not in log
 
 
 def test_the_gateway_denies_while_the_risk_engine_is_stopped_and_works_again_after():
@@ -711,3 +721,38 @@ def test_the_gateway_denies_while_the_risk_engine_is_stopped_and_works_again_aft
                 break
             time.sleep(1)
     assert "Eleni Papadopoulou" in run_agent(1).stdout                          # the control
+
+
+# A call to the gateway's MCP endpoint, made from inside a container: the status code.
+CALL_THE_GATEWAY = """
+import json, urllib.request, urllib.error
+body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "issue_bill_credit",
+                   "arguments": {"amount_eur": 0.01, "reason": "outage", "evidence_ref": 1}}}
+request = urllib.request.Request(
+    "http://tool-gateway:8080/mcp", data=json.dumps(body).encode(),
+    headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+             "X-Lease": "ab" * 32},
+)
+try:
+    print(urllib.request.urlopen(request, timeout=10).status)
+except urllib.error.HTTPError as err:
+    print(err.code)
+"""
+
+
+@pytest.mark.parametrize("source", [*TOOL_HOSTS, "risk-engine"])
+def test_a_neighbour_of_the_gateway_is_refused_and_the_agent_is_not(source):
+    # A hijacked tool (or the risk engine, which sees every lease) can open the gateway's port over
+    # its own edge. The gateway accepts only addresses of the agent's network, so it answers 401
+    # before any wall or tool runs. The same request from the agent is let in (200: the call itself
+    # is then refused for its unknown lease, which is a tool answer, not a 401).
+    after = last_call_id()
+    refused = probe(source, CALL_THE_GATEWAY)
+    assert refused.returncode == 0, f"stdout: {refused.stdout}\nstderr: {refused.stderr}"
+    assert refused.stdout.strip() == "401", refused.stdout
+    assert stack_calls(after) == []                      # it never reached the pipeline
+    let_in = probe("agent", CALL_THE_GATEWAY)
+    assert let_in.returncode == 0, f"stdout: {let_in.stdout}\nstderr: {let_in.stderr}"
+    assert let_in.stdout.strip().splitlines()[-1] == "200", let_in.stdout
+    assert [(r[0], r[3], r[4]) for r in stack_calls(after)] == [("issue_bill_credit", "denied", "lease")]

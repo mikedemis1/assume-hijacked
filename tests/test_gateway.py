@@ -30,12 +30,15 @@ from app.security import descriptors
 from app.tools import serve
 from tests.conftest import TOOLS, open_lease
 from tests.gatewayharness import (
+    AGENT_IP,
+    AGENT_SUBNET,
     AppGatewayClient,
     FakeRisk,
     RealRisk,
     agent_session,
     build,
     compose_auth,
+    from_agent,
 )
 from tests.toolhttp import KEYS, URL, running
 
@@ -280,9 +283,9 @@ def reviewer(tokens):
     return review
 
 
-async def post_raw(app, headers, body=None):
+async def post_raw(app, headers, body=None, client=(AGENT_IP, 50000)):
     async with running(app):
-        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://gateway.test") as http:
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app, client=client), base_url="http://gateway.test") as http:
             return await http.post(
                 "/mcp", headers=headers, content=json.dumps(body or {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
             )
@@ -291,9 +294,9 @@ async def post_raw(app, headers, body=None):
 MCP_HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 
 
-async def asgi_post(app, raw_headers, body):
+async def asgi_post(app, raw_headers, body, client=AGENT_IP):
     """POST /mcp straight to the ASGI app with exactly these header lines (a client library would
-    not send the same header twice). Returns (status, body bytes)."""
+    not send the same header twice), from the address `client`. Returns (status, body bytes)."""
     sent, chunks = {}, []
     payload = json.dumps(body).encode()
 
@@ -308,7 +311,7 @@ async def asgi_post(app, raw_headers, body):
 
     scope = {
         "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "path": "/mcp",
-        "raw_path": b"/mcp", "query_string": b"", "scheme": "http", "server": ("g.test", 80), "client": ("1.2.3.4", 1),
+        "raw_path": b"/mcp", "query_string": b"", "scheme": "http", "server": ("g.test", 80), "client": (client, 50000) if client else None,
         "headers": [(b"host", b"g.test"), (b"content-length", str(len(payload)).encode()),
                     *[(k.lower().encode(), v.encode()) for k, v in MCP_HEADERS.items()], *raw_headers],
     }
@@ -383,10 +386,86 @@ def test_k8s_mode_refuses_two_authorization_headers_and_fails_closed_when_the_re
     assert run(post_raw(app, {**MCP_HEADERS, "Authorization": "Bearer tok-a"})).status_code == 401
 
 
-def test_compose_mode_needs_no_token_because_the_network_is_the_wall(settings, as_role):
+# The tools and the risk engine share an edge network with the gateway, so they can open its port;
+# what tells them from the agent is the address they come from (CALLER_SUBNET, compose.yaml).
+OTHER_ADDRESSES = {
+    "a-tool": "192.168.128.3",             # on edge_gateway_read_ticket
+    "the-risk-engine": "192.168.224.2",    # on edge_gateway_risk
+    "the-database-network": "192.168.176.2",
+    "just-outside-the-subnet": "10.250.2.5",
+    "the-subnet-below": "10.250.0.255",
+    "localhost": "127.0.0.1",
+    "ipv6": "fd00::5",
+    "no-address": "",
+}
+
+
+def test_compose_mode_serves_the_agents_subnet_and_nothing_else(settings, as_role):
     built = build(settings, as_role)
-    ok = run(post_raw(build_app(built.gateway, compose_auth()), MCP_HEADERS))
+    for name, address in {"first": "10.250.1.1", "agent": AGENT_IP, "last": "10.250.1.254", "mapped": "::ffff:10.250.1.7"}.items():
+        ok = run(post_raw(build_app(built.gateway, compose_auth()), MCP_HEADERS, client=(address, 50000)))
+        assert ok.status_code == 200, name                          # the control: the agent's side
+    for name, address in OTHER_ADDRESSES.items():
+        refused = run(post_raw(build_app(built.gateway, compose_auth()), MCP_HEADERS, client=(address, 50000)))
+        assert (refused.status_code, refused.json()) == (401, {"error": "unauthorized"}), name
+    # No address at all (a transport that does not know the peer) is no agent either.
+    refused = run(post_raw(build_app(built.gateway, compose_auth()), MCP_HEADERS, client=None))
+    assert refused.status_code == 401
+    assert built.risk.asked == [] and built.tools.forwarded() == []
+
+
+def test_a_call_from_outside_the_agents_subnet_is_refused_before_anything_runs(settings, admin, as_role):
+    # What a hijacked tool would try: the lease of the call it is serving, sent to the gateway as if
+    # it were the agent, for another tool of its choice.
+    lease = open_lease(admin, 1)
+    built = build(settings, as_role)
+    call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "issue_bill_credit", "arguments": {"amount_eur": 5, "reason": "outage", "evidence_ref": 1}}}
+    headers = [(b"x-lease", lease.encode())]
+    from_tool = run(asgi_post(build_app(built.gateway, compose_auth()), headers, call, client="192.168.128.3"))
+    assert from_tool[0] == 401
+    assert built.risk.asked == [] and built.tools.forwarded() == [] and calls(admin) == []
+    assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 0
+    # The control: the same call from the agent's address goes through every wall.
+    from_agent_ = run(asgi_post(build_app(built.gateway, compose_auth()), headers, call, client=AGENT_IP))
+    assert from_agent_[0] == 200 and json.loads(from_agent_[1])["result"]["isError"] is False
+    assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 1
+
+
+def test_compose_mode_does_not_start_without_the_subnet_and_trusts_no_forwarded_header(settings, as_role):
+    with pytest.raises(ValueError, match="CALLER_SUBNET"):
+        CallerAuth(mode="compose")
+    with pytest.raises(ValueError):
+        CallerAuth(mode="compose", allowed_subnet="")
+    with pytest.raises(ValueError):
+        CallerAuth(mode="compose", allowed_subnet="not a subnet")
+    # A forged X-Forwarded-For / Forwarded from a neighbour does not move it into the subnet.
+    built = build(settings, as_role)
+    forged = {**MCP_HEADERS, "X-Forwarded-For": AGENT_IP, "X-Real-IP": AGENT_IP, "Forwarded": f"for={AGENT_IP}"}
+    refused = run(post_raw(build_app(built.gateway, compose_auth()), forged, client=("192.168.128.3", 5)))
+    assert refused.status_code == 401
+
+
+def test_the_gateway_process_reads_the_peer_address_and_no_proxy_header():
+    import inspect
+
+    from app.gateway import main as gateway_main
+
+    # uvicorn would otherwise let a forwarded header from 127.0.0.1 replace the peer address.
+    assert "proxy_headers=False" in inspect.getsource(gateway_main.main)
+
+
+def test_k8s_mode_ignores_the_source_address_and_compose_mode_ignores_tokens(settings, as_role):
+    built = build(settings, as_role)
+    review = reviewer({"tok-a": (AGENT_USER, "pod-a")})
+    # k8s: the token decides, from any address.
+    ok = run(post_raw(build_app(built.gateway, CallerAuth(mode="k8s", reviewer=review)),
+                      {**MCP_HEADERS, "Authorization": "Bearer tok-a"}, client=("192.168.1.9", 1)))
     assert ok.status_code == 200
+    # compose: a token from the wrong address is still refused.
+    refused = run(post_raw(build_app(built.gateway, compose_auth()),
+                           {**MCP_HEADERS, "Authorization": "Bearer tok-a"}, client=("192.168.1.9", 1)))
+    assert refused.status_code == 401
     with pytest.raises(ValueError, match="CALLER_AUTH"):
         CallerAuth(mode="nonsense")
 
@@ -820,13 +899,42 @@ def test_the_gateway_lists_the_reviewed_descriptors_to_the_agent(settings, as_ro
             assert listed[tool] == spec.expected_sha256(vulnerable=vulnerable), (tool, vulnerable)
 
 
+def test_a_body_over_64_kib_is_refused_and_the_gateway_stays_healthy(settings, admin, as_role):
+    lease = open_lease(admin, 1)
+    built = build(settings, as_role)
+    call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "read_ticket", "arguments": {}}}
+    big = {**call, "params": {**call["params"], "arguments": {"note": "x" * (100 * 1024)}}}
+
+    async def go():
+        app = build_app(built.gateway, compose_auth())
+        async with running(app):
+            async with httpx2.AsyncClient(transport=from_agent(app), base_url="http://g.test") as http:
+                headers = {**MCP_HEADERS, "X-Lease": lease}
+
+                async def chunks():  # no Content-Length: sent chunked
+                    for _ in range(100):
+                        yield b" " * 1024
+
+                declared = await http.post("/mcp", headers=headers, content=json.dumps(big))
+                streamed = await http.post("/mcp", headers=headers, content=chunks())
+                ran = (list(built.risk.asked), built.tools.forwarded(), calls(admin))
+                after = await http.post("/mcp", headers=headers, content=json.dumps(call))
+                return declared.status_code, streamed.status_code, ran, after.status_code, after.json()
+
+    declared, streamed, ran, after, answer = run(go())
+    assert (declared, streamed) == (413, 413)
+    assert ran == ([], [], [])                                                 # nothing ran
+    # The control: right after, the same app answers a normal call.
+    assert after == 200 and answer["result"]["isError"] is False and built.risk.asked == [(lease, "read_ticket")]
+
+
 def test_the_gateway_serves_nothing_but_the_mcp_endpoint(settings, as_role):
     built = build(settings, as_role)
 
     async def get(path, method="GET"):
         app = build_app(built.gateway, compose_auth())
         async with running(app):
-            async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://g.test") as http:
+            async with httpx2.AsyncClient(transport=from_agent(app), base_url="http://g.test") as http:
                 return (await http.request(method, path)).status_code
 
     assert run(get("/")) == 404 and run(get("/metrics")) == 404 and run(get("/healthz")) == 404
@@ -1025,6 +1133,12 @@ def test_the_gateway_does_not_start_without_what_it_needs(monkeypatch, tmp_path)
     monkeypatch.setenv("DB_PASSWORD_GATEWAY", "x")
     monkeypatch.setenv("CAPABILITIES_DIR", str(tmp_path / "nowhere"))
     with pytest.raises(SystemExit, match="manifests"):
+        gateway_main.main()
+    # Compose mode without the agent's subnet: no caller check would be left, so it does not start.
+    monkeypatch.delenv("CAPABILITIES_DIR")
+    monkeypatch.setenv("CALLER_AUTH", "compose")
+    monkeypatch.delenv("CALLER_SUBNET", raising=False)
+    with pytest.raises(SystemExit, match="CALLER_SUBNET"):
         gateway_main.main()
 
 
