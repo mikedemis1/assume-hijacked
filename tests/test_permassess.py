@@ -2,8 +2,10 @@
 
 The database tests change privileges inside a transaction, collect from the same connection
 and roll back, so nothing they grant outlives the test. The expected lines come from the
-fixture manifests in tests/fixtures/permassess/capabilities, which describe this repository's
-db/sql and compose.yaml.
+manifests in security/capabilities, which describe this repository's db/sql and compose.yaml.
+tests/fixtures/permassess/compose-config.json is `docker compose --profile '*' config
+--no-interpolate --format json` of compose.yaml with only the network fields kept; the test
+that reads compose.yaml with PyYAML fails when the two drift apart.
 """
 from __future__ import annotations
 
@@ -24,13 +26,19 @@ from secops.permassess import (collect_azure, collect_compose, collect_k8s, coll
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures" / "permassess"
-CAPABILITIES = FIXTURES / "capabilities"
-SOURCE = "tests/fixtures/permassess/capabilities"
+CAPABILITIES = ROOT / "security" / "capabilities"
+SOURCE = "security/capabilities"
 COMPOSE_JSON = FIXTURES / "compose-config.json"
 EXPECTED_FILE = ROOT / "security" / "expected-permissions.json"
 MATRIX_DOC = ROOT / "docs" / "permission-matrix.md"
 TOOL_ROLES = ("tool_read_ticket", "tool_lookup_account", "tool_request_disconnection",
               "tool_issue_bill_credit", "tool_set_temp_protection")
+
+
+def every_role_but_the_superuser(expected_doc) -> list[str]:
+    """PUBLIC reaches every role the database has, the bootstrap superuser aside."""
+    roles = {line.split()[2].rstrip(":") for line in expected_doc["pg"] if ": ATTRIBUTES " in line}
+    return sorted(roles - {"postgres"})
 
 
 @pytest.fixture(scope="module")
@@ -80,33 +88,37 @@ def test_extra_grant_fails(tx, expected_doc):
 
 
 def test_missing_grant_fails(tx, expected_doc):
-    tx.execute("REVOKE EXECUTE ON FUNCTION set_temp_protection(int) FROM tool_set_temp_protection")
+    tx.execute("REVOKE EXECUTE ON FUNCTION api_set_temp_protection(text) FROM tool_set_temp_protection")
     d = _pg_diff(tx, expected_doc)
     assert d.extra == []
     assert d.missing == ["pg role tool_set_temp_protection: "
-                         "EXECUTE ON FUNCTION public.set_temp_protection(integer)"]
+                         "EXECUTE ON FUNCTION public.api_set_temp_protection(text)"]
 
 
 def test_public_execute_is_expanded(tx, expected_doc):
-    tx.execute("GRANT EXECUTE ON FUNCTION set_temp_protection(int) TO PUBLIC")
-    # A new function without a REVOKE: PostgreSQL gives EXECUTE to PUBLIC by default.
+    tx.execute("GRANT EXECUTE ON FUNCTION api_set_temp_protection(text) TO PUBLIC")
+    # The default privileges of db/sql take EXECUTE from PUBLIC on every new function, so a function
+    # that PUBLIC may execute needs an explicit grant.
     tx.execute("CREATE FUNCTION public.leak() RETURNS int LANGUAGE sql AS 'SELECT 1'")
+    tx.execute("GRANT EXECUTE ON FUNCTION public.leak() TO PUBLIC")
     d = _pg_diff(tx, expected_doc)
-    roles = sorted({"approver", "executor", "flags_writer", *TOOL_ROLES})
+    roles = every_role_but_the_superuser(expected_doc)
     want = sorted(
         [f"pg role {r}: EXECUTE ON FUNCTION public.leak() (via PUBLIC)" for r in roles]
-        + [f"pg role {r}: EXECUTE ON FUNCTION public.set_temp_protection(integer) (via PUBLIC)"
+        + [f"pg role {r}: EXECUTE ON FUNCTION public.api_set_temp_protection(text) (via PUBLIC)"
            for r in roles])
     assert d.extra == want
     assert d.missing == []
 
 
 def test_public_expansion_reaches_a_new_role_and_its_attributes_are_reported(tx, expected_doc):
+    tx.execute("CREATE FUNCTION public.leak() RETURNS int LANGUAGE sql AS 'SELECT 1'")
+    tx.execute("GRANT EXECUTE ON FUNCTION public.leak() TO PUBLIC")
     tx.execute("CREATE ROLE intruder LOGIN BYPASSRLS")
     d = _pg_diff(tx, expected_doc)
     assert "pg role intruder: ATTRIBUTES LOGIN, BYPASSRLS" in d.extra
     assert "pg role intruder: CONNECT ON DATABASE (via PUBLIC)" in d.extra
-    assert "pg role intruder: EXECUTE ON FUNCTION public.check_credit() (via PUBLIC)" in d.extra
+    assert "pg role intruder: EXECUTE ON FUNCTION public.leak() (via PUBLIC)" in d.extra
 
 
 def test_role_membership_is_reported(tx, expected_doc):
@@ -126,13 +138,13 @@ def test_role_attribute_change_is_reported(tx, expected_doc):
 
 
 def test_security_definer_owner_is_reported(tx, expected_doc):
-    tx.execute("ALTER FUNCTION set_temp_protection(int) OWNER TO executor")
+    tx.execute("ALTER FUNCTION api_set_temp_protection(text) OWNER TO executor")
     tx.execute("CREATE FUNCTION public.as_superuser() RETURNS int LANGUAGE sql "
                "SECURITY DEFINER AS 'SELECT 1'")
     tx.execute("REVOKE ALL ON FUNCTION public.as_superuser() FROM PUBLIC")
     d = _pg_diff(tx, expected_doc)
-    assert "pg role executor: OWNS FUNCTION public.set_temp_protection(integer) SECURITY DEFINER" in d.extra
-    assert "pg role flags_writer: OWNS FUNCTION public.set_temp_protection(integer) SECURITY DEFINER" in d.missing
+    assert "pg role executor: OWNS FUNCTION public.api_set_temp_protection(text) SECURITY DEFINER" in d.extra
+    assert "pg role api_owner: OWNS FUNCTION public.api_set_temp_protection(text) SECURITY DEFINER" in d.missing
     # Owned by the superuser that runs the scripts: still listed, it runs with superuser rights.
     assert "pg role postgres: OWNS FUNCTION public.as_superuser() SECURITY DEFINER" in d.extra
 
@@ -145,14 +157,15 @@ def test_column_grants_are_one_line_per_column(tx, expected_doc):
 
 
 def test_row_level_security_and_policies_are_reported(tx, expected_doc):
-    tx.execute("ALTER TABLE tickets ENABLE ROW LEVEL SECURITY")
-    tx.execute("ALTER TABLE tickets FORCE ROW LEVEL SECURITY")
-    tx.execute("CREATE POLICY trusted_all ON tickets FOR ALL TO executor, approver "
+    tx.execute("CREATE TABLE public.rls_probe (id int)")
+    tx.execute("ALTER TABLE rls_probe ENABLE ROW LEVEL SECURITY")
+    tx.execute("ALTER TABLE rls_probe FORCE ROW LEVEL SECURITY")
+    tx.execute("CREATE POLICY trusted_all ON rls_probe FOR ALL TO executor, approver "
                "USING (true) WITH CHECK (true)")
     tx.execute("CREATE POLICY everyone ON accounts AS RESTRICTIVE FOR SELECT USING (id > 0)")
     d = _pg_diff(tx, expected_doc)
-    assert "pg table public.tickets: ROW LEVEL SECURITY, FORCED" in d.extra
-    assert ("pg role executor: POLICY trusted_all ON public.tickets FOR ALL USING (true) "
+    assert "pg table public.rls_probe: ROW LEVEL SECURITY, FORCED" in d.extra
+    assert ("pg role executor: POLICY trusted_all ON public.rls_probe FOR ALL USING (true) "
             "WITH CHECK (true)") in d.extra
     # A policy without TO applies to PUBLIC: expanded like a grant.
     assert ("pg role tool_read_ticket: POLICY everyone ON public.accounts AS RESTRICTIVE "
@@ -160,26 +173,26 @@ def test_row_level_security_and_policies_are_reported(tx, expected_doc):
 
 
 def test_default_privileges_are_reported(tx, expected_doc):
-    tx.execute("ALTER DEFAULT PRIVILEGES FOR ROLE flags_writer REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
+    tx.execute("ALTER DEFAULT PRIVILEGES FOR ROLE executor REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC")
     tx.execute("ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public "
                "GRANT SELECT ON TABLES TO approver")
     d = _pg_diff(tx, expected_doc)
     assert d.extra == [
-        "pg role flags_writer: DEFAULT PRIVILEGES ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC",
+        "pg role executor: DEFAULT PRIVILEGES ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC",
         "pg role postgres: DEFAULT PRIVILEGES IN SCHEMA public ON TABLES GRANT SELECT TO approver"]
 
 
 def test_functions_in_another_schema_and_their_owners_are_reported(tx, expected_doc):
     tx.execute("CREATE ROLE crypto_owner NOLOGIN")
-    tx.execute("CREATE SCHEMA crypto AUTHORIZATION crypto_owner")
-    tx.execute("CREATE FUNCTION crypto.rand(n int) RETURNS int LANGUAGE sql AS 'SELECT n'")
-    tx.execute("REVOKE ALL ON FUNCTION crypto.rand(int) FROM PUBLIC")
-    tx.execute("GRANT USAGE ON SCHEMA crypto TO executor")
-    tx.execute("GRANT EXECUTE ON FUNCTION crypto.rand(int) TO executor")
+    tx.execute("CREATE SCHEMA extras AUTHORIZATION crypto_owner")
+    tx.execute("CREATE FUNCTION extras.rand(n int) RETURNS int LANGUAGE sql AS 'SELECT n'")
+    tx.execute("REVOKE ALL ON FUNCTION extras.rand(int) FROM PUBLIC")
+    tx.execute("GRANT USAGE ON SCHEMA extras TO executor")
+    tx.execute("GRANT EXECUTE ON FUNCTION extras.rand(int) TO executor")
     d = _pg_diff(tx, expected_doc)
-    assert "pg role crypto_owner: OWNS SCHEMA crypto" in d.extra
-    assert "pg role executor: USAGE ON SCHEMA crypto" in d.extra
-    assert "pg role executor: EXECUTE ON FUNCTION crypto.rand(integer)" in d.extra
+    assert "pg role crypto_owner: OWNS SCHEMA extras" in d.extra
+    assert "pg role executor: USAGE ON SCHEMA extras" in d.extra
+    assert "pg role executor: EXECUTE ON FUNCTION extras.rand(integer)" in d.extra
 
 
 def test_the_collector_only_reads(tx, db_env):
@@ -296,7 +309,7 @@ def test_compose_fixture_matches_the_expected_edges(expected_doc):
     d = diff.compare("compose", expected_doc, result)
     assert d.equal, (d.extra, d.missing)
     assert "compose db -> internet" in result.lines
-    assert "console -> db" in d.not_deployed
+    assert "db-migrate -> db" in d.not_deployed
 
 
 def test_compose_yaml_read_as_ci_reads_it_gives_the_fixture_lines():
@@ -312,11 +325,13 @@ def test_compose_yaml_read_as_ci_reads_it_gives_the_fixture_lines():
 def test_extra_network_edge_fails(expected_doc):
     config = _compose()
     config["networks"]["edge_x"] = {"internal": True}
-    config["services"]["fake-sms"] = {"networks": {"edge_x": None}}
+    config["services"]["agent"]["networks"]["edge_x"] = None
     config["services"]["tool-read-ticket"]["networks"]["edge_x"] = None
-    config["services"]["executor"]["networks"]["hostaccess"] = None
+    # A network that is not internal routes out; no other service is on it.
+    config["networks"]["open"] = {}
+    config["services"]["executor"]["networks"]["open"] = None
     d = diff.compare("compose", expected_doc, collect_compose.collect(config))
-    assert d.extra == ["compose executor -> internet", "compose fake-sms <-> tool-read-ticket"]
+    assert d.extra == ["compose agent <-> tool-read-ticket", "compose executor -> internet"]
     assert d.missing == []
 
 
@@ -326,8 +341,8 @@ def test_missing_network_edge_fails(expected_doc):
     config["networks"]["agent_only"] = {"internal": True}
     d = diff.compare("compose", expected_doc, collect_compose.collect(config))
     assert d.extra == []
-    assert "compose agent <-> tool-read-ticket" in d.missing
-    assert "compose agent <-> db" in d.missing
+    assert d.missing == ["compose agent <-> dispatcher", "compose agent <-> llm-gateway",
+                         "compose agent <-> tool-gateway"]
 
 
 def test_compose_network_modes():
@@ -491,6 +506,7 @@ def test_service_account_without_a_running_pod_is_still_assessed(expected_doc):
 
 def test_declared_rbac_of_a_service_account_missing_from_the_cluster_fails(expected_doc):
     doc = copy.deepcopy(expected_doc)
+    doc["edges"] = []  # only the account is under test: the three-component cluster has no real edges
     doc["k8s"] = ["k8s serviceaccount dispatcher: create jobs.batch"]
     run, _ = _cluster(DEFAULT_DENY)
     d = diff.compare("k8s", doc, collect_k8s.collect(run))
@@ -557,10 +573,11 @@ def test_report_lists_blast_radius_per_component(expected_doc):
     for component in ("tool-read-ticket", "tool-set-temp-protection", "executor", "console", "db"):
         assert f"### {component}" in md
     section = md.split("### tool-set-temp-protection")[1].split("\n### ")[0]
-    assert "set_temp_protection(integer), runs as flags_writer" in section
-    assert "Through functions owned by flags_writer" in section
+    assert "api_set_temp_protection(text), runs as api_owner" in section
+    assert "Through functions owned by api_owner" in section
     assert "reads flags" in section and "writes INSERT flags" in section
-    assert "| Connects to | db; tool-issue-bill-credit;" in section
+    assert "| Connects to | db |" in section
+    assert "| Accepts connections from | tool-gateway |" in section
     lookup = md.split("### tool-lookup-account")[1].split("\n### ")[0]
     assert "customers (id, name)" in lookup and "phone" not in lookup
     assert "Key Vault Secrets User on kv-tool-lookup-account" in lookup
@@ -585,11 +602,11 @@ def _render_with(expected_doc, *lines) -> str:
 
 def test_report_follows_public_execute_into_security_definer_functions(expected_doc):
     md = _render_with(expected_doc, *(
-        f"pg role {r}: EXECUTE ON FUNCTION public.set_temp_protection(integer) (via PUBLIC)"
+        f"pg role {r}: EXECUTE ON FUNCTION public.api_set_temp_protection(text) (via PUBLIC)"
         for r in ("tool_read_ticket", "executor")))
     section = _section(md, "tool-read-ticket")
-    assert "set_temp_protection(integer) (via PUBLIC), runs as flags_writer" in _row(section, "Executes")
-    assert "writes INSERT flags" in _row(section, "Through functions owned by flags_writer")
+    assert "api_set_temp_protection(text) (via PUBLIC), runs as api_owner" in _row(section, "Executes")
+    assert "writes INSERT flags" in _row(section, "Through functions owned by api_owner")
 
 
 def test_report_counts_inherited_privileges(expected_doc):
@@ -749,4 +766,4 @@ def test_unused_grant_warns_but_does_not_fail(tmp_path, db_env):
     assert code == 0
     assert result["warnings"] == [
         "warning: tool-set-temp-protection is granted tool set_temp_protection (holds EXECUTE ON "
-        "FUNCTION public.set_temp_protection(integer)), but no call in the tool_calls log used it"]
+        "FUNCTION public.api_set_temp_protection(text)), but no call in the tool_calls log used it"]

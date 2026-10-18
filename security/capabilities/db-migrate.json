@@ -1,0 +1,78 @@
+{
+  "component": "db-migrate",
+  "description": "Azure only. A Job that sets up the database server (the schema, once) and gives every workload database role a new password, stored in that workload's Key Vault (python -m app.dbsetup.passwords). It signs in to PostgreSQL as the Entra administrator of the server, so it has no password role of its own. It runs at install and at an explicit rotation, never on a plain upgrade.",
+  "db": {
+    "role": null,
+    "execute": [],
+    "tables": {}
+  },
+  "network": {
+    "ingress_from": [],
+    "egress_to": [
+      "db",
+      "internet"
+    ],
+    "dns": [
+      "cluster",
+      "login.microsoftonline.com",
+      "vault.azure.net"
+    ]
+  },
+  "k8s": {
+    "service_account": "db-migrate",
+    "rbac": []
+  },
+  "azure": {
+    "identity": "id-db-migrate",
+    "roles": [
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-console"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-dispatcher"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-executor"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-register-sync"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-risk-engine"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-tool-gateway"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-tool-issue-bill-credit"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-tool-lookup-account"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-tool-read-ticket"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-tool-request-disconnection"
+      },
+      {
+        "role": "Key Vault Secrets Officer",
+        "scope": "kv-tool-set-temp-protection"
+      }
+    ]
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}

@@ -45,6 +45,22 @@ def test_manifests_are_named_after_their_component_and_use_known_keys():
         assert {"component", "db", "network", "k8s", "azure", "runtime_class", "mcp"} <= set(manifest), name
 
 
+def test_the_database_setup_job_has_a_manifest_that_matches_its_chart_and_grants():
+    """db-migrate runs only in Azure. Its manifest must agree with the chart (service account,
+    namespace-independent name) and with the vault rule: Secrets Officer on the vault of every
+    component that has a database role, and nothing else."""
+    found = manifests()
+    manifest = found["db-migrate"]
+    assert manifest["k8s"]["service_account"] == "db-migrate"
+    assert manifest["db"]["role"] is None  # it signs in as the Entra administrator
+    granted = {r["scope"] for r in manifest["azure"]["roles"]}
+    assert {r["role"] for r in manifest["azure"]["roles"]} == {"Key Vault Secrets Officer"}
+    wanted = {"kv-" + name for name, m in found.items() if m["db"]["role"] and name != "db"}
+    assert granted == wanted
+    assert manifest["network"]["ingress_from"] == []
+    assert set(manifest["network"]["egress_to"]) == {"db", "internet"}
+
+
 def test_every_tool_and_the_database_has_a_manifest():
     found = manifests()
     assert set(TOOL_COMPONENTS.values()) <= set(found)
@@ -311,9 +327,15 @@ def test_the_gateway_manifest_matches_its_database_role(admin):
     )
 
 
+# Components that exist only in Azure: the database setup Job. Compose has no service for them.
+AZURE_ONLY = {"db-migrate"}
+
+
 def edges_of_manifests() -> set[frozenset]:
     edges = set()
     for name, manifest in manifests().items():
+        if name in AZURE_ONLY:
+            continue
         for peer in manifest["network"]["egress_to"] + manifest["network"]["ingress_from"]:
             if peer != "internet":   # hostaccess, the db's published port: not an edge between two services
                 edges.add(frozenset({name, peer}))
