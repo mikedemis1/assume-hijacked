@@ -145,6 +145,11 @@ CREATE TRIGGER flag_removal_approvals_no_truncate BEFORE TRUNCATE ON flag_remova
 
 -- The reason stays in the table (staff read it in the console); the event names ids only, since
 -- a reason may mention the equipment.
+--
+-- It takes the home's advisory lock first, like every other writer of a home's flag. A request is
+-- filed against the flag that exists at that moment (approve_flag_removal compares the request's
+-- time with the flag's), so it must not be filed while a removal, or a flag being added back, is
+-- half done for the same home.
 CREATE FUNCTION request_flag_removal(p_sp text, p_reason text, p_by text) RETURNS int
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
@@ -155,6 +160,7 @@ BEGIN
     IF session_user <> 'approver' THEN
         RAISE EXCEPTION '% may not ask to remove a flag', session_user;
     END IF;
+    PERFORM pg_advisory_xact_lock(hashtext(p_sp));
     IF NOT EXISTS (SELECT 1 FROM public.flags WHERE supply_point_id = p_sp) THEN
         RAISE EXCEPTION 'no protection flag on %', left(p_sp, 40);
     END IF;

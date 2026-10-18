@@ -1,0 +1,52 @@
+{
+  "component": "tool-lookup-account",
+  "description": "The lookup_account tool. Its role may run one function, which reads the ticket from the lease; it holds no table grant.",
+  "db": {
+    "role": "tool_lookup_account",
+    "login": true,
+    "connection_limit": 5,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {},
+    "execute": [
+      "api_lookup_account(text)"
+    ]
+  },
+  "network": {
+    "ingress_from": [
+      "agent"
+    ],
+    "egress_to": [
+      "db"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "tool-lookup-account",
+    "rbac": []
+  },
+  "azure": {
+    "identity": "id-tool-lookup-account",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-tool-lookup-account"
+      }
+    ]
+  },
+  "runtime_class": "kata-vm-isolation",
+  "mcp": {
+    "tools": [
+      {
+        "name": "lookup_account",
+        "args": {},
+        "descriptor_sha256": "ba03c60e1516e2135aeb53dbc30b06b662733ff23bb84e423472b455320be795"
+      }
+    ]
+  }
+}

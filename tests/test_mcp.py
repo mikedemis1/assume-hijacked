@@ -3,10 +3,11 @@ import json
 from app.agent.gateway import ToolGateway
 from app.tools import serve
 from tests.conftest import open_lease
+from tests.toolhttp import KEYS, AppToolGateway
 
 
 def gateway(settings, *tools):
-    return ToolGateway({t: serve.build_server(t, settings) for t in tools})
+    return AppToolGateway(settings, *KEYS, tools=tools)
 
 
 def test_lookup_account_over_mcp(settings, admin):
@@ -31,5 +32,5 @@ def test_each_tool_server_exists(settings):
 
 
 def test_unreachable_tool_comes_back_as_error_text():
-    out = ToolGateway({"read_ticket": "http://127.0.0.1:9/mcp"}).call("read_ticket", {"lease": "0" * 64})
+    out = ToolGateway({"read_ticket": "http://127.0.0.1:9/mcp"}, KEYS[0]).call("read_ticket", {"lease": "0" * 64})
     assert out.startswith("ERROR:")

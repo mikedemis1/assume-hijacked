@@ -1,8 +1,8 @@
 """What every tool shares: it reaches the database only through its one api_* function.
 
 A tool never names a ticket. It passes the lease it was given, and the function reads the ticket
-from the lease (db/sql/05-lease.sql). Until the tool gateway signs a token for each call (task
-A7), the lease arrives as a tool argument set by the agent code, never by the model.
+from the lease (db/sql/05-lease.sql). The lease comes from the signed token of the request
+(app/tools/serve.py, app/security/middleware.py), never from a tool argument.
 """
 
 from __future__ import annotations

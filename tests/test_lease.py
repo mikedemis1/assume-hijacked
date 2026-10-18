@@ -277,6 +277,42 @@ def test_no_function_in_public_is_executable_by_public(admin):
     assert [r["f"] for r in rows] == []
 
 
+def test_pgcrypto_is_in_its_own_schema_and_only_the_lease_owner_may_use_it(admin):
+    # An extension's functions are executable by PUBLIC unless the schema revokes it. Put in
+    # `public` they would show up as a grant to every role in the permission assessment (and be
+    # callable by every tool role). So they live in `crypto`, closed to PUBLIC, and the one role
+    # that needs a random number (lease_owner, for open_lease) is granted that one function.
+    ext = admin.execute(
+        "SELECT extnamespace::regnamespace::text AS schema FROM pg_extension WHERE extname = 'pgcrypto'"
+    ).fetchone()
+    assert ext == {"schema": "crypto"}
+    in_public = admin.execute(
+        "SELECT p.oid::regprocedure::text AS f FROM pg_proc p JOIN pg_depend d ON d.objid = p.oid "
+        "JOIN pg_extension e ON e.oid = d.refobjid AND d.deptype = 'e' "
+        "WHERE e.extname = 'pgcrypto' AND p.pronamespace = 'public'::regnamespace"
+    ).fetchall()
+    assert in_public == []
+    rows = admin.execute(
+        "SELECT r.rolname, p.oid::regprocedure::text AS f FROM pg_roles r "
+        "JOIN pg_proc p ON p.pronamespace = 'crypto'::regnamespace "
+        "WHERE NOT r.rolsuper AND r.rolname !~ '^pg_' AND has_function_privilege(r.oid, p.oid, 'EXECUTE') "
+        "ORDER BY 1, 2"
+    ).fetchall()
+    assert [(r["rolname"], r["f"]) for r in rows] == [("lease_owner", "crypto.gen_random_bytes(integer)")]
+    users = admin.execute(
+        "SELECT rolname FROM pg_roles WHERE NOT rolsuper AND rolname !~ '^pg_' "
+        "AND has_schema_privilege(oid, 'crypto', 'USAGE') ORDER BY 1"
+    ).fetchall()
+    assert [r["rolname"] for r in users] == ["lease_owner"]
+
+
+def test_a_tool_role_cannot_call_pgcrypto(as_role):
+    tool = as_role("tool_read_ticket")
+    for call in ("SELECT crypto.digest('x', 'sha256')", "SELECT crypto.gen_random_bytes(8)"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            tool.execute(call)
+
+
 def test_a_new_function_gets_no_public_execute_by_default(admin):
     # The default privilege from 01-schema.sql: a function created without any REVOKE.
     with admin.transaction():

@@ -149,6 +149,7 @@ pip install -e ".[dev]"
 
 Copy-Item .env.example .env      # then replace every change-me-* password
 
+sh scripts/gen-gateway-key.sh   # the key pair the tools check calls with (build/keys/, not in git)
 docker compose up -d --build
 docker compose --profile manual run --rm agent python -m app.agent.main 4   # the attack ticket
 python -m pytest                 # walls

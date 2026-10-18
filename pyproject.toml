@@ -9,6 +9,12 @@ requires-python = ">=3.12"
 dependencies = [
     "mcp==2.3.0",
     "psycopg[binary]==3.3.6",
+    # Imported by app/security and app/tools/serve.py. Already locked as dependencies of mcp; named
+    # here because the code uses them directly.
+    "pyjwt[crypto]==2.15.1",
+    "httpx2==2.13.1",
+    "starlette==1.8.0",
+    "uvicorn==0.54.0",
 ]
 
 [project.optional-dependencies]

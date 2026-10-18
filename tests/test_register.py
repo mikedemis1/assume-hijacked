@@ -166,6 +166,32 @@ def test_sync_add_flag_takes_the_home_lock(admin, syncer):
     assert "SP-1001" in flags(admin)
 
 
+def test_request_flag_removal_takes_the_home_lock(admin, staff):
+    # Every writer of a home's flag takes this lock; so must the request for its removal, or a
+    # request could be filed in the middle of a removal or of a flag being added back, and its
+    # time would not tell whether it was raised against the flag that is there now.
+    staff.execute("SET lock_timeout = '300ms'")
+    admin.execute("SELECT pg_advisory_lock(hashtext('SP-1003'))")
+    try:
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            request_removal(staff)
+    finally:
+        admin.execute("SELECT pg_advisory_unlock_all()")
+    assert admin.execute("SELECT count(*) AS n FROM flag_removal_requests").fetchone()["n"] == 0
+    request_removal(staff)  # control: lock free
+    assert admin.execute("SELECT count(*) AS n FROM flag_removal_requests").fetchone()["n"] == 1
+
+
+def test_a_request_for_another_home_does_not_wait_for_the_lock(admin, staff):
+    admin.execute("INSERT INTO flags (supply_point_id, source) VALUES ('SP-1001', 'state_register')")
+    staff.execute("SET lock_timeout = '300ms'")
+    admin.execute("SELECT pg_advisory_lock(hashtext('SP-1003'))")
+    try:
+        request_removal(staff, sp="SP-1001")
+    finally:
+        admin.execute("SELECT pg_advisory_unlock_all()")
+
+
 def test_sync_heartbeat_marks_the_register_fresh(admin, syncer):
     admin.execute("UPDATE register_sync SET last_success = now() - interval '30 hours'")
     before = last_success(admin)

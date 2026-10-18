@@ -40,6 +40,8 @@ venv/
 .env
 .env.*
 !.env.example
+# The Compose stack's gateway key pair (scripts/gen-gateway-key.sh)
+build/keys/
 *.pem
 *.key
 

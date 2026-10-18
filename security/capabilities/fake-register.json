@@ -1,0 +1,30 @@
+{
+  "component": "fake-register",
+  "description": "Stand-in for the state register of protected homes.",
+  "db": {
+    "role": null,
+    "execute": [],
+    "tables": {}
+  },
+  "network": {
+    "ingress_from": [
+      "register-sync"
+    ],
+    "egress_to": [],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "fake-register",
+    "rbac": []
+  },
+  "azure": {
+    "identity": null,
+    "roles": []
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}

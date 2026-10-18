@@ -1,0 +1,56 @@
+{
+  "component": "tool-issue-bill-credit",
+  "description": "The issue_bill_credit tool. Its role may run one function, which reads the ticket from the lease; it holds no table grant.",
+  "db": {
+    "role": "tool_issue_bill_credit",
+    "login": true,
+    "connection_limit": 5,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {},
+    "execute": [
+      "api_request_credit(text, numeric, text, integer)"
+    ]
+  },
+  "network": {
+    "ingress_from": [
+      "agent"
+    ],
+    "egress_to": [
+      "db"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "tool-issue-bill-credit",
+    "rbac": []
+  },
+  "azure": {
+    "identity": "id-tool-issue-bill-credit",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-tool-issue-bill-credit"
+      }
+    ]
+  },
+  "runtime_class": "kata-vm-isolation",
+  "mcp": {
+    "tools": [
+      {
+        "name": "issue_bill_credit",
+        "args": {
+          "amount_eur": "number",
+          "reason": "string",
+          "evidence_ref": "integer"
+        },
+        "descriptor_sha256": "e6d05e55ddb990ef37574c3d3b51e2c2ea6cfd4d05e00f9ca7b5a9d3abb20f06"
+      }
+    ]
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "component": "tool-request-disconnection",
+  "description": "The request_disconnection tool. Its role may run one function, which reads the ticket from the lease; it holds no table grant.",
+  "db": {
+    "role": "tool_request_disconnection",
+    "login": true,
+    "connection_limit": 5,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {},
+    "execute": [
+      "api_request_moveout(text, date)"
+    ]
+  },
+  "network": {
+    "ingress_from": [
+      "agent"
+    ],
+    "egress_to": [
+      "db"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "tool-request-disconnection",
+    "rbac": []
+  },
+  "azure": {
+    "identity": "id-tool-request-disconnection",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-tool-request-disconnection"
+      }
+    ]
+  },
+  "runtime_class": "kata-vm-isolation",
+  "mcp": {
+    "tools": [
+      {
+        "name": "request_disconnection",
+        "args": {
+          "move_out_date": "string"
+        },
+        "descriptor_sha256": "64725a2f769a67b02f83581f15afbf72df6f0b55cedb9d2c5372bd1de2b03148"
+      }
+    ]
+  }
+}

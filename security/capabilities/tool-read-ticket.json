@@ -1,0 +1,52 @@
+{
+  "component": "tool-read-ticket",
+  "description": "The read_ticket tool. Its role may run one function, which reads the ticket from the lease; it holds no table grant.",
+  "db": {
+    "role": "tool_read_ticket",
+    "login": true,
+    "connection_limit": 5,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {},
+    "execute": [
+      "api_read_ticket(text)"
+    ]
+  },
+  "network": {
+    "ingress_from": [
+      "agent"
+    ],
+    "egress_to": [
+      "db"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "tool-read-ticket",
+    "rbac": []
+  },
+  "azure": {
+    "identity": "id-tool-read-ticket",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-tool-read-ticket"
+      }
+    ]
+  },
+  "runtime_class": "kata-vm-isolation",
+  "mcp": {
+    "tools": [
+      {
+        "name": "read_ticket",
+        "args": {},
+        "descriptor_sha256": "46023b21d47480f3b10948ed534fae5a8f97dcc1abbe8d6a8a72ad21aa960af9"
+      }
+    ]
+  }
+}

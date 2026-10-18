@@ -165,6 +165,66 @@ def test_attack_ticket_through_the_real_stack_leaks_nothing_and_is_logged():
     assert "customer_id" in json.dumps(dropped), dropped
 
 
+# Runs inside the agent container, which holds the signing key for now and reaches every tool: send
+# the tool one request each way and print the status codes as JSON.
+TOKEN_CHECKS = """
+import json, os, time, urllib.error, urllib.request
+from app.security.tokens import load_private_key, mint_tool_token
+
+key = load_private_key(os.environ["GATEWAY_SIGNING_KEY_FILE"])
+host, tool = {host!r}, {tool!r}
+lease = "ab" * 32
+
+def post(token=None):
+    request = urllib.request.Request(
+        f"http://{{host}}:8000/mcp",
+        data=json.dumps({{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}}).encode(),
+        headers={{"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}},
+    )
+    if token:
+        request.add_header("Authorization", "Bearer " + token)
+    try:
+        return urllib.request.urlopen(request, timeout=10).status
+    except urllib.error.HTTPError as err:
+        return err.code
+
+now = time.time()
+good = mint_tool_token(key, tool, lease, now)
+print(json.dumps({{
+    "no_token": post(),
+    "garbage": post("not.a.token"),
+    "wrong_audience": post(mint_tool_token(key, "read_ticket" if tool != "read_ticket" else "lookup_account", lease, now)),
+    "expired": post(mint_tool_token(key, tool, lease, now - 120)),
+    "good": post(good),
+    "replay": post(good),
+}}))
+"""
+
+
+@pytest.mark.parametrize("tool, host", list(zip(TOOLS, TOOL_HOSTS)))
+def test_a_tool_container_accepts_one_good_token_and_refuses_everything_else(tool, host):
+    done = compose("run", "--rm", "agent", "python", "-c", TOKEN_CHECKS.format(host=host, tool=tool), timeout=120)
+    assert done.returncode == 0, f"stdout: {done.stdout}\nstderr: {done.stderr}"
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == {
+        "no_token": 401, "garbage": 401, "wrong_audience": 401, "expired": 401, "good": 200, "replay": 401,
+    }
+
+
+def secret_files(service):
+    done = compose("exec", "-T", service, "ls", "/run/secrets", timeout=60)
+    return sorted(done.stdout.split()) if done.returncode == 0 else []
+
+
+@pytest.mark.parametrize("host", TOOL_HOSTS)
+def test_a_tool_container_holds_the_public_key_and_not_the_signing_key(host):
+    assert secret_files(host) == ["gateway_public_key"]
+
+
+@pytest.mark.parametrize("service", ["executor", "risk-engine", "register-sync", "db", *FAKE_PORTS])
+def test_no_other_container_holds_a_gateway_key(service):
+    assert secret_files(service) == []
+
+
 def security_events(stderr):
     """The JSON event lines in stderr. Compose adds its own lines there; anything that is not a
     JSON object with a "kind" is skipped."""

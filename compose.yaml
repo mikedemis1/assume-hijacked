@@ -28,6 +28,15 @@ x-db-common: &db-common
 secrets:
   pip_cert:
     file: ${PIP_CERT_FILE:-./build/no-pip-cert.empty}
+  # The tool gateway's key pair (sh scripts/gen-gateway-key.sh writes it; build/keys/ is not in the
+  # repository). Every tool holds the public key and checks each request's token with it.
+  gateway_public_key:
+    file: ./build/keys/gateway.pub
+  # TEMPORARY: the private key signs the tokens. Only the agent holds it for now, because it calls
+  # the tools itself until the tool gateway runs as its own service; that service will be the only
+  # holder.
+  gateway_signing_key:
+    file: ./build/keys/gateway.pem
 
 # One network per allowed edge between two services, all `internal: true` (no route out). A service
 # is on exactly the networks of the edges it is allowed to use and on no other, so a hijacked
@@ -121,9 +130,13 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_READ_TICKET: ${DB_PASSWORD_TOOL_READ_TICKET:?set DB_PASSWORD_TOOL_READ_TICKET in .env}
+      TOOL_NAME: read_ticket
+      GATEWAY_PUBLIC_KEY_FILE: /run/secrets/gateway_public_key
     networks:
       - edge_read_ticket_db
       - edge_agent_read_ticket
+    secrets:
+      - gateway_public_key
     command: ["python", "-m", "app.tools.serve", "read_ticket"]
 
   tool-lookup-account:
@@ -131,9 +144,13 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_LOOKUP_ACCOUNT: ${DB_PASSWORD_TOOL_LOOKUP_ACCOUNT:?set DB_PASSWORD_TOOL_LOOKUP_ACCOUNT in .env}
+      TOOL_NAME: lookup_account
+      GATEWAY_PUBLIC_KEY_FILE: /run/secrets/gateway_public_key
     networks:
       - edge_lookup_account_db
       - edge_agent_lookup_account
+    secrets:
+      - gateway_public_key
     command: ["python", "-m", "app.tools.serve", "lookup_account"]
 
   tool-request-disconnection:
@@ -141,9 +158,13 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_REQUEST_DISCONNECTION: ${DB_PASSWORD_TOOL_REQUEST_DISCONNECTION:?set DB_PASSWORD_TOOL_REQUEST_DISCONNECTION in .env}
+      TOOL_NAME: request_disconnection
+      GATEWAY_PUBLIC_KEY_FILE: /run/secrets/gateway_public_key
     networks:
       - edge_request_disconnection_db
       - edge_agent_request_disconnection
+    secrets:
+      - gateway_public_key
     command: ["python", "-m", "app.tools.serve", "request_disconnection"]
 
   tool-issue-bill-credit:
@@ -151,9 +172,13 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT: ${DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT:?set DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT in .env}
+      TOOL_NAME: issue_bill_credit
+      GATEWAY_PUBLIC_KEY_FILE: /run/secrets/gateway_public_key
     networks:
       - edge_issue_bill_credit_db
       - edge_agent_issue_bill_credit
+    secrets:
+      - gateway_public_key
     command: ["python", "-m", "app.tools.serve", "issue_bill_credit"]
 
   tool-set-temp-protection:
@@ -161,9 +186,13 @@ services:
     environment:
       <<: *db-common
       DB_PASSWORD_TOOL_SET_TEMP_PROTECTION: ${DB_PASSWORD_TOOL_SET_TEMP_PROTECTION:?set DB_PASSWORD_TOOL_SET_TEMP_PROTECTION in .env}
+      TOOL_NAME: set_temp_protection
+      GATEWAY_PUBLIC_KEY_FILE: /run/secrets/gateway_public_key
     networks:
       - edge_set_temp_protection_db
       - edge_agent_set_temp_protection
+    secrets:
+      - gateway_public_key
     command: ["python", "-m", "app.tools.serve", "set_temp_protection"]
 
   executor:
@@ -271,8 +300,11 @@ services:
       - tool-request-disconnection
       - tool-issue-bill-credit
       - tool-set-temp-protection
+    secrets:
+      - gateway_signing_key
     environment:
       VULNERABLE: ${VULNERABLE:-false}
+      GATEWAY_SIGNING_KEY_FILE: /run/secrets/gateway_signing_key
       TOOL_URL_READ_TICKET: http://tool-read-ticket:8000/mcp
       TOOL_URL_LOOKUP_ACCOUNT: http://tool-lookup-account:8000/mcp
       TOOL_URL_REQUEST_DISCONNECTION: http://tool-request-disconnection:8000/mcp

@@ -1,0 +1,665 @@
+{
+  "component": "db",
+  "description": "The database itself: the roles that own the SECURITY DEFINER functions (no login), what PUBLIC holds, and row-level security. The db is also on hostaccess, the one network with a route out, so the host can reach its port.",
+  "db": {
+    "role": null,
+    "roles": [
+      {
+        "role": "postgres",
+        "bootstrap_superuser": true,
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
+        ]
+      },
+      {
+        "role": "api_owner",
+        "login": false,
+        "schemas": {
+          "public": [
+            "USAGE"
+          ]
+        },
+        "tables": {
+          "accounts": [
+            "SELECT (customer_id, id, status, supply_point_id, tariff)"
+          ],
+          "action_requests": [
+            "INSERT (account_id, amount_eur, evidence_ref, kind, move_out_date, reason, ticket_id)",
+            "SELECT (id)"
+          ],
+          "action_requests_id_seq": [
+            "USAGE"
+          ],
+          "customers": [
+            "SELECT (id, name)"
+          ],
+          "events": [
+            "INSERT (actor, detail, kind)"
+          ],
+          "events_id_seq": [
+            "USAGE"
+          ],
+          "flags": [
+            "INSERT (source, supply_point_id)",
+            "SELECT (supply_point_id)"
+          ],
+          "leases": [
+            "SELECT (allowed_tools, expires_at, revoked, ticket_id, token_hash)"
+          ],
+          "supply_points": [
+            "SELECT (address, id)"
+          ],
+          "tickets": [
+            "SELECT (body, customer_id, id)"
+          ]
+        },
+        "execute": [
+          "pg_catalog.pg_advisory_lock(bigint)",
+          "pg_catalog.pg_advisory_lock(int, int)",
+          "pg_catalog.pg_advisory_lock_shared(bigint)",
+          "pg_catalog.pg_advisory_lock_shared(int, int)",
+          "pg_catalog.pg_try_advisory_lock(bigint)",
+          "pg_catalog.pg_try_advisory_lock(int, int)",
+          "pg_catalog.pg_try_advisory_lock_shared(bigint)",
+          "pg_catalog.pg_try_advisory_lock_shared(int, int)",
+          "pg_catalog.pg_advisory_xact_lock(bigint)",
+          "pg_catalog.pg_advisory_xact_lock(int, int)",
+          "pg_catalog.pg_advisory_xact_lock_shared(bigint)",
+          "pg_catalog.pg_advisory_xact_lock_shared(int, int)",
+          "pg_catalog.pg_try_advisory_xact_lock(bigint)",
+          "pg_catalog.pg_try_advisory_xact_lock(int, int)",
+          "pg_catalog.pg_try_advisory_xact_lock_shared(bigint)",
+          "pg_catalog.pg_try_advisory_xact_lock_shared(int, int)"
+        ],
+        "owns": [
+          "FUNCTION api_lookup_account(text) SECURITY DEFINER",
+          "FUNCTION api_read_ticket(text) SECURITY DEFINER",
+          "FUNCTION api_request_credit(text, numeric, text, integer) SECURITY DEFINER",
+          "FUNCTION api_request_moveout(text, date) SECURITY DEFINER",
+          "FUNCTION api_set_temp_protection(text) SECURITY DEFINER",
+          "FUNCTION lease_ticket_for_tool(text, text)"
+        ],
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
+        ]
+      },
+      {
+        "role": "lease_owner",
+        "login": false,
+        "schemas": {
+          "crypto": [
+            "USAGE"
+          ],
+          "public": [
+            "USAGE"
+          ]
+        },
+        "tables": {
+          "leases": [
+            "INSERT",
+            "SELECT",
+            "UPDATE (revoked)"
+          ],
+          "leases_id_seq": [
+            "USAGE"
+          ]
+        },
+        "execute": [
+          "crypto.gen_random_bytes(integer)"
+        ],
+        "owns": [
+          "FUNCTION lease_scope(text) SECURITY DEFINER",
+          "FUNCTION open_lease(integer, text[], text) SECURITY DEFINER",
+          "FUNCTION revoke_lease(text) SECURITY DEFINER"
+        ],
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
+        ]
+      },
+      {
+        "role": "risk_owner",
+        "login": false,
+        "schemas": {
+          "public": [
+            "USAGE"
+          ]
+        },
+        "tables": {
+          "accounts": [
+            "SELECT (id, supply_point_id)"
+          ],
+          "action_requests": [
+            "SELECT (account_id, id, kind, status)"
+          ],
+          "agent_control": [
+            "SELECT",
+            "INSERT (id, paused, reason)",
+            "UPDATE (changed_at, paused, reason)"
+          ],
+          "call_assessments": [
+            "SELECT (decision, lease_hash, reasons)"
+          ],
+          "events": [
+            "INSERT (actor, detail, kind)"
+          ],
+          "events_id_seq": [
+            "USAGE"
+          ],
+          "flags": [
+            "SELECT (supply_point_id)"
+          ],
+          "heartbeats": [
+            "SELECT",
+            "INSERT (component, last_beat)",
+            "UPDATE (last_beat)"
+          ],
+          "leases": [
+            "SELECT (allowed_tools, expires_at, revoked, ticket_id, token_hash)"
+          ],
+          "register_sync": [
+            "SELECT (id, last_success)"
+          ],
+          "risk_assessments": [
+            "SELECT (request_id)"
+          ]
+        },
+        "execute": [],
+        "owns": [
+          "FUNCTION beat(text) SECURITY DEFINER",
+          "FUNCTION blocked_calls_on_ticket(integer) SECURITY DEFINER",
+          "FUNCTION check_approval_floor(integer, timestamp with time zone)",
+          "FUNCTION home_protection(integer) SECURITY DEFINER",
+          "FUNCTION pause_agents(text) SECURITY DEFINER",
+          "FUNCTION required_approvals(text)",
+          "FUNCTION resume_agents() SECURITY DEFINER",
+          "FUNCTION risk_lease_facts(bytea, text) SECURITY DEFINER"
+        ],
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
+        ]
+      },
+      {
+        "role": "flags_admin",
+        "login": false,
+        "schemas": {
+          "public": [
+            "USAGE"
+          ]
+        },
+        "tables": {
+          "flags": [
+            "INSERT (source, supply_point_id)",
+            "SELECT (supply_point_id)"
+          ],
+          "register_sync": [
+            "SELECT",
+            "INSERT (id, last_success)",
+            "UPDATE (last_success)"
+          ],
+          "supply_points": [
+            "SELECT (id)"
+          ]
+        },
+        "execute": [
+          "pg_catalog.pg_advisory_xact_lock(bigint)"
+        ],
+        "owns": [
+          "FUNCTION sync_add_flag(text, text) SECURITY DEFINER",
+          "FUNCTION sync_heartbeat() SECURITY DEFINER"
+        ],
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
+        ]
+      },
+      {
+        "role": "flags_remover",
+        "login": false,
+        "schemas": {
+          "public": [
+            "USAGE"
+          ]
+        },
+        "tables": {
+          "events": [
+            "INSERT (detail, kind)"
+          ],
+          "events_id_seq": [
+            "USAGE"
+          ],
+          "flag_removal_approvals": [
+            "SELECT",
+            "INSERT (approver, approver_role, request_id)"
+          ],
+          "flag_removal_requests": [
+            "SELECT",
+            "INSERT (reason, requested_by, supply_point_id)",
+            "UPDATE (closed_reason, done_at)"
+          ],
+          "flag_removal_requests_id_seq": [
+            "USAGE"
+          ],
+          "flags": [
+            "DELETE",
+            "SELECT (created_at, supply_point_id)"
+          ]
+        },
+        "execute": [
+          "pg_catalog.pg_advisory_xact_lock(bigint)"
+        ],
+        "owns": [
+          "FUNCTION approve_flag_removal(integer, text) SECURITY DEFINER",
+          "FUNCTION request_flag_removal(text, text, text) SECURITY DEFINER"
+        ],
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
+        ]
+      },
+      {
+        "role": "flags_writer",
+        "login": false,
+        "tables": {},
+        "execute": [],
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
+        ]
+      }
+    ],
+    "public": {
+      "database": [
+        "CONNECT"
+      ],
+      "schemas": {
+        "public": [
+          "USAGE"
+        ]
+      }
+    },
+    "rls": {
+      "accounts": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "action_requests": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "agent_control": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "call_assessments": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "customers": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "flag_removal_approvals": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "flag_removal_requests": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "flags": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "heartbeats": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "leases": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "register_sync": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "risk_assessments": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "supply_points": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "tickets": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_admin",
+              "flags_remover",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "register_sync",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      }
+    }
+  },
+  "network": {
+    "ingress_from": [],
+    "egress_to": [
+      "internet"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "db",
+    "rbac": []
+  },
+  "azure": {
+    "identity": null,
+    "roles": []
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}

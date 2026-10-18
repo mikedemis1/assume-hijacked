@@ -25,6 +25,13 @@ if in_ci; then
     umask 022
 fi
 
+# The tool gateway's key pair: compose.yaml mounts it into the tools and the agent as secrets.
+# The docker image may not have openssl, which the script uses (or Python with cryptography).
+if in_ci && ! command -v openssl >/dev/null 2>&1; then
+    apk add --no-cache openssl
+fi
+sh scripts/gen-gateway-key.sh
+
 wait_for_docker
 docker compose up -d --build --wait
 docker compose --profile manual build agent

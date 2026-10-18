@@ -1,0 +1,73 @@
+{
+  "component": "risk-engine",
+  "description": "Judges every tool call and gives every effect request a risk tier.",
+  "db": {
+    "role": "risk_engine",
+    "login": true,
+    "connection_limit": 5,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {
+      "action_requests": [
+        "SELECT (account_id, amount_eur, created_at, decided_at, evidence_ref, id, kind, reason, status, ticket_id)"
+      ],
+      "agent_control": [
+        "SELECT"
+      ],
+      "call_assessments": [
+        "SELECT",
+        "INSERT (decision, lease_hash, reasons, tool)"
+      ],
+      "call_assessments_id_seq": [
+        "USAGE"
+      ],
+      "charges": [
+        "SELECT (account_id, amount_eur, id, period)"
+      ],
+      "risk_assessments": [
+        "SELECT",
+        "INSERT (engine_version, reasons, request_id, score, tier)"
+      ],
+      "risk_assessments_id_seq": [
+        "USAGE"
+      ]
+    },
+    "execute": [
+      "beat(text)",
+      "blocked_calls_on_ticket(integer)",
+      "home_protection(integer)",
+      "pause_agents(text)",
+      "required_approvals(text)",
+      "risk_lease_facts(bytea, text)"
+    ]
+  },
+  "network": {
+    "ingress_from": [],
+    "egress_to": [
+      "db"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "risk-engine",
+    "rbac": []
+  },
+  "azure": {
+    "identity": "id-risk-engine",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-risk-engine"
+      }
+    ]
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}

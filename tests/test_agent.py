@@ -6,11 +6,10 @@ from datetime import datetime, timedelta
 import pytest
 
 from app.agent.core import CREDIT_NOTICE, GIVE_UP, MEDICAL_QUESTION, Agent
-from app.agent.gateway import ToolGateway
 from app.agent.guard import SAFE_REPLY, block_reason, guard_reply, numbers_in
 from app.agent.llm import DEFAULT_PLAN, ScriptedLLM, _parse
-from app.tools import serve
 from tests.conftest import admin_connect, open_lease
+from tests.toolhttp import KEYS, AppToolGateway
 
 
 LEASE = "lease-of-ticket-7"  # what the agent was given; RecordingGateway never checks it
@@ -32,8 +31,9 @@ class LeasedAgent:
 
 
 def make_agent(settings, vulnerable=False):
+    """The agent with the real tool apps in this process, behind their token check."""
     s = dataclasses.replace(settings, vulnerable=vulnerable)
-    gw = ToolGateway({t: serve.build_server(t, s) for t in serve.TOOLS})
+    gw = AppToolGateway(s, *KEYS)
     return LeasedAgent(Agent(ScriptedLLM(), gw, vulnerable=vulnerable), settings)
 
 
@@ -605,7 +605,13 @@ def test_long_tool_name_is_logged_as_invalid(caplog):
 
 # --- events go to stderr (fix round 1, item 4) ---
 
-def test_main_sends_security_events_to_stderr_not_stdout(monkeypatch, capsys):
+def key_file(tmp_path):
+    path = tmp_path / "gateway.pem"
+    path.write_bytes(KEYS[0])
+    return str(path)
+
+
+def test_main_sends_security_events_to_stderr_not_stdout(monkeypatch, capsys, tmp_path):
     from app.agent import main as agent_main
     from app.agent.events import LOGGER, security_event
 
@@ -613,10 +619,11 @@ def test_main_sends_security_events_to_stderr_not_stdout(monkeypatch, capsys):
         LOGGER.removeHandler(handler)
     monkeypatch.setattr("sys.argv", ["main", "1"])
     monkeypatch.setattr(agent_main.config, "load", lambda: type("S", (), {"vulnerable": False})())
-    monkeypatch.setattr(agent_main, "ToolGateway", lambda targets: RecordingGateway("hello"))
+    monkeypatch.setattr(agent_main, "ToolGateway", lambda targets, key: RecordingGateway("hello"))
     monkeypatch.setattr(agent_main, "TOOLS", ["read_ticket"])
     monkeypatch.setenv("TOOL_URL_READ_TICKET", "x")
     monkeypatch.setenv("AGENT_LEASE", "lease-from-the-dispatcher")
+    monkeypatch.setenv("GATEWAY_SIGNING_KEY_FILE", key_file(tmp_path))
     try:
         agent_main.main()
         security_event("probe")
@@ -627,6 +634,28 @@ def test_main_sends_security_events_to_stderr_not_stdout(monkeypatch, capsys):
         for handler in list(LOGGER.handlers):
             LOGGER.removeHandler(handler)
         LOGGER.propagate = True
+
+
+def test_main_refuses_to_start_without_the_signing_key(monkeypatch):
+    from app.agent import main as agent_main
+
+    monkeypatch.setattr("sys.argv", ["main", "1"])
+    monkeypatch.setenv("AGENT_LEASE", "lease-from-the-dispatcher")
+    monkeypatch.delenv("GATEWAY_SIGNING_KEY_FILE", raising=False)
+    with pytest.raises(SystemExit, match="GATEWAY_SIGNING_KEY_FILE"):
+        agent_main.main()
+
+
+def test_main_refuses_to_start_with_a_key_that_is_not_ec_p256(monkeypatch, tmp_path):
+    from app.agent import main as agent_main
+
+    bad = tmp_path / "not-a-key.pem"
+    bad.write_text("not a key")
+    monkeypatch.setattr("sys.argv", ["main", "1"])
+    monkeypatch.setenv("AGENT_LEASE", "lease-from-the-dispatcher")
+    monkeypatch.setenv("GATEWAY_SIGNING_KEY_FILE", str(bad))
+    with pytest.raises(ValueError, match="PEM private key"):
+        agent_main.main()
 
 
 def test_main_refuses_to_start_without_a_lease(monkeypatch):

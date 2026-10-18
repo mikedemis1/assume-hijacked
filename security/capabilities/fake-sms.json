@@ -1,0 +1,30 @@
+{
+  "component": "fake-sms",
+  "description": "Stand-in for the SMS provider.",
+  "db": {
+    "role": null,
+    "execute": [],
+    "tables": {}
+  },
+  "network": {
+    "ingress_from": [
+      "executor"
+    ],
+    "egress_to": [],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "fake-sms",
+    "rbac": []
+  },
+  "azure": {
+    "identity": null,
+    "roles": []
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}

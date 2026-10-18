@@ -1,0 +1,118 @@
+{
+  "component": "executor",
+  "description": "Acts on assessed requests: credits, occupier notices and disconnection orders, and the calls to the outside systems.",
+  "db": {
+    "role": "executor",
+    "login": true,
+    "connection_limit": 3,
+    "schemas": {
+      "public": [
+        "USAGE"
+      ]
+    },
+    "tables": {
+      "accounts": [
+        "SELECT"
+      ],
+      "action_requests": [
+        "SELECT",
+        "UPDATE (decided_at, decision_reason, status)"
+      ],
+      "approvals": [
+        "SELECT"
+      ],
+      "charges": [
+        "SELECT"
+      ],
+      "credits": [
+        "SELECT",
+        "INSERT (account_id, amount_eur, evidence_ref, request_id)"
+      ],
+      "credits_id_seq": [
+        "USAGE"
+      ],
+      "disconnection_orders": [
+        "SELECT",
+        "INSERT (request_id, supply_point_id)"
+      ],
+      "disconnection_orders_id_seq": [
+        "USAGE"
+      ],
+      "events": [
+        "SELECT",
+        "INSERT (detail, kind)"
+      ],
+      "events_id_seq": [
+        "USAGE"
+      ],
+      "flags": [
+        "SELECT"
+      ],
+      "occupier_notices": [
+        "SELECT",
+        "INSERT (request_id, supply_point_id)"
+      ],
+      "occupier_notices_id_seq": [
+        "USAGE"
+      ],
+      "register_sync": [
+        "SELECT"
+      ],
+      "risk_assessments": [
+        "SELECT"
+      ],
+      "supply_points": [
+        "SELECT"
+      ]
+    },
+    "execute": [
+      "beat(text)",
+      "check_approval_floor(integer, timestamp with time zone)",
+      "required_approvals(text)",
+      "pg_catalog.pg_advisory_lock(bigint)",
+      "pg_catalog.pg_advisory_lock(int, int)",
+      "pg_catalog.pg_advisory_lock_shared(bigint)",
+      "pg_catalog.pg_advisory_lock_shared(int, int)",
+      "pg_catalog.pg_try_advisory_lock(bigint)",
+      "pg_catalog.pg_try_advisory_lock(int, int)",
+      "pg_catalog.pg_try_advisory_lock_shared(bigint)",
+      "pg_catalog.pg_try_advisory_lock_shared(int, int)",
+      "pg_catalog.pg_advisory_xact_lock(bigint)",
+      "pg_catalog.pg_advisory_xact_lock(int, int)",
+      "pg_catalog.pg_advisory_xact_lock_shared(bigint)",
+      "pg_catalog.pg_advisory_xact_lock_shared(int, int)",
+      "pg_catalog.pg_try_advisory_xact_lock(bigint)",
+      "pg_catalog.pg_try_advisory_xact_lock(int, int)",
+      "pg_catalog.pg_try_advisory_xact_lock_shared(bigint)",
+      "pg_catalog.pg_try_advisory_xact_lock_shared(int, int)"
+    ]
+  },
+  "network": {
+    "ingress_from": [],
+    "egress_to": [
+      "db",
+      "fake-dso",
+      "fake-sms"
+    ],
+    "dns": [
+      "cluster"
+    ]
+  },
+  "k8s": {
+    "service_account": "executor",
+    "rbac": []
+  },
+  "azure": {
+    "identity": "id-executor",
+    "roles": [
+      {
+        "role": "Key Vault Secrets User",
+        "scope": "kv-executor"
+      }
+    ]
+  },
+  "runtime_class": "runc",
+  "mcp": {
+    "tools": []
+  }
+}
