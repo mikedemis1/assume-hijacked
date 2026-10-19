@@ -35,7 +35,7 @@ CREATE TABLE risk_assessments (
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 
--- One row per tool call the gateway asked about (POST /decide, task A5). lease_hash is
+-- One row per tool call the gateway asked about (POST /decide). lease_hash is
 -- sha256(lease), the same as leases.token_hash; never the lease itself.
 CREATE TABLE call_assessments (
     id         bigserial PRIMARY KEY,
@@ -188,7 +188,7 @@ GRANT EXECUTE ON FUNCTION check_approval_floor(int, timestamptz) TO executor;
 
 
 -- ---------------------------------------------------------------------------------------------
--- Effects cannot be changed after the floor let them in (task A5).
+-- Effects cannot be changed after the floor let them in.
 --
 -- check_credit and check_disconnection_order run on INSERT only. An UPDATE would skip them and
 -- could move an approved credit to another amount, account or request, or an order to another
@@ -208,7 +208,7 @@ CREATE TRIGGER disconnection_orders_no_update BEFORE UPDATE ON disconnection_ord
 
 
 -- ---------------------------------------------------------------------------------------------
--- What the risk engine reads (task A5, app/risk/service.py).
+-- What the risk engine reads (app/risk/service.py).
 --
 -- The engine judges each tool call (POST /decide) and each pending effect request. It reads the
 -- request queue, the charges (evidence) and its own call_assessments directly. Three things it
@@ -329,7 +329,7 @@ GRANT EXECUTE ON FUNCTION risk_lease_facts(bytea, text), blocked_calls_on_ticket
 
 
 -- ---------------------------------------------------------------------------------------------
--- Heartbeats (task A5). Each long-running component writes its own row on every trip round its
+-- Heartbeats. Each long-running component writes its own row on every trip round its
 -- loop, so monitoring can see a stopped component from the database too, not only from its
 -- /healthz (which dies with it). Only through beat(): no login role has a grant on the table, and
 -- beat() writes only the caller's own row, named from session_user (the role that logged in), so

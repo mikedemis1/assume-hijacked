@@ -248,6 +248,18 @@ def test_mutmut_does_not_run_the_tests_that_need_the_repository_or_the_stack():
         assert f"--ignore=tests/{name}.py" in ignored, name
 
 
+def test_mutmut_copies_every_repository_file_the_unit_tests_read():
+    """The mutants/ copy holds only app/, tests/, pyproject.toml and the also_copy paths. A unit
+    test that reads compose.yaml died there with "failed to collect stats" and no mutation score."""
+    scope = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mutmut"]
+    ignored = {arg.removeprefix("--ignore=") for arg in scope["pytest_add_cli_args_test_selection"]}
+    for test in sorted((ROOT / "tests").glob("test_*.py")):
+        if f"tests/{test.name}" in ignored:
+            continue
+        if '"compose.yaml"' in test.read_text(encoding="utf-8"):
+            assert "compose.yaml" in scope["also_copy"], f"{test.name} reads compose.yaml"
+
+
 def test_smoke_tests_import_without_the_ci_folder(tmp_path):
     """A copy of tests/test_smoke.py with no ci/ next to it (the mutants/ layout) must still
     import: pytest collects the whole module before it can skip or ignore anything in it."""

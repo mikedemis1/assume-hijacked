@@ -125,7 +125,7 @@ def admin(settings):
 
 
 def open_lease(admin, ticket: int, tools=TOOLS, bound_pod: str | None = None) -> str:
-    """Open a lease as the dispatcher will (task A9). The superuser may call open_lease."""
+    """Open a lease as the dispatcher will. The superuser may call open_lease."""
     return admin.execute(
         "SELECT open_lease(%s, %s, %s) AS lease", (ticket, list(tools), bound_pod)
     ).fetchone()["lease"]
@@ -133,7 +133,7 @@ def open_lease(admin, ticket: int, tools=TOOLS, bound_pod: str | None = None) ->
 
 def assess(admin, request_id: int, tier: str, score: int = 0, reasons: tuple[str, ...] = ()) -> None:
     """The risk engine's verdict on one request (db/sql/06-risk.sql), written as the superuser.
-    The risk service (task A5) writes these in the stack; tests that need an effect to go through
+    The risk service writes these in the stack; tests that need an effect to go through
     write one themselves, because the credit and order triggers refuse a request without one."""
     admin.execute(
         "INSERT INTO risk_assessments (request_id, tier, score, reasons, engine_version) "
@@ -143,7 +143,7 @@ def assess(admin, request_id: int, tier: str, score: int = 0, reasons: tuple[str
 
 
 def approve_as(conn, request_id: int, approver: str, role: str = "Approver") -> None:
-    """A staff approval with its role, as the console will write it (task A11)."""
+    """A staff approval with its role, as the console will write it."""
     conn.execute(
         "INSERT INTO approvals (request_id, approver, approver_role) VALUES (%s, %s, %s)",
         (request_id, approver, role),

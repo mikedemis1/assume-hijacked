@@ -306,7 +306,7 @@ def test_database_accepts_less_than_the_charge(admin, as_role):
     assert credits_count(admin) == 1
 
 
-# --- risk tiers (task A5): the executor acts only on assessed requests, and waits for the
+# --- risk tiers: the executor acts only on assessed requests, and waits for the
 # approvals the tier asks for. The database floor (tests/test_risk_floor.py) is the wall behind it.
 
 def risk_why(admin, request_id):

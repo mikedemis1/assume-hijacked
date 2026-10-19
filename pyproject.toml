@@ -55,8 +55,9 @@ only_mutate = [
     "app/risk/rules.py",
     "app/tools/lookup_account.py",
 ]
-# Copied next to the mutated code: conftest.py reloads the seed data from db/sql before each test.
-also_copy = ["db/sql/", "security/capabilities/"]
+# Copied next to the mutated code: conftest.py reloads the seed data from db/sql before each test,
+# and tests/test_fakes.py reads the start order in compose.yaml.
+also_copy = ["db/sql/", "security/capabilities/", "compose.yaml"]
 # These test files read repository files (locks, Dockerfile, pipeline, ci/ scripts) or need the
 # running Compose stack (smoke), not app code; they kill no mutant and would fail in the
 # mutants/ copy, which has none of those files. tests/test_ci.py checks this list.

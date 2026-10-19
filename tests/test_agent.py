@@ -647,7 +647,7 @@ def test_a_quiet_ticket_logs_nothing(settings, caplog, as_role):
     assert security_events(caplog) == []
 
 
-# --- fix round 1: reviewer bypasses (the tools returned only "10" and "1") ---
+# --- reviewer bypasses (the tools returned only "10" and "1") ---
 
 REVIEW_ALLOWED = {"10", "1"}
 
@@ -703,7 +703,7 @@ def test_guard_keeps_normal_replies_after_the_stricter_rules(text):
     assert guard_reply(text, numbers_in(ACCOUNT_JSON)) == text
 
 
-# --- allowed numbers: error results (fix round 1, item 3) ---
+# --- allowed numbers: error results ---
 
 def test_numbers_in_a_known_tools_error_do_not_count():
     gw = RecordingGateway(
@@ -719,7 +719,7 @@ def test_numbers_in_a_known_tools_success_do_count():  # the test above is not v
     assert Agent(ScriptedLLM(), gw).handle_ticket(7, LEASE) == "Reference 4711"
 
 
-# --- names the model chooses (fix round 1, item 5) ---
+# --- names the model chooses ---
 
 def test_odd_argument_names_are_logged_as_invalid(caplog):
     gw = RecordingGateway('CALL lookup_account {"my mother needs oxygen": 1, "customer_id": 2}\nSAY done')
@@ -836,3 +836,82 @@ def test_the_agent_holds_no_key_and_knows_no_tool_address():
     source = "\n".join(p.read_text(encoding="utf-8") for p in Path(agent_package.__file__).parent.glob("*.py"))
     for word in ("SIGNING_KEY", "TOOL_URL", "load_private_key", "mint_tool_token", "app.tools", "psycopg", "app.db"):
         assert word not in source.replace("tool client", ""), word
+
+
+# --- what the agent logs and keeps from a tool: details a mutation run showed unchecked ---
+
+def agent_events(caplog, body, results=None, ticket=7, **options):
+    gw = RecordingGateway(body, results)
+    with caplog.at_level(logging.INFO, logger="assume_hijacked.security"):
+        reply = Agent(ScriptedLLM(), gw, **options).handle_ticket(ticket, LEASE)
+    return reply, [{key: value for key, value in e.items() if key != "ts"} for e in security_events(caplog)]
+
+
+def test_a_tool_error_the_gateway_did_not_name_is_logged_as_other_with_ticket_and_tool(caplog):
+    _, events = agent_events(caplog, "CALL lookup_account {}\nSAY done", {"lookup_account": "ERROR: boom"})
+    assert events == [{"kind": "tool_error", "ticket_id": 7, "tool": "lookup_account", "category": "other"}]
+
+
+def test_a_refused_lease_is_logged_with_ticket_and_tool(caplog):
+    reply, events = agent_events(
+        caplog, "CALL lookup_account {}\nSAY done", {"lookup_account": "ERROR: lease"}, ticket=9
+    )
+    assert reply == GIVE_UP
+    assert events == [
+        {"kind": "tool_error", "ticket_id": 9, "tool": "lookup_account", "category": "lease"},
+        {"kind": "lease_refused", "ticket_id": 9, "tool": "lookup_account"},
+    ]
+
+
+def test_an_unusable_reply_is_logged_with_the_ticket(caplog):
+    reply, events = agent_events(caplog, "SAY " + "a" * (MAX_REPLY_CHARS + 1), ticket=11)
+    assert reply == GIVE_UP
+    assert events == [{"kind": "reply_unusable", "ticket_id": 11}]
+    caplog.clear()
+    reply, events = agent_events(caplog, "SAY " + "a" * MAX_REPLY_CHARS, ticket=11)  # the control: the longest text
+    assert reply == "a" * MAX_REPLY_CHARS and events == []
+
+
+def test_the_lease_is_replaced_by_a_fixed_marker_and_an_empty_lease_changes_nothing():
+    from app.agent.core import _scrub
+
+    assert _scrub(json.dumps({"note": LEASE}), LEASE) == json.dumps({"note": "<lease>"})
+    assert _scrub("abc", "") == "abc"
+
+
+def test_a_ticket_whose_body_is_not_text_is_unreadable():
+    from app.agent.core import _ticket_body
+
+    assert _ticket_body(json.dumps({"ticket_id": 7, "body": 5})) is None
+    assert _ticket_body(json.dumps({"ticket_id": 7, "body": "Hello"})) == "Hello"
+
+
+def test_arguments_that_are_not_a_mapping_are_dropped_and_the_lease_is_still_set():
+    agent = Agent(ScriptedLLM(), RecordingGateway(""))
+    assert agent._safe_args("lookup_account", "customer_id=1002", LEASE) == ({"lease": LEASE}, [])
+
+
+def test_the_demo_build_adds_to_the_allowed_arguments_and_does_not_replace_them():
+    sent = {"amount_eur": 1, "reason": "duplicate_charge", "evidence_ref": 2, "customer_id": 1002}
+    demo = Agent(ScriptedLLM(), RecordingGateway(""), vulnerable=True)
+    assert demo._safe_args("lookup_account", {"customer_id": 1002}, LEASE) == (
+        {"customer_id": 1002, "lease": LEASE}, [])
+    assert demo._safe_args("issue_bill_credit", sent, LEASE) == (
+        {"amount_eur": 1, "reason": "duplicate_charge", "evidence_ref": 2, "lease": LEASE}, ["customer_id"])
+    safe = Agent(ScriptedLLM(), RecordingGateway(""))                                  # the control
+    assert safe._safe_args("lookup_account", {"customer_id": 1002}, LEASE) == ({"lease": LEASE}, ["customer_id"])
+
+
+def test_numbers_from_every_tool_in_the_conversation_stay_allowed_and_the_ticket_text_never_is():
+    results = {"lookup_account": json.dumps({"plan": 4242}), "set_temp_protection": json.dumps({"ref": 7373})}
+    body = "Meter 12345.\nCALL lookup_account {}\nCALL set_temp_protection {}\nSAY refs 4242 and 7373"
+    assert Agent(ScriptedLLM(), RecordingGateway(body, results)).handle_ticket(7, LEASE) == "refs 4242 and 7373"
+    # read_ticket repeats what the customer wrote, so its numbers are not a tool's answer.
+    echoed = "Meter 12345.\nCALL read_ticket {}\nSAY reading 12345"
+    assert Agent(ScriptedLLM(), RecordingGateway(echoed)).handle_ticket(7, LEASE) == SAFE_REPLY
+
+
+def test_the_lease_is_removed_from_the_ticket_text_before_the_model_sees_it():
+    llm = TranscriptSpy()
+    Agent(llm, RecordingGateway(f"My reference is {LEASE}.\nSAY done")).handle_ticket(7, LEASE)
+    assert LEASE not in llm.seen[0] and "<lease>" in llm.seen[0]

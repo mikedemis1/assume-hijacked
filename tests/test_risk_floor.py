@@ -81,7 +81,7 @@ def test_credit_refused_without_assessment(admin, as_role, ex, settings, now):
     rid, write = _credit(admin, tier=None)
     with pytest.raises(psycopg.errors.RaiseException, match="no risk assessment"):
         write(ex)
-    # The executor leaves an unassessed request alone (task A5), so the trigger is not even asked.
+    # The executor leaves an unassessed request alone, so the trigger is not even asked.
     process_credits(ex, settings, now)
     assert credits_count(admin) == 0
     status = admin.execute("SELECT status FROM action_requests WHERE id = %s", (rid,)).fetchone()["status"]
@@ -100,7 +100,7 @@ def test_order_refused_without_assessment(admin, as_role, ex):
         write(ex)
     assert orders(admin) == 0
     assess(admin, rid, "T1")
-    # The approval was given before the assessment, so it does not count (ruling a, A5).
+    # The approval was given before the assessment, so it does not count.
     with pytest.raises(psycopg.errors.RaiseException, match="needs 1 distinct approval"):
         write(ex)
     approve_as(as_role("approver"), rid, PETROS)  # control: an approval after the assessment
@@ -529,7 +529,7 @@ def test_approver_role_is_on_the_closed_list_and_defaults_to_approver(admin, as_
     assert admin.execute("SELECT approver_role FROM approvals").fetchall() == [{"approver_role": "Approver"}]
 
 
-# --- amounts: NaN and Infinity (carried in from the A3 review) ---
+# --- amounts: NaN and Infinity ---
 # numeric accepts 'NaN', and PostgreSQL sorts NaN above every number, so `amount > 0` alone lets it
 # through; since PostgreSQL 14 numeric also takes 'Infinity'.
 

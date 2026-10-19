@@ -604,7 +604,7 @@ def test_ip_probe_reaches_the_allowed_db_address_and_no_other():
     assert sum(reached.values()) == 1, reached
 
 
-# --- The risk engine in the stack (task A5) ---
+# --- The risk engine in the stack ---
 
 def stack_db():
     return psycopg.connect(
