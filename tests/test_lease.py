@@ -284,9 +284,8 @@ def test_no_function_in_public_is_executable_by_public(admin):
 
 def test_pgcrypto_is_in_its_own_schema_and_only_the_lease_owner_may_use_it(admin):
     # An extension's functions are executable by PUBLIC unless the schema revokes it. Put in
-    # `public` they would show up as a grant to every role in the permission assessment (and be
-    # callable by every tool role). So they live in `crypto`, closed to PUBLIC, and the one role
-    # that needs a random number (lease_owner, for open_lease) is granted that one function.
+    # `public` they would be callable by every tool role (test_db_grants_match_the_manifest_of_each_login_role
+    # would flag it). So they live in `crypto`, closed to PUBLIC, and the one role that needs a random number (lease_owner, for open_lease) is granted that one function.
     ext = admin.execute(
         "SELECT extnamespace::regnamespace::text AS schema FROM pg_extension WHERE extname = 'pgcrypto'"
     ).fetchone()
