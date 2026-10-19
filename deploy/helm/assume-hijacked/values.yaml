@@ -29,6 +29,7 @@ console:
   # entra | dev. dev reads CONSOLE_DEV_USERS and trusts a header; the schema refuses it with
   # env=azure, and the console itself refuses to start with AUTH_MODE=dev and APP_ENV=azure.
   authMode: entra
+  redirectUri: ""           # HTTPS URL ending in /auth/callback, registered on the Entra app
   devUsers: "[]"
   entra:
     tenantId: ""
@@ -69,6 +70,7 @@ secrets:
   dbPasswords: {}            # role name -> password, e.g. gateway: ...
   gatewaySigningKeyPem: ""
   anthropicApiKey: ""
+  consoleClientSecret: ""    # kind with Entra only; Azure reads console-client-secret from its vault
 
 # azure only. IDs and names that Terraform outputs (infra/base, infra/lab).
 azure:

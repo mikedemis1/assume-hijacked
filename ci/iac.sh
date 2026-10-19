@@ -29,9 +29,7 @@ STACKS="infra/base infra/net infra/lab infra/modules/workload-identity"
 #   CKV_K8S_35  database passwords reach the pods as environment variables from a Secret
 #               (decision 3: Key Vault -> Secrets Store CSI -> K8s Secret -> env var)
 #   CKV_K8S_40  the kind-only Postgres StatefulSet runs as the image's own uid
-#   CKV_K8S_8, CKV_K8S_9  liveness and readiness probes: the three fakes have none yet
-#               (open item for the merge; every other component has both)
-CHART_SKIPS="CKV_K8S_35,CKV_K8S_40,CKV_K8S_8,CKV_K8S_9"
+CHART_SKIPS="CKV_K8S_35,CKV_K8S_40"
 
 step="${IAC_STEP:-all}"
 case "$step" in

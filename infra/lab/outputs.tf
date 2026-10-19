@@ -36,7 +36,7 @@ output "component_key_vaults" {
 
 output "unassigned_azure_roles" {
   description = "Manifest roles this stack does not assign because their scope is not a Key Vault (for example Foundry). Assign them where that resource lives."
-  value       = [for r in local.non_vault_roles : "${r.component}: ${r.role} on ${r.scope}"]
+  value       = [for r in local.non_vault_roles : "${r.component}: ${r.role} on ${r.scope}" if !(var.foundry_enabled && r.component == "llm-gateway" && r.role == "Cognitive Services User" && r.scope == var.foundry_resource_id)]
 }
 
 output "postgres_host" {

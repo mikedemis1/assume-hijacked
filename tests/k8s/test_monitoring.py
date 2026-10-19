@@ -31,6 +31,7 @@ import yaml
 from tests.k8s.conftest import run_kubectl
 from tests.k8s.test_chart import HELM, ROOT, rendered
 
+REQUIRE_RENDER = os.environ.get("AH_REQUIRE_MONITORING_RENDER") == "1"
 MONITORING = ROOT / "deploy" / "monitoring"
 VALUES = MONITORING / "kube-prometheus-values.yaml"
 RULES = MONITORING / "rules" / "assume-hijacked.yaml"
@@ -44,6 +45,13 @@ CILIUM_VALUES = ROOT / "deploy" / "kind" / "cilium-values.yaml"
 NAMESPACE = "ah-monitoring"
 DIGEST = re.compile(r"@sha256:[a-f0-9]{64}$")
 ALERTS = {"ExecutorHeartbeatStale", "RiskEngineDown", "GatewayDenialsBurst"}
+
+
+def test_monitoring_install_does_not_print_credentials_and_allows_the_startup_window():
+    script = MONITORING_SCRIPT.read_text(encoding="utf-8")
+    assert 'echo "Grafana login: admin / $password' not in script
+    timeout = re.search(r"--wait --timeout (\d+)m", script)
+    assert timeout and int(timeout.group(1)) * 60 >= 660
 # The metric names the application writes (app/common/ops.py renders them; the executor, the risk
 # engine and the tool gateway own the ones below) plus the Hubble drop counter and Prometheus's own.
 KNOWN_METRICS = {
@@ -89,6 +97,7 @@ def prometheus_image() -> str:
     return f"quay.io/prometheus/prometheus@sha256:{spec['sha']}"
 
 
+@cache
 def docker_works() -> bool:
     if shutil.which("docker") is None:
         return False
@@ -114,8 +123,51 @@ def promtool_dir(rules_text: str | None = None) -> Path:
     return directory
 
 
+@pytest.fixture
+def failed_monitoring_chart_fetch(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "HELM", "helm-test-stand-in")
+    fetch = getattr(module, "_fetch_kps_chart", kps_chart)
+    fetch.cache_clear()
+    calls = []
+    def fail(*args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(returncode=1, stderr="test chart fetch failure")
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", fail)
+    yield calls
+    fetch.cache_clear()
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_monitoring_fetch_failure_is_fatal_when_rendering_is_required(monkeypatch,
+                                                                     failed_monitoring_chart_fetch,
+                                                                     required):
+    monkeypatch.setitem(globals(), "REQUIRE_RENDER", required)
+    with pytest.raises((pytest.fail.Exception, pytest.skip.Exception)) as caught:
+        kps_chart()
+    expected = pytest.fail.Exception if required else pytest.skip.Exception
+    assert isinstance(caught.value, expected)
+
+
+def test_a_failed_monitoring_download_is_attempted_once(monkeypatch, failed_monitoring_chart_fetch):
+    monkeypatch.setitem(globals(), "REQUIRE_RENDER", False)
+    for _ in range(2):
+        with pytest.raises(pytest.skip.Exception):
+            kps_chart()
+    assert len(failed_monitoring_chart_fetch) == 1
+
+
+def test_ci_checks_the_monitoring_rendering_as_well_as_the_application_chart():
+    script = (ROOT / "ci" / "chart.sh").read_text(encoding="utf-8")
+    assert "tests/k8s/test_monitoring.py" in script
+    assert "AH_REQUIRE_MONITORING_RENDER=1" in script
+
+
 @cache
-def kps_chart() -> Path:
+def _fetch_kps_chart() -> tuple[Path, str | None]:
     """The pinned kube-prometheus-stack chart file, downloaded once and checked against the digest
     in scripts/kind-monitoring.sh (the one from the chart repository's index)."""
     version = script_constant("KPS_VERSION")
@@ -123,6 +175,8 @@ def kps_chart() -> Path:
     repo = script_constant("KPS_REPO")
     cache_dir = Path(tempfile.gettempdir()) / "ah-kps-chart"
     chart = cache_dir / f"kube-prometheus-stack-{version}.tgz"
+    if HELM is None:
+        return chart, "helm is not installed"
     if not chart.exists():
         cache_dir.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
@@ -130,8 +184,17 @@ def kps_chart() -> Path:
              "--destination", str(cache_dir)],
             capture_output=True, text=True, encoding="utf-8", timeout=300, check=False)
         if result.returncode != 0:
-            pytest.skip(f"cannot download kube-prometheus-stack {version}: {result.stderr.strip()[:200]}")
+            return chart, f"cannot download kube-prometheus-stack {version}: {result.stderr.strip()[:200]}"
     assert hashlib.sha256(chart.read_bytes()).hexdigest() == sha, "chart file differs from the pinned digest"
+    return chart, None
+
+
+def kps_chart() -> Path:
+    chart, problem = _fetch_kps_chart()
+    if problem:
+        if REQUIRE_RENDER:
+            pytest.fail(problem)
+        pytest.skip(problem)
     return chart
 
 
@@ -420,6 +483,31 @@ def test_grafana_has_no_default_password_and_no_telemetry():
     # The chart's Secret with the public default password is not rendered.
     assert not [d for d in stack_objects("Secret") if d["metadata"]["name"] == "kps-grafana"], \
         "a Grafana admin Secret with the chart default would be created"
+
+
+def test_every_rendered_alertmanager_route_has_a_defined_receiver():
+    secret = next(d for d in stack_objects("Secret") if d["metadata"]["name"] == "alertmanager-kps-alertmanager")
+    import base64
+    config = yaml.safe_load(base64.b64decode(secret["data"]["alertmanager.yaml"]))
+    names = {r["name"] for r in config["receivers"]}
+    def check(route):
+        if "receiver" in route:
+            assert route["receiver"] in names, "route names an undefined receiver"
+        for child in route.get("routes", []):
+            check(child)
+    check(config["route"])
+
+
+def test_grafana_has_time_to_start_before_liveness_can_restart_it():
+    deployment = next(d for d in stack_objects("Deployment") if d["metadata"]["name"] == "kps-grafana")
+    container = next(c for c in deployment["spec"]["template"]["spec"]["containers"] if c["name"] == "grafana")
+    probe = container.get("startupProbe", {})
+    assert probe.get("httpGet", {}).get("path") == "/api/health"
+    assert probe.get("periodSeconds", 0) * probe.get("failureThreshold", 0) >= 300
+
+
+def test_grafana_does_not_download_unpinned_suggested_plugins():
+    assert values()["grafana"]["grafana.ini"].get("plugins", {}).get("preinstall_disabled") is True
 
 
 # --- Mailpit -----------------------------------------------------------------------------------

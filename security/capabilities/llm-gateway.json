@@ -27,10 +27,6 @@
       {
         "role": "Key Vault Secrets User",
         "scope": "kv-llm-gateway"
-      },
-      {
-        "role": "Cognitive Services User",
-        "scope": "foundry-resource"
       }
     ]
   },

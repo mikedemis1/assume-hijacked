@@ -9,5 +9,5 @@
 if in_ci; then
     install_python_tools
 fi
-"$(python_bin)" -m bandit -c pyproject.toml -r app secops \
+"$(python_bin)" -m bandit -c pyproject.toml -r app secops attacks \
     --severity-level medium --confidence-level medium

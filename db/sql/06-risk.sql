@@ -263,6 +263,10 @@ BEGIN
         WHERE l.ticket_id = p_ticket
           AND c.decision IN ('deny', 'pause')
           AND c.reasons IS DISTINCT FROM ARRAY['paused']
+    ) + (
+        SELECT count(*)::int FROM public.tool_calls c JOIN public.leases l ON l.token_hash = c.lease_hash
+        WHERE l.ticket_id = p_ticket AND c.outcome = 'denied'
+          AND c.reason IN ('unknown_tool', 'pod_mismatch', 'descriptor_changed')
     );
 END $$;
 
@@ -304,6 +308,7 @@ CREATE UNIQUE INDEX call_assessments_one_effect_per_lease ON call_assessments (l
 GRANT SELECT (id, kind, ticket_id, account_id, amount_eur, reason, evidence_ref, status, created_at, decided_at)
     ON action_requests TO risk_engine;
 GRANT SELECT (id, account_id, period, amount_eur) ON charges TO risk_engine;
+GRANT SELECT (lease_hash, outcome, reason) ON tool_calls TO risk_engine, risk_owner;
 
 -- risk_owner holds exactly what the three functions read.
 GRANT SELECT (token_hash, ticket_id, allowed_tools, expires_at, revoked) ON leases TO risk_owner;

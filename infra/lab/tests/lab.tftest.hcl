@@ -6,6 +6,21 @@
 
 mock_provider "azurerm" {}
 
+run "postgres_errors_do_not_log_health_arguments" {
+  command = plan
+  assert {
+    condition = tomap({ for name, setting in azurerm_postgresql_flexible_server_configuration.privacy : name => setting.value }) == tomap({
+      log_min_error_statement           = "panic"
+      log_parameter_max_length          = "0"
+      log_parameter_max_length_on_error = "0"
+      log_statement                     = "none"
+      log_min_duration_statement        = "-1"
+      log_min_duration_sample           = "-1"
+    })
+    error_message = "Statement and bind-parameter logging must not disclose health-related arguments."
+  }
+}
+
 variables {
   subscription_id            = "11111111-2222-3333-4444-555555555555"
   tenant_id                  = "66666666-7777-8888-9999-000000000000"
@@ -539,8 +554,9 @@ run "foundry_egress_is_off_by_default_and_system_only_when_on" {
   command = plan
 
   variables {
-    foundry_enabled = true
-    foundry_fqdn    = "ah-foundry.services.ai.azure.com"
+    foundry_enabled     = true
+    foundry_fqdn        = "ah-foundry.services.ai.azure.com"
+    foundry_resource_id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-model/providers/Microsoft.CognitiveServices/accounts/ah-foundry"
   }
 
   assert {
@@ -570,11 +586,29 @@ run "foundry_without_an_exact_host_is_refused" {
   command = plan
 
   variables {
-    foundry_enabled = true
-    foundry_fqdn    = "*.services.ai.azure.com"
+    foundry_enabled     = true
+    foundry_fqdn        = "*.services.ai.azure.com"
+    foundry_resource_id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-model/providers/Microsoft.CognitiveServices/accounts/ah-foundry"
   }
 
   expect_failures = [var.foundry_fqdn]
+}
+
+run "scripted_has_no_provider_route_or_foundry_grant" {
+  command = plan
+  assert {
+    condition     = length(local.llm_rules) == 0 && length(azurerm_role_assignment.llm_foundry) == 0
+    error_message = "The default scripted model must have no paid-provider route or role."
+  }
+}
+
+run "anthropic_has_only_its_own_provider_route" {
+  command = plan
+  variables { anthropic_enabled = true }
+  assert {
+    condition     = toset(keys(local.llm_rules)) == toset(["anthropic-api"]) && length(azurerm_role_assignment.llm_foundry) == 0
+    error_message = "Anthropic must not inherit a Foundry route or identity grant."
+  }
 }
 
 # ---------------------------------------------------------------- PostgreSQL

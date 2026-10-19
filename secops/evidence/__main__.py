@@ -48,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
                                                          encoding="utf-8")
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    report = evidence.build(args.reports, generated=generated, commit=args.commit)
+    image_root = args.collect_images or Path(__file__).resolve().parents[2]
+    report = evidence.build(args.reports, generated=generated, commit=args.commit, image_root=image_root)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(evidence.render(report), encoding="utf-8")
     for s in report.sections:

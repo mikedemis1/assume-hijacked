@@ -33,6 +33,9 @@
       ],
       "risk_assessments_id_seq": [
         "USAGE"
+      ],
+      "tool_calls": [
+        "SELECT (lease_hash, outcome, reason)"
       ]
     },
     "execute": [

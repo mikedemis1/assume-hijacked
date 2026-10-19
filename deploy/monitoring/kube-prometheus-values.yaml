@@ -69,6 +69,8 @@ alertmanager:
       resolve_timeout: 5m
     route:
       receiver: mailpit
+      # Replace the chart's default Watchdog -> null child route as well.
+      routes: []
       group_by: [alertname]
       group_wait: 10s
       group_interval: 1m
@@ -135,6 +137,13 @@ prometheus:
           interval: 30s
 
 grafana:
+  # API registration takes several minutes under the local CPU limit. Liveness starts only
+  # after /api/health answers, so a healthy slow start is not repeatedly killed at 150 seconds.
+  startupProbe:
+    httpGet: {path: /api/health, port: grafana}
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 120
   # The admin login comes from the Secret grafana-admin, created by scripts/kind-monitoring.sh
   # with a random password (the chart's default password is public).
   admin:
@@ -157,6 +166,8 @@ grafana:
       requests: {cpu: 10m, memory: 48Mi}
       limits: {cpu: 100m, memory: 96Mi}
   grafana.ini:
+    plugins:
+      preinstall_disabled: true
     analytics:
       reporting_enabled: false
       check_for_updates: false
@@ -165,4 +176,4 @@ grafana:
       allow_sign_up: false
   resources:
     requests: {cpu: 50m, memory: 128Mi}
-    limits: {cpu: 500m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}

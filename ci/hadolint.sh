@@ -9,7 +9,7 @@ if ! in_tool_image; then
     exit
 fi
 
-for dockerfile in Dockerfile ci/smoke-runner.Dockerfile; do
+for dockerfile in Dockerfile ci/smoke-runner.Dockerfile attacks/Dockerfile; do
     echo "== $dockerfile"
     hadolint --failure-threshold warning "$dockerfile"
 done

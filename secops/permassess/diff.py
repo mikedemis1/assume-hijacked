@@ -52,9 +52,16 @@ def expected_lines(plane: str, expected: dict, result: PlaneResult) -> tuple[lis
                 elsewhere.add(e)
     elif plane == "k8s":
         comps = result.scope.get("components", set())
+        def deployed_names(name):
+            aliases = expected.get("components", {}).get(name, {}).get("k8s_network_names", [name])
+            return set(aliases) & comps
         for e in expected["edges"]:
             a, b = canon.split_edge(e)
-            (lines if a in comps and b in comps else elsewhere).add(f"k8s {a} -> {b}")
+            sources, targets = deployed_names(a), deployed_names(b)
+            if sources and targets:
+                lines.update(f"k8s {src} -> {dst}" for src in sources for dst in targets)
+            else:
+                elsewhere.add(f"k8s {a} -> {b}")
         lines.update(expected["k8s"])
     elif plane == "azure":
         identities = result.scope.get("identities", set())

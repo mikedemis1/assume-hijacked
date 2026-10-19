@@ -48,7 +48,10 @@ class ToolGateway:
             return toolerrors.error_text(toolerrors.UNAVAILABLE)
 
     async def _call(self, name: str, args: dict, lease: str | None) -> str:
-        headers = dict(self._headers())
+        # The callback supplies caller authentication only. The agent owns the lease header,
+        # whose name is case-insensitive on the wire.
+        headers = {key: value for key, value in self._headers().items()
+                   if key.lower() != LEASE_HEADER.lower()}
         if lease:
             headers[LEASE_HEADER] = lease  # last, so nothing else can replace it
         async with self._transport() as transport:

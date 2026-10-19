@@ -217,6 +217,23 @@ variable "foundry_enabled" {
   default     = false
 }
 
+variable "anthropic_enabled" {
+  description = "Allow the Anthropic API from the system pool only when that backend is selected."
+  type        = bool
+  default     = false
+}
+
+variable "foundry_resource_id" {
+  description = "Existing Foundry account for the gateway's Cognitive Services User grant. No model resource is created here."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = !var.foundry_enabled || try(startswith(var.foundry_resource_id, "/subscriptions/${var.subscription_id}/resourceGroups/") && strcontains(var.foundry_resource_id, "/providers/Microsoft.CognitiveServices/accounts/"), false)
+    error_message = "Foundry needs an account resource ID in the selected subscription."
+  }
+}
+
 variable "foundry_fqdn" {
   description = "Host name of the Foundry endpoint (for example <resource>.services.ai.azure.com). Required when foundry_enabled."
   type        = string

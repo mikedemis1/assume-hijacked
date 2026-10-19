@@ -162,7 +162,7 @@ BEGIN
     END IF;
     PERFORM pg_advisory_xact_lock(hashtext(p_sp));
     IF NOT EXISTS (SELECT 1 FROM public.flags WHERE supply_point_id = p_sp) THEN
-        RAISE EXCEPTION 'no protection flag on %', left(p_sp, 40);
+        RAISE EXCEPTION 'no protection flag on that home';
     END IF;
     IF v_reason IS NULL OR v_reason = '' OR length(v_reason) > 500 THEN
         RAISE EXCEPTION 'a removal needs a reason of 1 to 500 characters';

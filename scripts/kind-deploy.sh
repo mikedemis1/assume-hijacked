@@ -149,7 +149,8 @@ if [ -z "$digest" ]; then
     echo "no registry digest for $PUSH:dev after the push" >&2
     exit 1
 fi
-image="$PULL@$digest"
+tag=$(git rev-parse --short HEAD)
+image="$PULL:$tag@$digest"
 echo "image $image"
 
 # --- the secrets ---------------------------------------------------------------------------------
@@ -205,11 +206,6 @@ set -- --set-file "dbFiles.initSh=db/init/init.sh"
 for file in db/sql/*.sql; do
     set -- "$@" --set-file "dbFiles.sql.$(basename "$file" .sql)=$file"
 done
-# Components without their code in this tree run the ops stand-in while this file exists.
-if [ -f "$CHART/values-kind-stubs.yaml" ]; then
-    set -- "$@" -f "$CHART/values-kind-stubs.yaml"
-fi
-
 h upgrade --install "$RELEASE" "$CHART" \
     -f "$CHART/values-kind.yaml" \
     -f "$native_work/secrets.yaml" \

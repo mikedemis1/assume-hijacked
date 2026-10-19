@@ -27,6 +27,16 @@ module "workload_identity" {
   tags                = merge(var.tags, { component = each.key })
 }
 
+# Owner-run activation only: CI's delegated role allowlist does not include this external scope.
+resource "azurerm_role_assignment" "llm_foundry" {
+  count                            = var.foundry_enabled ? 1 : 0
+  scope                            = var.foundry_resource_id
+  role_definition_name             = "Cognitive Services User"
+  principal_id                     = module.workload_identity["llm-gateway"].principal_id
+  principal_type                   = "ServicePrincipal"
+  skip_service_principal_aad_check = true
+}
+
 # ---------------------------------------------------------------- cluster identities
 
 resource "azurerm_user_assigned_identity" "aks_control_plane" {

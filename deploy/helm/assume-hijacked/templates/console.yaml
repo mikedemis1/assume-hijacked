@@ -15,6 +15,13 @@ that way).
 {{- if eq $c.authMode "dev" -}}
 {{- $env = append $env (dict "name" "CONSOLE_DEV_USERS" "value" $c.devUsers) -}}
 {{- end -}}
+{{- $files := list -}}
+{{- if eq $c.authMode "entra" -}}
+{{- $env = append $env (dict "name" "CONSOLE_REDIRECT_URI" "value" (required "console.redirectUri is required with Entra sign-in" $c.redirectUri)) -}}
+{{- $files = append $files (dict "key" "entra-client-secret" "env" "CONSOLE_CLIENT_SECRET_FILE"
+    "value" .Values.secrets.consoleClientSecret "kvObject" "console-client-secret"
+    "what" "secrets.consoleClientSecret") -}}
+{{- end -}}
 {{ include "ah.workload" (dict
     "root" .
     "name" "console"
@@ -23,4 +30,5 @@ that way).
     "ports" (list (dict "name" "http" "port" 8084))
     "ops" true
     "env" $env
+    "files" $files
     "dbRole" "approver") }}

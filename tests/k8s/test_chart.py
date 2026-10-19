@@ -78,7 +78,8 @@ def install_values(env: str) -> dict:
     else:
         vault_users = [name for name, (_, role) in COMPONENTS.items() if role] + ["db-migrate"]
         values["db"] = {"host": "psql-ah.privatelink.postgres.database.azure.com"}
-        values["console"] = {"entra": {"tenantId": "t-1", "clientId": "c-console-app"}}
+        values["console"] = {"redirectUri": "https://console.example/auth/callback",
+                             "entra": {"tenantId": "t-1", "clientId": "c-console-app"}}
         values["azure"] = {
             "tenantId": "t-1",
             "dbAdmin": "id-db-migrate",
@@ -185,7 +186,7 @@ def test_values_schema_rejects_dev_auth_in_azure():
     assert helm("template", "kind", "--set", "console.authMode=dev").returncode == 0
 
 
-@pytest.mark.parametrize("key", ["postgresPassword", "gatewaySigningKeyPem", "anthropicApiKey",
+@pytest.mark.parametrize("key", ["postgresPassword", "gatewaySigningKeyPem", "anthropicApiKey", "consoleClientSecret",
                                  "dbPasswords.gateway"])
 def test_values_schema_rejects_secret_material_in_azure(key):
     result = helm("template", "azure", "--set", f"secrets.{key}=leaked")
@@ -235,6 +236,73 @@ def test_no_pod_automounts_sa_token(env):
         api_tokens = [s for v in spec.get("volumes", []) for s in v.get("projected", {}).get("sources", [])
                       if "serviceAccountToken" in s and "audience" not in s["serviceAccountToken"]]
         assert bool(api_tokens) == (name in API_CALLERS), name
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_the_dispatcher_accepts_the_template_the_chart_renders(env, tmp_path):
+    """The dispatcher refuses to start on a template that is not exactly the allowed one, and the
+    cluster refuses a Job that differs from it. Both come from the same rules written twice
+    (app/agent/templates.py and the chart): this loads the chart's own output with the
+    dispatcher's loader, so a drift is found here and not on a live cluster."""
+    from app.agent import templates
+
+    path = tmp_path / "job.json"
+    path.write_text(find(env, "ConfigMap", "agent-job-template")["data"]["job.json"], encoding="utf-8")
+    template = templates.load_template(path)
+    built = templates.build_job(template, 7)
+    templates.check_job(built)
+    assert built["metadata"]["labels"]["ah/ticket"] == "7"
+
+
+def test_the_local_console_has_valid_rendered_auth_configuration():
+    from uuid import UUID
+    container = find("kind", "Deployment", "console")["spec"]["template"]["spec"]["containers"][0]
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    users = json.loads(env["CONSOLE_DEV_USERS"])
+    assert env["APP_ENV"] == "kind" and env["AUTH_MODE"] == "dev"
+    assert isinstance(users, dict) and users
+    for oid, roles in users.items():
+        assert str(UUID(oid)) == oid
+        assert isinstance(roles, list) and set(roles) <= {"Approver", "SeniorApprover"} and roles
+    assert any("SeniorApprover" in roles for roles in users.values())
+
+
+def test_kind_postgres_disables_statement_and_argument_logging():
+    container = find("kind", "StatefulSet", "postgres")["spec"]["template"]["spec"]["containers"][0]
+    args = container["args"]
+    for setting in ("log_min_error_statement=panic", "log_parameter_max_length=0",
+                    "log_parameter_max_length_on_error=0"):
+        assert setting in args
+
+
+def test_the_azure_console_gets_its_callback_and_confidential_client_secret():
+    pod = find("azure", "Deployment", "console")["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    env = {entry["name"]: entry.get("value") for entry in container["env"]}
+    assert env["APP_ENV"] == "azure"
+    assert env["CONSOLE_REDIRECT_URI"] == "https://console.example/auth/callback"
+    assert env["CONSOLE_CLIENT_SECRET_FILE"] == "/var/run/secrets/ah-files/entra-client-secret"
+    assert any(mount["mountPath"] == "/var/run/secrets/ah-files" and mount["readOnly"]
+               for mount in container["volumeMounts"])
+    source = find("azure", "SecretProviderClass", "console")
+    assert "console-client-secret" in source["spec"]["parameters"]["objects"]
+
+
+def test_the_template_the_dispatcher_tests_use_is_what_the_kind_chart_renders():
+    """tests/fixtures/agent-job-template.json stands in for the mounted file in the dispatcher's
+    tests. A copy that drifts from the chart would make those tests prove the wrong thing."""
+    fixture = json.loads((ROOT / "tests" / "fixtures" / "agent-job-template.json").read_text(encoding="utf-8"))
+    assert agent_job("kind") == fixture
+
+
+def test_a_chart_template_the_dispatcher_would_refuse_is_found_here():
+    """Control for the two tests above: a changed rendering is refused by the same loader."""
+    from app.agent import templates
+
+    job = agent_job("kind")
+    job["spec"]["template"]["spec"]["serviceAccountName"] = "default"
+    with pytest.raises(templates.TemplateError):
+        templates.check_job(job)
 
 
 @pytest.mark.parametrize("env", ENVS)
@@ -948,7 +1016,6 @@ def test_into_the_fakes_only_their_callers_and_monitoring(env):
 
 # --- the ops stand-in (kind only, until the application code is merged) -----------------------
 
-STUBS_FILE = CHART / "values-kind-stubs.yaml"
 STUB_SOURCE = CHART / "files" / "ops-stub.py"
 ENTRY_POINTS = {
     **{f"tool-{t.replace('_', '-')}": ["python", "-m", "app.tools.serve", t] for t in TOOLS},
@@ -971,11 +1038,11 @@ def test_components_run_their_entry_points_without_stubs(env):
     assert commands == ENTRY_POINTS
 
 
-def test_stubbed_components_run_only_the_ops_stand_in_on_kind():
-    stubs = yaml.safe_load(STUBS_FILE.read_text(encoding="utf-8"))["stubs"]
-    assert set(stubs) == set(COMPONENTS)
+def test_explicit_stand_ins_change_only_the_command_on_kind(tmp_path):
+    values = tmp_path / "stand-ins.yaml"
+    values.write_text(yaml.safe_dump({"stubs": sorted(COMPONENTS)}), encoding="utf-8")
     source = STUB_SOURCE.read_text(encoding="utf-8")
-    result = helm("template", "kind", "-f", str(STUBS_FILE))
+    result = helm("template", "kind", "-f", str(values))
     assert result.returncode == 0, result.stderr
     stubbed = {o["metadata"]["name"]: o for o in yaml.safe_load_all(result.stdout) if o and o["kind"] == "Deployment"}
     plain = deployments("kind")

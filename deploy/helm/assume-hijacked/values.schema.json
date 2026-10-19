@@ -33,6 +33,7 @@
       "required": ["authMode"],
       "properties": {
         "authMode": {"enum": ["entra", "dev"]},
+        "redirectUri": {"type": "string"},
         "devUsers": {"type": "string"}
       }
     },
@@ -106,6 +107,7 @@
               "postgresPassword": {"$ref": "#/definitions/empty"},
               "gatewaySigningKeyPem": {"$ref": "#/definitions/empty"},
               "anthropicApiKey": {"$ref": "#/definitions/empty"},
+              "consoleClientSecret": {"$ref": "#/definitions/empty"},
               "dbPasswords": {"maxProperties": 0}
             }
           }

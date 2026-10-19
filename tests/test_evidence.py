@@ -322,12 +322,25 @@ def test_collect_images_reports_an_image_line_without_a_digest(tmp_path):
     assert doc["images"] == [{"reference": "postgres:17-alpine", "sources": ["compose.yaml"]}]
 
 
+def test_a_truncated_image_inventory_cannot_pass(reports, tmp_path):
+    root = tmp_path / "source"
+    root.mkdir()
+    items = json.loads((reports / "image-digests.json").read_text())["images"]
+    (root / "Dockerfile").write_text("\n".join("FROM " + i["reference"] for i in items), encoding="utf-8")
+    write(reports / "image-digests.json", {"images": items[:1]})
+    report = evidence.build(reports, generated=NOW, expected=FIXTURE_EXPECTED, image_root=root)
+    assert section(report, "images").status == evidence.FAIL
+    write(reports / "image-digests.json", {"images": items})
+    assert section(evidence.build(reports, generated=NOW, expected=FIXTURE_EXPECTED, image_root=root), "images").status == evidence.PASS
+
+
 # --- command line --------------------------------------------------------------------------------
 
 @pytest.fixture
 def fixture_expectations(monkeypatch):
     """The CLI asks the attack suite what to expect; the fixtures cover a few edges only."""
     monkeypatch.setattr(evidence, "load_expected", lambda: FIXTURE_EXPECTED)
+    monkeypatch.setattr(evidence, "collect_images", lambda root: json.loads((FIXTURES / "image-digests.json").read_text()))
 
 
 def test_cli_writes_the_page_and_exits_zero_unless_strict(reports, capsys, fixture_expectations):
@@ -566,12 +579,21 @@ def test_an_attack_suite_that_fails_to_import_gives_error_sections(reports, tmp_
     (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "probes.py").write_text(probes_source, encoding="utf-8")
     (package / "tickets.py").write_text("ATTACK_TICKETS = ()\n", encoding="utf-8")
-    for name in ("attacks", "attacks.probes", "attacks.tickets"):
-        monkeypatch.delitem(sys.modules, name, raising=False)
-    monkeypatch.syspath_prepend(str(tmp_path / "suite"))
-    expected = evidence.load_expected()
-    assert expected.problem and error in expected.problem
-    report = evidence.build(reports, generated=NOW)
-    assert section(report, "probes").status == evidence.ERROR
-    assert section(report, "attacks").status == evidence.ERROR
-    assert report.overall == evidence.OVERALL_FAIL
+    saved = {name: module for name, module in sys.modules.items()
+             if name == "attacks" or name.startswith("attacks.")}
+    try:
+        for name in saved:
+            sys.modules.pop(name, None)
+        monkeypatch.syspath_prepend(str(tmp_path / "suite"))
+        expected = evidence.load_expected()
+        assert expected.problem and error in expected.problem
+        report = evidence.build(reports, generated=NOW)
+        assert section(report, "probes").status == evidence.ERROR
+        assert section(report, "attacks").status == evidence.ERROR
+        assert report.overall == evidence.OVERALL_FAIL
+    finally:
+        # A failed submodule import still leaves its parent package cached.
+        for name in list(sys.modules):
+            if name == "attacks" or name.startswith("attacks."):
+                sys.modules.pop(name, None)
+        sys.modules.update(saved)

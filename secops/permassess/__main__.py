@@ -66,7 +66,7 @@ def collect_plane(plane: str, args: argparse.Namespace, env: dict[str, str], run
                   else collect_compose.render(args.compose_file, run))
         return collect_compose.collect(config)
     if plane == "k8s":
-        return collect_k8s.collect(run, args.k8s_namespace_prefix)
+        return collect_k8s.collect(run, args.k8s_namespace_prefix, set(args.k8s_exclude_namespace))
     return collect_azure.collect(run)
 
 
@@ -122,6 +122,8 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None,
     parser.add_argument("--compose-json", type=Path,
                         help="a configuration rendered earlier with docker compose config --format json")
     parser.add_argument("--k8s-namespace-prefix", default="ah-")
+    parser.add_argument("--k8s-exclude-namespace", action="append", default=[],
+                        help="explicitly exclude a namespace and record it in report info (repeatable)")
     parser.add_argument("--tool-calls", type=Path,
                         help="tool_calls rows as JSON: warn about tools granted but never called")
     parser.add_argument("--no-source-check", action="store_true",

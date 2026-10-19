@@ -99,6 +99,10 @@ def call_facts(conn: psycopg.Connection, h: bytes, tool: str) -> CallFacts:
         "FROM call_assessments WHERE lease_hash = %s",
         (EFFECT_TOOL_LIST, h),
     ).fetchone()
+    gateway_denied = conn.execute(
+        "SELECT count(*) AS n FROM tool_calls WHERE lease_hash = %s AND outcome = 'denied' "
+        "AND reason IN ('unknown_tool', 'pod_mismatch', 'descriptor_changed')", (h,),
+    ).fetchone()["n"]
     return CallFacts(
         tool=tool,
         lease_live=lease["lease_live"],
@@ -106,7 +110,7 @@ def call_facts(conn: psycopg.Connection, h: bytes, tool: str) -> CallFacts:
         paused=True if switch is None else switch["paused"],  # no switch row: fail closed
         calls_on_lease=counts["calls"],
         effect_calls_on_lease=counts["effects"],
-        denied_on_lease=counts["denied"],
+        denied_on_lease=counts["denied"] + gateway_denied,
     )
 
 

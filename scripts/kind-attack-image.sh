@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build the attack-suite image (attacks/Dockerfile), push it to the local registry and print the
-# reference pods use: localhost:5001/assume-hijacked-attacks@sha256:<digest>.
+# reference pods use: localhost:5001/assume-hijacked-attacks:<commit>@sha256:<digest>.
 # Run from the repository root with Git Bash, cluster up: `sh scripts/kind-attack-image.sh`.
 # tests/k8s/test_walls.py runs it when AH_ATTACK_IMAGE is not set.
 set -eu
@@ -18,4 +18,5 @@ if [ -z "$digest" ]; then
     echo "no registry digest for $PUSH:dev after the push" >&2
     exit 1
 fi
-echo "$PULL@$digest"
+tag=$(git rev-parse --short HEAD)
+echo "$PULL:$tag@$digest"

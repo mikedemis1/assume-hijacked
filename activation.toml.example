@@ -1,0 +1,52 @@
+# Copy to activation.toml (ignored by git). No passwords or API keys in this file.
+# Read docs/activate.md before running commands. All Azure mutation is explicit.
+[azure]
+subscription_id = "11111111-1111-1111-1111-111111111111"
+tenant_id = "22222222-2222-2222-2222-222222222222"
+location = "northeurope"
+
+[cost]
+# Recalculate from current prices for the planned session. These are operator estimates,
+# not an enforced spending cap. Budgets send alerts only.
+estimated_session_eur = 15
+approved_session_eur = 20
+budget_soft_eur = 20
+budget_alert_eur = 50
+
+[model]
+backend = "scripted" # scripted | anthropic | foundry; this one choice feeds every layer
+model = "claude-haiku-5-5"
+spending_controls_reviewed = false # required before selecting a paid backend
+# foundry_endpoint = "https://YOUR-RESOURCE.services.ai.azure.com"
+# foundry_resource_id = "/subscriptions/SUB/resourceGroups/GROUP/providers/Microsoft.CognitiveServices/accounts/NAME"
+
+[base]
+state_storage_account_name = "YOURUNIQUESTATEACCOUNT"
+acr_name = "YOURUNIQUEREGISTRY"
+budget_notification_emails = ["owner@example.com"]
+budget_start_date = "2026-10-01T00:00:00Z" # first day of the current month
+# Owner needs temporary state-plane Blob Data Contributor, see runbook.
+key_vault_allowed_ip_ranges = ["203.0.113.10/32"]
+
+[net]
+dns_block_mode = false # turn on after reviewing actual DNS query logs
+
+[lab]
+api_authorized_ip_ranges = ["203.0.113.10/32"]
+aks_admin_group_object_ids = ["33333333-3333-3333-3333-333333333333"]
+alert_email = "owner@example.com"
+enable_firewall = true
+defender_enabled = false
+system_node_count = 2
+sandbox_node_count = 1
+
+[console]
+client_id = "44444444-4444-4444-4444-444444444444"
+redirect_uri = "https://localhost:8443/auth/callback" # register this exact URL on the Entra app
+
+[deployment]
+# Build/push manually as documented, then copy its immutable ACR reference here.
+app_image = "YOURUNIQUEREGISTRY.azurecr.io/assume-hijacked:COMMIT@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+postgres_image = "YOURUNIQUEREGISTRY.azurecr.io/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24"
+azure_cli_image = "YOURUNIQUEREGISTRY.azurecr.io/azure-cli:2.90.0@sha256:e3768dde8142efa45d8f356a317aaac77abd7da15ba3719b0a150e9453f251db"
+gateway_public_key_file = "build/keys/gateway-public.pem"

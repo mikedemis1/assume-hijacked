@@ -158,24 +158,15 @@ class Dispatcher:
     def _reply(self, caller: CallerIdentity, lease: str, text: str) -> str:
         if not LEASE_FORMAT.fullmatch(lease):
             return "lease"
-        scope = self._store.scope(lease)
-        # The lease must be live and, in Kubernetes, bound to the pod that is calling. In Compose both
-        # are None. A lease that is bound to a pod and used by another, or the reverse, is refused.
-        if scope is None or scope.bound_pod != caller.pod:
-            security_event("reply_refused", reason="lease" if scope is None else "pod_mismatch")
+        outcome, ticket_id, blocked = self._store.finish_reply(lease, caller.pod, text)
+        if outcome == "lease":
+            security_event("reply_refused", reason="lease")
             return "lease"
-        facts = self._store.facts(lease)
-        if facts is None:
-            return "lease"
-        done = replies.finish(text, facts.account_text, facts.credit_asked, facts.moveout_submitted)
-        if done.blocked:
-            self._metrics.inc("dispatcher_replies_blocked_total", {"reason": done.blocked})
-            security_event("reply_blocked", ticket_id=scope.ticket_id, reason=done.blocked, where="dispatcher")
-        if not self._store.store_reply(scope.ticket_id, done.text, lease):
-            security_event("reply_duplicate", ticket_id=scope.ticket_id)
-            return "duplicate"
-        security_event("reply_stored", ticket_id=scope.ticket_id)
-        return "stored"
+        if blocked:
+            self._metrics.inc("dispatcher_replies_blocked_total", {"reason": blocked})
+            security_event("reply_blocked", ticket_id=ticket_id, reason=blocked, where="dispatcher")
+        security_event("reply_duplicate" if outcome == "duplicate" else "reply_stored", ticket_id=ticket_id)
+        return outcome
 
     # --- Jobs (Kubernetes) ---
 

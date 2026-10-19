@@ -47,15 +47,15 @@ The probe matrix (`attacks/probes.py`, live run `tests/k8s/test_walls.py`) and t
 | A tool or agent pod outside the sandbox runtime | `test_admission_rejects_tool_pod_without_runtimeclass` | none | ASI05 | T1611 | AML.T0105 |
 | The dispatcher (which may create Jobs) creates an agent Job that runs as another ServiceAccount, mounts a Secret or asks for another token | `test_admission_rejects_agent_job_off_template`, control `test_dispatcher_can_create_the_agent_job` | LLM06 | ASI03 | T1610 | none |
 
-## Walls with no test listed yet
+## Service boundary tests
 
-These walls are part of the design, but no test is listed for them here yet.
+These application tests run with the merged service implementations.
 
-| Wall | OWASP LLM | OWASP ASI | ATT&CK | ATLAS |
-|---|---|---|---|---|
-| Tool call token with the wrong audience, expired, or replayed | none | ASI03 | T1550.001 | AML.T0091.000 |
-| Gateway fails closed when the risk engine is down or slow | LLM06 | ASI08 | none | none |
-| LLM gateway token budget per lease | LLM10 | ASI08 | T1496.004 (loose: the cost is the model API, not compute) | AML.T0034.002 |
+| Wall | Tests | OWASP LLM | OWASP ASI | ATT&CK | ATLAS |
+|---|---|---|---|---|---|
+| Tool token audience, expiry and replay | `test_tool_rejects_wrong_audience_expired_and_replayed_tokens` | none | ASI03 | T1550.001 | AML.T0091.000 |
+| Gateway refuses an unavailable or slow risk engine | `test_gateway_denies_when_risk_engine_unreachable`, `test_gateway_denies_when_risk_engine_is_too_slow_and_records_a_risk_timeout` | LLM06 | ASI08 | none | none |
+| LLM gateway budget per lease | `test_budget_exceeded_returns_429`, `test_the_budget_is_per_lease` | LLM10 | ASI08 | T1496.004 (loose: model API cost) | AML.T0034.002 |
 
 ## Walls and D3FEND
 

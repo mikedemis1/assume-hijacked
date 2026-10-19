@@ -31,14 +31,22 @@
    "service_account": "db",
    "azure_identity": null,
    "runtime_class": "runc",
-   "mcp_tools": []
+   "mcp_tools": [],
+   "k8s_network_names": [
+    "db",
+    "postgres"
+   ]
   },
   "db-migrate": {
    "db_roles": [],
    "service_account": "db-migrate",
    "azure_identity": "id-db-migrate",
    "runtime_class": "runc",
-   "mcp_tools": []
+   "mcp_tools": [],
+   "k8s_network_names": [
+    "db-migrate",
+    "postgres-init"
+   ]
   },
   "dispatcher": {
    "db_roles": [
@@ -206,6 +214,7 @@
   "pg role api_owner: OWNS FUNCTION public.api_request_credit(text, numeric, text, integer) SECURITY DEFINER",
   "pg role api_owner: OWNS FUNCTION public.api_request_moveout(text, date) SECURITY DEFINER",
   "pg role api_owner: OWNS FUNCTION public.api_set_temp_protection(text) SECURITY DEFINER",
+  "pg role api_owner: OWNS FUNCTION public.finish_reply_facts(text, text) SECURITY DEFINER",
   "pg role api_owner: OWNS FUNCTION public.lease_ticket_for_tool(text, text)",
   "pg role api_owner: OWNS FUNCTION public.reply_facts(text) SECURITY DEFINER",
   "pg role api_owner: POLICY trusted_all ON public.accounts FOR ALL USING (true) WITH CHECK (true)",
@@ -228,6 +237,7 @@
   "pg role api_owner: SELECT (address) ON public.supply_points",
   "pg role api_owner: SELECT (allowed_tools) ON public.leases",
   "pg role api_owner: SELECT (body) ON public.tickets",
+  "pg role api_owner: SELECT (bound_pod) ON public.leases",
   "pg role api_owner: SELECT (customer_id) ON public.accounts",
   "pg role api_owner: SELECT (customer_id) ON public.tickets",
   "pg role api_owner: SELECT (expires_at) ON public.leases",
@@ -236,6 +246,7 @@
   "pg role api_owner: SELECT (id) ON public.customers",
   "pg role api_owner: SELECT (id) ON public.supply_points",
   "pg role api_owner: SELECT (id) ON public.tickets",
+  "pg role api_owner: SELECT (kind) ON public.action_requests",
   "pg role api_owner: SELECT (lease_hash) ON public.tool_calls",
   "pg role api_owner: SELECT (name) ON public.customers",
   "pg role api_owner: SELECT (outcome) ON public.tool_calls",
@@ -244,9 +255,11 @@
   "pg role api_owner: SELECT (supply_point_id) ON public.accounts",
   "pg role api_owner: SELECT (supply_point_id) ON public.flags",
   "pg role api_owner: SELECT (tariff) ON public.accounts",
+  "pg role api_owner: SELECT (ticket_id) ON public.action_requests",
   "pg role api_owner: SELECT (ticket_id) ON public.leases",
   "pg role api_owner: SELECT (token_hash) ON public.leases",
   "pg role api_owner: SELECT (tool) ON public.tool_calls",
+  "pg role api_owner: UPDATE (revoked) ON public.leases",
   "pg role api_owner: USAGE ON SCHEMA public",
   "pg role api_owner: USAGE ON SCHEMA public (via PUBLIC)",
   "pg role api_owner: USAGE ON public.action_requests_id_seq",
@@ -299,6 +312,7 @@
   "pg role dispatcher: ATTRIBUTES LOGIN, CONNECTION LIMIT 5",
   "pg role dispatcher: CONNECT ON DATABASE (via PUBLIC)",
   "pg role dispatcher: EXECUTE ON FUNCTION public.beat(text)",
+  "pg role dispatcher: EXECUTE ON FUNCTION public.finish_reply_facts(text, text)",
   "pg role dispatcher: EXECUTE ON FUNCTION public.lease_scope(text)",
   "pg role dispatcher: EXECUTE ON FUNCTION public.open_lease(integer, text[], text)",
   "pg role dispatcher: EXECUTE ON FUNCTION public.reply_facts(text)",
@@ -635,8 +649,11 @@
   "pg role risk_engine: SELECT (id) ON public.action_requests",
   "pg role risk_engine: SELECT (id) ON public.charges",
   "pg role risk_engine: SELECT (kind) ON public.action_requests",
+  "pg role risk_engine: SELECT (lease_hash) ON public.tool_calls",
+  "pg role risk_engine: SELECT (outcome) ON public.tool_calls",
   "pg role risk_engine: SELECT (period) ON public.charges",
   "pg role risk_engine: SELECT (reason) ON public.action_requests",
+  "pg role risk_engine: SELECT (reason) ON public.tool_calls",
   "pg role risk_engine: SELECT (status) ON public.action_requests",
   "pg role risk_engine: SELECT (ticket_id) ON public.action_requests",
   "pg role risk_engine: SELECT ON public.agent_control",
@@ -692,6 +709,9 @@
   "pg role risk_owner: SELECT (kind) ON public.action_requests",
   "pg role risk_owner: SELECT (last_success) ON public.register_sync",
   "pg role risk_owner: SELECT (lease_hash) ON public.call_assessments",
+  "pg role risk_owner: SELECT (lease_hash) ON public.tool_calls",
+  "pg role risk_owner: SELECT (outcome) ON public.tool_calls",
+  "pg role risk_owner: SELECT (reason) ON public.tool_calls",
   "pg role risk_owner: SELECT (reasons) ON public.call_assessments",
   "pg role risk_owner: SELECT (request_id) ON public.risk_assessments",
   "pg role risk_owner: SELECT (revoked) ON public.leases",
@@ -783,8 +803,11 @@
   "tool-set-temp-protection -> db"
  ],
  "k8s": [
-  "k8s serviceaccount dispatcher: create jobs.batch",
+  "k8s serviceaccount dispatcher: create jobs.batch in ah-agent",
   "k8s serviceaccount dispatcher: create tokenreviews.authentication.k8s.io",
+  "k8s serviceaccount fake-dso: create tokenreviews.authentication.k8s.io",
+  "k8s serviceaccount fake-register: create tokenreviews.authentication.k8s.io",
+  "k8s serviceaccount fake-sms: create tokenreviews.authentication.k8s.io",
   "k8s serviceaccount llm-gateway: create tokenreviews.authentication.k8s.io",
   "k8s serviceaccount tool-gateway: create tokenreviews.authentication.k8s.io"
  ],
@@ -803,7 +826,6 @@
   "azure identity id-db-migrate: Key Vault Secrets Officer on kv-tool-set-temp-protection",
   "azure identity id-dispatcher: Key Vault Secrets User on kv-dispatcher",
   "azure identity id-executor: Key Vault Secrets User on kv-executor",
-  "azure identity id-llm-gateway: Cognitive Services User on foundry-resource",
   "azure identity id-llm-gateway: Key Vault Secrets User on kv-llm-gateway",
   "azure identity id-register-sync: Key Vault Secrets User on kv-register-sync",
   "azure identity id-risk-engine: Key Vault Secrets User on kv-risk-engine",

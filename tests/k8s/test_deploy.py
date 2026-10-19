@@ -46,7 +46,8 @@ def test_deploy_installs_the_pushed_image_by_digest():
     # Reproducible: no build-time attestation, so unchanged code keeps its digest and a re-run
     # restarts nothing.
     assert "docker build --quiet --provenance=false" in text
-    assert 'image="$PULL@$digest"' in text
+    assert 'image="$PULL:$tag@$digest"' in text
+    assert 'tag=$(git rev-parse --short HEAD)' in text
     assert "PULL=localhost:5001/assume-hijacked" in text and "PUSH=127.0.0.1:5001/assume-hijacked" in text
     [call] = helm_calls()
     assert '--set "images.app=$image"' in call
@@ -306,10 +307,9 @@ def test_rotation_restarts_nothing_when_the_job_failed(run_rotate):
     assert not [c for c in calls if "rollout" in c or c.startswith("sleep 1")]
 
 
-def test_stubs_are_added_only_while_their_values_file_exists():
-    text = script()
-    assert 'if [ -f "$CHART/values-kind-stubs.yaml" ]; then' in text
-    assert "values-kind-stubs.yaml" not in "".join(helm_calls())
+def test_the_local_install_uses_the_merged_application_without_stand_ins():
+    assert not (CHART / "values-kind-stubs.yaml").exists()
+    assert "values-kind-stubs.yaml" not in script()
 
 
 # --- the ops stand-in -------------------------------------------------------------------------

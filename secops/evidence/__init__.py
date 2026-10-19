@@ -433,12 +433,20 @@ SECTIONS: tuple[tuple[str, str, str, bool, Callable[[Path, Expected], tuple[str,
 
 
 def build(folder: Path, generated: str, commit: str | None = None,
-          expected: Expected | None = None) -> Report:
+          expected: Expected | None = None, image_root: Path | None = None) -> Report:
     expected = load_expected() if expected is None else expected
     sections = []
     for key, title, source, required, read in SECTIONS:
         try:
             status, summary, body = read(folder, expected)
+            if key == "images" and image_root is not None:
+                wanted = {i["reference"] for i in collect_images(image_root)["images"]}
+                listed = [i["reference"] for i in _read_json(folder / source)["images"]]
+                missing, extra = wanted - set(listed), set(listed) - wanted
+                if missing or extra or len(listed) != len(set(listed)):
+                    status = FAIL
+                    summary = f"image inventory differs from source: {len(missing)} missing, {len(extra)} extra"
+                    body += _table(["Missing image"], [[ref] for ref in sorted(missing)])
         except FileNotFoundError:
             status, summary = NOT_RUN, f"not run: no {source}"
             body = _p(f"{source} is not in the reports folder, so this part was not run "

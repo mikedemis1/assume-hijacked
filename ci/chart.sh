@@ -55,8 +55,11 @@ fi
 mkdir -p reports
 log=$(mktemp)
 rc=0
-"$python" -m pytest -q -rs -p no:cacheprovider --confcutdir=tests/k8s \
-    --junitxml=reports/chart-junit.xml tests/k8s/test_chart.py >"$log" 2>&1 || rc=$?
+# The chart job has Helm but no Docker daemon. Rule syntax/unit tests run with promtool elsewhere;
+# rendering the monitoring chart is required here, including a failed chart download.
+AH_REQUIRE_MONITORING_RENDER=1 "$python" -m pytest -q -rs -p no:cacheprovider --confcutdir=tests/k8s \
+    --junitxml=reports/chart-junit.xml tests/k8s/test_chart.py tests/k8s/test_monitoring.py \
+    -k 'not promtool' >"$log" 2>&1 || rc=$?
 cat "$log"
 if [ "$rc" -ne 0 ]; then
     exit "$rc"

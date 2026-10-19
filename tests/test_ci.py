@@ -416,7 +416,7 @@ def test_chart_tests_job_runs_the_helm_chart_tests_on_a_pinned_helm_image():
     assert job["artifacts"]["reports"]["junit"] == "reports/chart-junit.xml"
 
 
-def test_iac_script_runs_every_check_the_brief_names():
+def test_iac_script_runs_terraform_policy_and_chart_checks():
     script = _text("ci/iac.sh")
     for needed in ("fmt -check", "init -backend=false", "-lockfile=readonly", "validate",
                    'terraform -chdir="$stack" test', "tflint", "checkov_run infra",

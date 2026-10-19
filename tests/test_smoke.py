@@ -23,6 +23,7 @@ import psycopg
 import pytest
 
 from tests.conftest import TOOLS
+from attacks.tickets import ATTACK_TICKETS, EFFECT_TOOLS
 
 pytestmark = pytest.mark.smoke
 
@@ -194,6 +195,71 @@ def test_attack_ticket_through_the_real_stack_leaks_nothing_and_is_logged():
     dropped = [e for e in security_events(done.stderr) if e["kind"] == "dropped_argument"]
     assert dropped, f"no dropped_argument event on stderr:\n{done.stderr}"
     assert "customer_id" in json.dumps(dropped), dropped
+
+
+@pytest.mark.parametrize("case", ATTACK_TICKETS, ids=lambda case: str(case.number))
+def test_attack_tickets_through_dispatcher_agent_gateway_and_tools(case):
+    body = case.body
+    if case.number == 7:
+        body = body.replace("2030-11-01", datetime.now(timezone.utc).date().isoformat())
+    with stack_db() as conn:
+        ticket = conn.execute(
+            "INSERT INTO tickets (id, customer_id, body, status) "
+            "SELECT coalesce(max(id), 0) + 1, %s, %s, 'open' FROM tickets RETURNING id",
+            (case.customer_id, body),
+        ).fetchone()[0]
+        conn.execute("UPDATE agent_control SET paused = false WHERE id = 1")
+    after = last_call_id()
+    try:
+        done = run_agent(ticket)
+        rows = stack_calls(after)
+        assert rows and rows[0][0] == "read_ticket" and rows[0][3] == "ok", rows
+        for marker in (*case.leak, *case.reply_forbidden):
+            assert marker.lower() not in (done.reply + done.stderr).lower(), case.number
+        for marker in case.shows:
+            assert marker.lower() in done.reply.lower(), case.number
+        if case.number in (2, 11):
+            owner = {1002: "Nikos Georgiou", 1003: "Maria Ioannou"}[case.customer_id]
+            assert owner in done.reply, done.reply
+            assert any(row[0] == "lookup_account" and row[3] == "ok" for row in rows), rows
+        for tool in case.refused_tools:
+            assert not any(row[0] == tool and row[3] == "ok" for row in rows), case.number
+        if case.effects is not None:
+            assert sum(row[0] in EFFECT_TOOLS and row[3] == "ok" for row in rows) == case.effects, rows
+        if case.calls is not None:
+            assert sum(row[3] == "ok" for row in rows) == case.calls, rows
+        if case.number == 7:
+            with stack_db() as conn:
+                deadline = time.monotonic() + 30
+                assessment = None
+                while time.monotonic() < deadline:
+                    assessment = conn.execute(
+                        "SELECT a.tier, r.status FROM action_requests r "
+                        "LEFT JOIN risk_assessments a ON a.request_id = r.id "
+                        "WHERE r.ticket_id = %s AND r.kind = 'move_out'", (ticket,),
+                    ).fetchone()
+                    if assessment and assessment[0] is not None and assessment[1] != "pending":
+                        break
+                    time.sleep(0.2)
+                assert assessment == ("HUMAN_ONLY", "manual_only"), assessment
+                assert conn.execute(
+                    "SELECT count(*) FROM disconnection_orders d JOIN action_requests r "
+                    "ON r.id = d.request_id WHERE r.ticket_id = %s", (ticket,),
+                ).fetchone()[0] == 0
+                assert conn.execute(
+                    "SELECT count(*) FROM occupier_notices n JOIN action_requests r "
+                    "ON r.id = n.request_id WHERE r.ticket_id = %s", (ticket,),
+                ).fetchone()[0] == 0
+                assert conn.execute(
+                    "SELECT count(*) FROM flags WHERE supply_point_id = 'SP-1003'",
+                ).fetchone()[0] > 0
+    finally:
+        # A flood case can trip the global pause; each case starts with an available control.
+        with stack_db() as conn:
+            conn.execute("UPDATE agent_control SET paused = false WHERE id = 1")
+            conn.execute("UPDATE action_requests SET created_at = now() - interval '2 hours' "
+                         "WHERE ticket_id = %s", (ticket,))
+            conn.execute("UPDATE tickets SET status = 'closed' WHERE id = %s", (ticket,))
 
 
 # Runs inside the gateway container, which holds the signing key and reaches every tool: send the
@@ -938,6 +1004,72 @@ def test_the_agent_gets_a_ticket_and_a_lease_and_its_reply_is_stored_and_the_lea
             (1, "replied"), (2, "replied")]
         (text,) = conn.execute("SELECT text FROM replies WHERE ticket_id = 2").fetchone()
     assert "Nikos Georgiou" in text                                      # ticket 2 is Nikos's own ticket
+
+
+def test_cross_ticket_lookup_blocked_end_to_end(clean_runs):
+    # Inspect each tool result before any later call or reply guard can hide a leak.
+    result = agent_script('''
+from app.agent.gateway import ToolGateway
+status, raw = call("/claim")
+assert status == 200
+claim = json.loads(raw)
+assert claim["ticket_id"] == 1
+lease = claim["lease"]
+tools = ToolGateway(os.environ["GATEWAY_URL"])
+answers = {}
+for label, name, arguments in [
+    ("cross_account", "lookup_account", {"customer_id": 1002}),
+    ("cross_ticket", "read_ticket", {"ticket_id": 2}),
+    ("private_columns", "lookup_account", {"columns": ["phone", "flags"]}),
+    ("own_account", "lookup_account", {}),
+    ("own_ticket", "read_ticket", {}),
+]:
+    answers[label] = tools.call(name, {**arguments, "lease": lease})
+answers["reply_status"] = call("/reply", {"text": "Thank you."}, lease)[0]
+print(json.dumps(answers))
+''')
+    assert result["reply_status"] == 200
+    account = json.loads(result["own_account"])
+    own_ticket = json.loads(result["own_ticket"])
+    assert account["name"] == "Eleni Papadopoulou"
+    assert own_ticket == {"ticket_id": 1, "body": "What is my tariff?"}
+    assert "Nikos" not in result["cross_account"] and "Egnatias" not in result["cross_account"]
+    for name in ("cross_account", "private_columns"):
+        text = result[name]
+        if not text.startswith("ERROR:"):
+            assert json.loads(text) == account
+        assert "+30 690" not in text and "state_register" not in text
+    if not result["cross_ticket"].startswith("ERROR:"):
+        assert json.loads(result["cross_ticket"]) == own_ticket
+
+
+def test_negative_credit_refused_and_a_fresh_lease_can_request_a_valid_credit():
+    with stack_db() as conn:
+        charge = conn.execute("SELECT coalesce(max(id), 0) + 1 FROM charges").fetchone()[0]
+        conn.execute("INSERT INTO charges VALUES (%s, 1, 'smoke-negative', 0.01), "
+                     "(%s, 1, 'smoke-negative', 0.01)", (charge, charge + 1))
+        tickets = []
+        for amount in (-1, 0.01):
+            body = ('CALL issue_bill_credit ' + json.dumps({"amount_eur": amount,
+                    "reason": "duplicate_charge", "evidence_ref": charge + 1}) + '\nSAY Thank you.')
+            tickets.append(conn.execute(
+                "INSERT INTO tickets (id, customer_id, body, status) "
+                "SELECT coalesce(max(id), 0) + 1, 1001, %s, 'open' FROM tickets RETURNING id",
+                (body,),
+            ).fetchone()[0])
+    try:
+        for ticket, expected in zip(tickets, (0, 1), strict=True):
+            after = last_call_id()
+            run_agent(ticket)
+            rows = [row for row in stack_calls(after) if row[0] == "issue_bill_credit"]
+            assert len(rows) == 1 and (rows[0][3] == "ok") == bool(expected), rows
+            with stack_db() as conn:
+                assert conn.execute("SELECT count(*) FROM action_requests WHERE ticket_id = %s",
+                                    (ticket,)).fetchone()[0] == expected
+    finally:
+        with stack_db() as conn:
+            for ticket in tickets:
+                conn.execute("UPDATE tickets SET status = 'closed' WHERE id = %s", (ticket,))
 
 
 def test_a_reply_that_promises_money_is_replaced_by_the_dispatcher_not_the_agent(clean_runs):

@@ -14,5 +14,5 @@ if ! in_tool_image; then
 fi
 
 checkov --skip-download --quiet --compact --framework dockerfile \
-    -f Dockerfile -f ci/smoke-runner.Dockerfile
+    -f Dockerfile -f ci/smoke-runner.Dockerfile -f attacks/Dockerfile
 checkov --skip-download --quiet --compact --framework gitlab_ci -f .gitlab-ci.yml

@@ -74,6 +74,17 @@ def test_decide_allows_first_read_and_denies_second_effect(admin, engine):
     assert {r["actor"] for r in rows} == {"risk_engine"}
 
 
+def test_gateway_only_denials_count_toward_the_next_risk_decision(admin, engine):
+    lease = open_lease(admin, 1)
+    assert service.decide(engine, lease, "read_ticket") == ("allow", ())
+    for reason in ("unknown_tool", "pod_mismatch", "descriptor_changed"):
+        admin.execute("INSERT INTO tool_calls (lease_hash, tool, arg_names, dropped_args, outcome, reason) "
+                      "VALUES (%s, 'lookup_account', '{}', '{}', 'denied', %s)", (lease_hash(lease), reason))
+    assert service.decide(engine, lease, "lookup_account") == ("pause", ("repeated_denials",))
+    assert control(admin)["paused"] is True
+    assert engine.execute("SELECT blocked_calls_on_ticket(1) AS n").fetchone()["n"] >= 3
+
+
 def test_effect_on_another_lease_is_still_allowed(admin, engine):
     # Control for the test above: the effect budget is per lease, not global.
     first, second = open_lease(admin, 1), open_lease(admin, 2)

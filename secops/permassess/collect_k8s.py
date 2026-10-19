@@ -1,14 +1,18 @@
 """Kubernetes: what each workload's service account may do, and which pods may reach which.
 
-RBAC. For every ServiceAccount in the assessed namespaces, whether a pod runs as it right now
-or not (the agent's account is used only by the Jobs the dispatcher starts on demand):
+RBAC. For every ServiceAccount, whether a pod runs as it right now or not, inspect each
+assessed target namespace (the dispatcher creates Jobs outside its own namespace):
     kubectl auth can-i --list --as=system:serviceaccount:<ns>:<sa>
-        --as-group=system:serviceaccounts --as-group=system:serviceaccounts:<ns> -n <ns>
-The two groups are the ones the API server gives every service account token, so a binding to
-"all service accounts" or "all service accounts of a namespace" is counted too.
+        --as-group=system:serviceaccounts --as-group=system:serviceaccounts:<ns>
+        --as-group=system:authenticated -n <target namespace>
+These groups match a service account token, including authenticated callers. Namespaced rules
+carry their target namespace. Cluster-scoped resources come from kubectl api-resources. Duplicate
+nondefault account names across assessed namespaces cause an error because the manifest format
+identifies an account by name. Default accounts have no declared grants; extra grants still fail.
 https://kubernetes.io/docs/reference/access-authn-authz/rbac/#service-account-permissions
 Rules every authenticated caller gets from the default cluster roles (system:basic-user,
-system:discovery, system:public-info-viewer) are left out; anything else is a line.
+system:discovery, system:public-info-viewer), public OIDC issuer/JWKS reads and read-only cluster
+trust bundle discovery are left out. Writes and named-resource grants are still lines.
 https://kubernetes.io/docs/reference/access-authn-authz/rbac/#default-roles-and-role-bindings
 
 Network. Edges between components (pods named by app.kubernetes.io/name), evaluated from the
@@ -17,11 +21,12 @@ open in that direction; otherwise a connection needs an egress rule on the calle
 ingress rule on the callee's side. Ports are not looked at: an edge means "some port".
 https://kubernetes.io/docs/concepts/services-networking/network-policies/
 The pods are the running ones plus the pod templates of Deployments, StatefulSets, DaemonSets,
-Jobs and CronJobs, so a component scaled to zero still counts. A pod or template in an assessed
+Jobs and CronJobs, so a component scaled to zero still counts. The dispatcher's ConfigMap also
+supplies the agent Job template when no agent Job has run yet. A pod or template in an assessed
 namespace without the name label cannot be placed in any edge, so it becomes a line of its own
 (`k8s unlabelled <kind> <namespace>/<name>`), which no manifest declares: the run fails until it
 is labelled. ipBlock rules and Cilium policies (DNS names, FQDNs, entities) are listed for the
-report, not evaluated.
+report, not evaluated. Namespace exclusions are explicit operator input and appear in report info.
 """
 from __future__ import annotations
 
@@ -35,9 +40,14 @@ _RESOURCE_BASELINE = {
     ("create", "selfsubjectaccessreviews.authorization.k8s.io"),
     ("create", "selfsubjectrulesreviews.authorization.k8s.io"),
     ("create", "selfsubjectreviews.authentication.k8s.io"),
+    ("get", "clustertrustbundles.certificates.k8s.io"),
+    ("list", "clustertrustbundles.certificates.k8s.io"),
+    ("watch", "clustertrustbundles.certificates.k8s.io"),
 }
 _URL_BASELINE = {"/api", "/api/*", "/apis", "/apis/*", "/healthz", "/livez", "/readyz",
-                 "/openapi", "/openapi/*", "/version", "/version/"}
+                 "/openapi", "/openapi/*", "/version", "/version/",
+                 "/.well-known/openid-configuration", "/.well-known/openid-configuration/",
+                 "/openid/v1/jwks", "/openid/v1/jwks/"}
 
 
 @dataclass(frozen=True)
@@ -210,15 +220,41 @@ def parse_can_i(table: str) -> list[str]:
     return sorted(set(rules))
 
 
-def collect(run: Runner = run_command, namespace_prefix: str = "ah-") -> PlaneResult:
+def _configured_jobs(configmaps: dict, in_scope) -> list[dict]:
+    jobs = []
+    for obj in configmaps.get("items") or []:
+        meta = obj.get("metadata") or {}
+        if meta.get("name") != "agent-job-template" or not in_scope(meta.get("namespace", "default")):
+            continue
+        try:
+            job = json.loads(obj.get("data", {})["job.json"])
+            if not isinstance(job, dict) or job.get("apiVersion") != "batch/v1" or job.get("kind") != "Job":
+                raise ValueError("not a Job")
+            if not in_scope(job["metadata"]["namespace"]):
+                raise ValueError("namespace is outside the assessment")
+            template = job["spec"]["template"]
+            if (template["metadata"]["labels"][NAME_LABEL] != "agent"
+                    or template["spec"]["serviceAccountName"] != "agent"):
+                raise ValueError("not the agent identity")
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            raise CollectorError("the configured agent Job template cannot be assessed") from exc
+        jobs.append(job)
+    return jobs
+
+
+def collect(run: Runner = run_command, namespace_prefix: str = "ah-",
+            excluded_namespaces: set[str] | None = None) -> PlaneResult:
+    excluded_namespaces = excluded_namespaces or set()
     def in_scope(ns: str) -> bool:
-        return ns.startswith(namespace_prefix)
+        return ns.startswith(namespace_prefix) and ns not in excluded_namespaces
 
     namespaces = _json(run, ["get", "namespaces"])
     ns_labels = {n["metadata"]["name"]: n["metadata"].get("labels") or {}
                  for n in namespaces.get("items") or []}
     pods = _json(run, ["get", "pods", "-A"])
     workloads = _json(run, ["get", "deployments,statefulsets,daemonsets,jobs,cronjobs", "-A"])
+    configured = _json(run, ["get", "configmaps", "-A"])
+    workloads["items"] = (workloads.get("items") or []) + _configured_jobs(configured, in_scope)
     policies = _json(run, ["get", "networkpolicies", "-A"]).get("items") or []
     service_accounts = _json(run, ["get", "serviceaccounts", "-A"]).get("items") or []
     unlabelled: list[str] = []
@@ -229,13 +265,25 @@ def collect(run: Runner = run_command, namespace_prefix: str = "ah-") -> PlaneRe
                       | {(sa["metadata"].get("namespace", "default"), sa["metadata"]["name"])
                          for sa in service_accounts
                          if in_scope(sa["metadata"].get("namespace", "default"))})
+    names = [sa for _, sa in accounts if sa != "default"]
+    if len(names) != len(set(names)):
+        raise CollectorError("duplicate service account name across assessed namespaces; source principals cannot be merged")
+    targets = {ns for ns in ns_labels if in_scope(ns)} | {ns for ns, _ in accounts}
+    cluster_resources = set(run(["kubectl", "api-resources", "--namespaced=false", "-o", "name"]).splitlines())
     for ns, sa in accounts:
-        table = run(["kubectl", "auth", "can-i", "--list", f"--as=system:serviceaccount:{ns}:{sa}",
-                     "--as-group=system:serviceaccounts", f"--as-group=system:serviceaccounts:{ns}",
-                     "-n", ns])
-        lines.extend(f"k8s serviceaccount {sa}: {rule}" for rule in parse_can_i(table))
+        for target in sorted(targets):
+            table = run(["kubectl", "auth", "can-i", "--list", f"--as=system:serviceaccount:{ns}:{sa}",
+                         "--as-group=system:serviceaccounts", f"--as-group=system:serviceaccounts:{ns}",
+                         "--as-group=system:authenticated", "-n", target])
+            for rule in parse_can_i(table):
+                resource = rule.split(" ", 1)[1]
+                global_rule = resource.startswith("/") or resource.split("/", 1)[0] in cluster_resources
+                suffix = "" if global_rule else f" in {target}"
+                lines.append(f"k8s serviceaccount {sa}: {rule}{suffix}")
 
     info = _ip_blocks(policies, eps)
+    info.extend(f"k8s namespace {ns} excluded explicitly" for ns in sorted(excluded_namespaces))
+    info.append("k8s public API/OIDC discovery, self reviews and read-only cluster trust bundle discovery are baseline permissions")
     try:
         cilium = _json(run, ["get", "ciliumnetworkpolicies", "-A"]).get("items") or []
         if cilium:

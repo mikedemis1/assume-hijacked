@@ -115,7 +115,8 @@ BEGIN
     WHERE session_user = 'tool_' || p_tool
       AND l.token_hash = sha256(convert_to(p_lease, 'UTF8'))
       AND NOT l.revoked AND l.expires_at > clock_timestamp()
-      AND p_tool = ANY (l.allowed_tools);
+      AND p_tool = ANY (l.allowed_tools)
+    FOR SHARE;
     IF v_ticket IS NULL THEN
         RAISE EXCEPTION 'lease invalid';
     END IF;
@@ -371,3 +372,36 @@ GRANT SELECT (lease_hash, tool, outcome) ON tool_calls TO api_owner;
 ALTER FUNCTION reply_facts(text) OWNER TO api_owner;
 REVOKE ALL ON FUNCTION reply_facts(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION reply_facts(text) TO dispatcher;
+
+-- Completion waits behind tool transactions holding the lease row, then closes it before
+-- reading the final facts. Successful effects are also read from action_requests because the
+-- gateway's audit write follows the tool's commit over a separate connection.
+CREATE FUNCTION finish_reply_facts(p_lease text, p_pod text)
+RETURNS TABLE(ticket_id int, account_text text, credit_asked bool, moveout_submitted bool)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+    v_ticket int;
+    v_hash bytea := sha256(convert_to(p_lease, 'UTF8'));
+BEGIN
+    IF session_user <> 'dispatcher' OR current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'lease invalid';
+    END IF;
+    UPDATE public.leases l SET revoked = true
+    WHERE l.token_hash = v_hash AND NOT l.revoked AND l.expires_at > clock_timestamp()
+      AND l.bound_pod IS NOT DISTINCT FROM p_pod
+    RETURNING l.ticket_id INTO v_ticket;
+    IF v_ticket IS NULL THEN RETURN; END IF;
+    RETURN QUERY
+      SELECT v_ticket, a.tariff || ' ' || a.status || ' ' || s.address,
+        (EXISTS (SELECT 1 FROM public.tool_calls c WHERE c.lease_hash = v_hash AND c.tool = 'issue_bill_credit')
+         OR EXISTS (SELECT 1 FROM public.action_requests r WHERE r.ticket_id = v_ticket AND r.kind = 'credit')),
+        (EXISTS (SELECT 1 FROM public.tool_calls c WHERE c.lease_hash = v_hash AND c.tool = 'request_disconnection' AND c.outcome = 'ok')
+         OR EXISTS (SELECT 1 FROM public.action_requests r WHERE r.ticket_id = v_ticket AND r.kind = 'move_out'))
+      FROM public.tickets t JOIN public.accounts a ON a.customer_id = t.customer_id
+      JOIN public.supply_points s ON s.id = a.supply_point_id WHERE t.id = v_ticket;
+END $$;
+GRANT UPDATE (revoked), SELECT (bound_pod) ON leases TO api_owner;
+GRANT SELECT (ticket_id, kind) ON action_requests TO api_owner;
+ALTER FUNCTION finish_reply_facts(text, text) OWNER TO api_owner;
+REVOKE ALL ON FUNCTION finish_reply_facts(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION finish_reply_facts(text, text) TO dispatcher;

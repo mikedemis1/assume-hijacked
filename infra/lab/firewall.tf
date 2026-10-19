@@ -74,14 +74,14 @@ locals {
   }
 
   llm_rules = merge(
-    {
+    var.anthropic_enabled ? {
       anthropic-api = {
         sources   = local.system_only
         fqdn_tags = []
         fqdns     = ["api.anthropic.com"]
         http      = false
       }
-    },
+    } : {},
     # llm-gateway backend "foundry" (decision 7); only when that backend is in use.
     var.foundry_enabled ? {
       foundry-api = {
@@ -166,23 +166,26 @@ resource "azurerm_firewall_policy_rule_collection_group" "egress" {
     }
   }
 
-  application_rule_collection {
-    name     = "llm-egress"
-    priority = 200
-    action   = "Allow"
+  dynamic "application_rule_collection" {
+    for_each = length(local.llm_rules) > 0 ? [1] : []
+    content {
+      name     = "llm-egress"
+      priority = 200
+      action   = "Allow"
 
-    dynamic "rule" {
-      for_each = local.llm_rules
+      dynamic "rule" {
+        for_each = local.llm_rules
 
-      content {
-        name                  = rule.key
-        source_addresses      = rule.value.sources
-        destination_fqdn_tags = rule.value.fqdn_tags
-        destination_fqdns     = rule.value.fqdns
+        content {
+          name                  = rule.key
+          source_addresses      = rule.value.sources
+          destination_fqdn_tags = rule.value.fqdn_tags
+          destination_fqdns     = rule.value.fqdns
 
-        protocols {
-          type = "Https"
-          port = 443
+          protocols {
+            type = "Https"
+            port = 443
+          }
         }
       }
     }

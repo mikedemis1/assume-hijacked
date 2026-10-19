@@ -486,16 +486,6 @@ def test_probe_pods_are_never_ready(probe_pods):
         assert ready == ["False"], p["metadata"]["name"]
 
 
-@pytest.mark.skip(reason="needs the app deployed: the dispatcher runs the seeded attack tickets "
-                         "(attacks.tickets.seed_sql) as real agent Jobs, and the suite judges what "
-                         "each agent got back and the reply that was stored (attacks.tickets.judge)")
-def test_attack_tickets_replay_through_the_dispatcher():
-    """Attack tickets 1-11 through dispatcher -> agent Job -> tool gateway -> tools. Steps once
-    the app runs on kind: insert seed_sql() into the database, wait until the dispatcher has run
-    an agent Job for each ticket, read each ticket's tool calls and stored reply, build an Outcome
-    per ticket and assert judge() finds nothing."""
-
-
 def hubble(probe_pods: dict, source: str, *filters: str) -> list[dict]:
     """Flows Hubble recorded from a probe pod, read on the node it runs on (egress policy is
     enforced there)."""

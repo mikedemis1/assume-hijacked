@@ -97,6 +97,23 @@ resource "azurerm_postgresql_flexible_server_configuration" "extensions" {
   value     = join(",", var.postgres_extensions)
 }
 
+# Errors can contain a home identifier or bound health-related arguments.
+# Keep application security events, without logging SQL statements or parameters.
+# https://learn.microsoft.com/azure/postgresql/parameters/parameters-reporting-logging-when-log
+resource "azurerm_postgresql_flexible_server_configuration" "privacy" {
+  for_each = {
+    log_min_error_statement           = "panic"
+    log_parameter_max_length          = "0"
+    log_parameter_max_length_on_error = "0"
+    log_statement                     = "none"
+    log_min_duration_statement        = "-1"
+    log_min_duration_sample           = "-1"
+  }
+  name      = each.key
+  server_id = azurerm_postgresql_flexible_server.this.id
+  value     = each.value
+}
+
 # The lab is destroyed every night on purpose, so prevent_destroy would only get in the way.
 # tflint-ignore: azurerm_resources_missing_prevent_destroy
 resource "azurerm_postgresql_flexible_server_database" "supplier" {

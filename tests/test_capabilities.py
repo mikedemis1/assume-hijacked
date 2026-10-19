@@ -485,7 +485,7 @@ def test_the_dispatcher_manifest_names_its_edges_and_its_kubernetes_rights():
     assert manifest["network"] == {"ingress_from": ["agent"], "egress_to": ["db"], "dns": ["cluster"]}
     # Creating Jobs and reviewing tokens: nothing else in the cluster (the chart's Role and ClusterRole).
     assert manifest["k8s"] == {"service_account": "dispatcher",
-                               "rbac": ["create jobs.batch", "create tokenreviews.authentication.k8s.io"]}
+                               "rbac": ["create jobs.batch in ah-agent", "create tokenreviews.authentication.k8s.io"]}
     assert manifest["db"]["role"] == "dispatcher"
 
 
@@ -572,7 +572,7 @@ def test_the_llm_gateway_manifest_names_its_edge_and_its_rights():
     assert manifest["k8s"] == {"service_account": "llm-gateway", "rbac": ["create tokenreviews.authentication.k8s.io"]}
     assert manifest["azure"]["identity"] == "id-llm-gateway"
     assert {(r["role"], r["scope"]) for r in manifest["azure"]["roles"]} == {
-        ("Key Vault Secrets User", "kv-llm-gateway"), ("Cognitive Services User", "foundry-resource")}
+        ("Key Vault Secrets User", "kv-llm-gateway")}
     assert manifest["runtime_class"] == "runc" and manifest["mcp"] == {"tools": []}
     assert "provider" in manifest["description"].lower()
 
@@ -580,5 +580,6 @@ def test_the_llm_gateway_manifest_names_its_edge_and_its_rights():
 def test_no_other_manifest_gives_a_component_a_model_role():
     for name, manifest in manifests().items():
         roles = {r["role"] for r in manifest["azure"]["roles"]}
-        assert ("Cognitive Services User" in roles) == (name == "llm-gateway"), name
+        # The checked-in configuration is scripted. Activation derives paid-provider grants.
+        assert "Cognitive Services User" not in roles, name
         assert ("kv-llm-gateway" in {r["scope"] for r in manifest["azure"]["roles"]}) == (name == "llm-gateway"), name

@@ -14,6 +14,8 @@ import hashlib
 import json
 import logging
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
 import pytest
@@ -405,6 +407,37 @@ def test_reply_revokes_lease(compose_dispatcher, admin, as_role):
     again = post(h.app, "/reply", lease=lease, body={"text": "Another."})
     assert (again.status_code, again.json()) == (403, {"error": "lease"})
     assert stored(admin, ticket) == "Thank you."
+
+
+def test_reply_waits_for_an_inflight_effect_before_deciding_its_notice(compose_dispatcher, as_role, admin):
+    h = compose_dispatcher
+    ticket, lease = claimed(h)
+    entered, release = threading.Event(), threading.Event()
+    def effect():
+        with as_role("tool_issue_bill_credit").transaction() as transaction:
+            transaction.connection.execute("SELECT api_request_credit(%s, 1, 'duplicate_charge', 2)", (lease,))
+            entered.set()
+            assert release.wait(10), "test did not release the effect transaction"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(effect)
+        try:
+            assert entered.wait(5), "effect did not enter its transaction"
+            reply = pool.submit(post, h.app, "/reply", lease=lease, body={"text": "Thank you."})
+            deadline, blocked = time.monotonic() + 5, False
+            while time.monotonic() < deadline and not reply.done():
+                blocked = admin.execute(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() "
+                    "AND query LIKE 'SELECT * FROM finish_reply_facts%%' AND wait_event_type = 'Lock') AS blocked"
+                ).fetchone()["blocked"]
+                if blocked:
+                    break
+                time.sleep(0.02)
+            assert blocked, "reply completion did not wait for the in-flight tool transaction"
+        finally:
+            release.set()
+        pending.result(timeout=10)
+        assert reply.result(timeout=10).status_code == 200
+    assert replies.CREDIT_NOTICE in stored(admin, ticket)
     with pytest.raises(psycopg.errors.RaiseException, match="lease invalid"):
         as_role("tool_read_ticket").execute("SELECT * FROM api_read_ticket(%s)", (lease,))
 

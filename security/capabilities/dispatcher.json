@@ -29,6 +29,7 @@
     },
     "execute": [
       "beat(text)",
+      "finish_reply_facts(text, text)",
       "lease_scope(text)",
       "open_lease(integer, text[], text)",
       "reply_facts(text)",
@@ -49,7 +50,7 @@
   "k8s": {
     "service_account": "dispatcher",
     "rbac": [
-      "create jobs.batch",
+      "create jobs.batch in ah-agent",
       "create tokenreviews.authentication.k8s.io"
     ]
   },

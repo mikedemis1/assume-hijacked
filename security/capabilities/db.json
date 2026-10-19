@@ -25,7 +25,7 @@
           ],
           "action_requests": [
             "INSERT (account_id, amount_eur, evidence_ref, kind, move_out_date, reason, ticket_id)",
-            "SELECT (id)"
+            "SELECT (id, kind, ticket_id)"
           ],
           "action_requests_id_seq": [
             "USAGE"
@@ -44,7 +44,8 @@
             "SELECT (supply_point_id)"
           ],
           "leases": [
-            "SELECT (allowed_tools, expires_at, revoked, ticket_id, token_hash)"
+            "SELECT (allowed_tools, bound_pod, expires_at, revoked, ticket_id, token_hash)",
+            "UPDATE (revoked)"
           ],
           "supply_points": [
             "SELECT (address, id)"
@@ -81,7 +82,8 @@
           "FUNCTION api_request_moveout(text, date) SECURITY DEFINER",
           "FUNCTION api_set_temp_protection(text) SECURITY DEFINER",
           "FUNCTION lease_ticket_for_tool(text, text)",
-          "FUNCTION reply_facts(text) SECURITY DEFINER"
+          "FUNCTION reply_facts(text) SECURITY DEFINER",
+          "FUNCTION finish_reply_facts(text, text) SECURITY DEFINER"
         ],
         "default_privileges": [
           "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
@@ -165,6 +167,9 @@
           ],
           "risk_assessments": [
             "SELECT (request_id)"
+          ],
+          "tool_calls": [
+            "SELECT (lease_hash, outcome, reason)"
           ]
         },
         "execute": [],
@@ -734,6 +739,10 @@
   },
   "k8s": {
     "service_account": "db",
+    "network_names": [
+      "db",
+      "postgres"
+    ],
     "rbac": []
   },
   "azure": {

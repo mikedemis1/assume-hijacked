@@ -20,6 +20,7 @@
   },
   "k8s": {
     "service_account": "db-migrate",
+    "network_names": ["db-migrate", "postgres-init"],
     "rbac": []
   },
   "azure": {

@@ -261,7 +261,7 @@ def build_expected(manifests: list[dict], source: str) -> dict:
         for source_ in _list(f"{name}.network.ingress_from", net.get("ingress_from")):
             edges.add(canon.edge(source_, name))
 
-        kube = _keys(f"{name}.k8s", m.get("k8s") or {}, {"service_account", "rbac"})
+        kube = _keys(f"{name}.k8s", m.get("k8s") or {}, {"service_account", "rbac", "network_names"})
         sa = kube.get("service_account")
         for rule in _list(f"{name}.k8s.rbac", kube.get("rbac")):
             if not sa:
@@ -284,6 +284,11 @@ def build_expected(manifests: list[dict], source: str) -> dict:
             "runtime_class": m.get("runtime_class"),
             "mcp_tools": tools,
         }
+        if "network_names" in kube:
+            aliases = _list(f"{name}.k8s.network_names", kube["network_names"])
+            if not aliases or any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+                raise ManifestError(f"{name}.k8s.network_names must name at least one component label")
+            components[name]["k8s_network_names"] = aliases
 
     for grant in public_grants:
         pg.update(canon.pg_role(r, grant, via_public=True) for r in expandable)

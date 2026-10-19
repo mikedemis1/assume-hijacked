@@ -17,7 +17,7 @@
   },
   "k8s": {
     "service_account": "fake-sms",
-    "rbac": []
+    "rbac": ["create tokenreviews.authentication.k8s.io"]
   },
   "azure": {
     "identity": null,

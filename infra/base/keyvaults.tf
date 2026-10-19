@@ -88,6 +88,9 @@ resource "azurerm_key_vault" "workload" {
   tags = merge(var.tags, { workload = each.key })
 
   lifecycle {
+    # Base vaults survive a lab session, like the state storage in this stack.
+    prevent_destroy = true
+
     precondition {
       condition     = can(regex("^[a-z][a-z0-9]*(-[a-z0-9]+)*$", local.key_vault_physical_names[each.key])) && length(local.key_vault_physical_names[each.key]) >= 3 && length(local.key_vault_physical_names[each.key]) <= 24
       error_message = "Derived vault name is not valid: 3-24 characters, lowercase letters, digits and single hyphens, starting with a letter."

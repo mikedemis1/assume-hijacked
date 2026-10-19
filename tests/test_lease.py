@@ -167,6 +167,11 @@ def test_lease_still_works_in_a_read_committed_transaction(admin, as_role):
     try:
         conn.execute("SELECT 1")
         assert call_api(conn, "lookup_account", lease)
+        # An actual tool transaction holds a shared lease lock until commit, so
+        # completion waits for its effects. Take the old snapshot control in a
+        # fresh transaction, without an already-running tool call holding it.
+        conn.commit()
+        conn.execute("SELECT 1")
         as_role("dispatcher").execute("SELECT revoke_lease(%s)", (lease,))
         with pytest.raises(psycopg.errors.RaiseException, match="lease invalid"):
             call_api(conn, "lookup_account", lease)

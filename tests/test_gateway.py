@@ -822,6 +822,25 @@ def lease_headers(lease):
     return {"X-Lease": lease}
 
 
+@pytest.mark.parametrize("header", ["X-Lease", "x-lease", "x-LEASE"])
+def test_the_agent_replaces_callback_lease_headers_in_every_case(settings, admin, as_role, header):
+    lease = open_lease(admin, 1)
+    built = build(settings, as_role)
+    agent = AppGatewayClient(built, headers={header: "not-the-issued-lease"})
+    text = agent.call("lookup_account", {"lease": lease})
+    assert not text.startswith("ERROR:"), text
+    answer = json.loads(text)
+    assert answer["name"] == "Eleni Papadopoulou"
+    assert all(lease.encode() not in body for _, body in agent.sent if body)
+
+
+@pytest.mark.parametrize("header", ["X-Lease", "x-lease", "x-LEASE"])
+def test_a_callback_cannot_supply_a_lease_when_the_agent_supplies_none(settings, admin, as_role, header):
+    lease = open_lease(admin, 1)
+    agent = AppGatewayClient(build(settings, as_role), headers={header: lease})
+    assert agent.call("read_ticket", {}) == "ERROR: lease"
+
+
 def test_the_agent_client_reaches_a_tool_through_the_gateway(settings, admin, as_role):
     lease = open_lease(admin, 1)
     built = build(settings, as_role)

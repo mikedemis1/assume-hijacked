@@ -6,6 +6,7 @@
     "host": "psql-ah.privatelink.postgres.database.azure.com"
   },
   "console": {
+    "redirectUri": "https://console.example/auth/callback",
     "entra": {
       "tenantId": "t-1",
       "clientId": "c-console-app"

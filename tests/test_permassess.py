@@ -425,6 +425,7 @@ def _cluster(policies, can_i=None, extra_pods=(), extra_accounts=()):
             deploy("tool-lookup-account", "ah-tools", "tool-lookup-account"), cron]},
         ("get", "networkpolicies"): {"items": policies},
         ("get", "ciliumnetworkpolicies"): {"items": []},
+        ("get", "configmaps"): {"items": []},
         ("get", "serviceaccounts"): {"items": [
             {"metadata": {"name": sa, "namespace": namespace}}
             for namespace, sa in (("ah-gateway", "default"), ("ah-tools", "default"),
@@ -438,9 +439,12 @@ def _cluster(policies, can_i=None, extra_pods=(), extra_accounts=()):
 
     def run(args):
         calls.append(list(args))
+        if args[1:2] == ["api-resources"]:
+            return "tokenreviews.authentication.k8s.io\nclustertrustbundles.certificates.k8s.io\n"
         if args[1:4] == ["auth", "can-i", "--list"]:
             sa = args[4].rsplit(":", 1)[1]
-            return can_i.get(sa, CAN_I_PLAIN)
+            own_namespace = args[4].split(":")[-2]
+            return can_i.get(sa, CAN_I_PLAIN) if args[-1] == own_namespace else CAN_I_PLAIN
         return json.dumps(data[tuple(args[1:3])])
 
     return run, calls
@@ -487,7 +491,7 @@ def test_extra_k8s_edge_and_rbac_fail(expected_doc):
     # The service account is impersonated with its groups, in its own namespace.
     assert ["kubectl", "auth", "can-i", "--list", "--as=system:serviceaccount:ah-gateway:tool-gateway",
             "--as-group=system:serviceaccounts", "--as-group=system:serviceaccounts:ah-gateway",
-            "-n", "ah-gateway"] in calls
+            "--as-group=system:authenticated", "-n", "ah-gateway"] in calls
 
 
 CAN_I_SECRETS = CAN_I_PLAIN + (
@@ -500,7 +504,7 @@ def test_service_account_without_a_running_pod_is_still_assessed(expected_doc):
     run, calls = _cluster(DEFAULT_DENY, {"agent": CAN_I_SECRETS},
                           extra_accounts=[("ah-agent", "agent")])
     d = diff.compare("k8s", expected_doc, collect_k8s.collect(run))
-    assert d.extra == ["k8s serviceaccount agent: get secrets"]
+    assert d.extra == ["k8s serviceaccount agent: get secrets in ah-agent"]
     assert any(c[4:5] == ["--as=system:serviceaccount:ah-agent:agent"] for c in calls)
 
 

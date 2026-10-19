@@ -250,11 +250,11 @@ BEGIN
     END IF;
     -- 'SP-1003 ' or 'sp-1003' is a different string, so it is refused here too.
     IF NEW.supply_point_id IS DISTINCT FROM req.home THEN
-        RAISE EXCEPTION 'order for % but request % is for %', NEW.supply_point_id, NEW.request_id, req.home;
+        RAISE EXCEPTION 'the order is not for the home of request %', NEW.request_id;
     END IF;
     PERFORM pg_advisory_xact_lock(hashtext(NEW.supply_point_id));
     IF EXISTS (SELECT 1 FROM public.flags WHERE supply_point_id = NEW.supply_point_id) THEN
-        RAISE EXCEPTION 'supply point % is protected', NEW.supply_point_id;
+        RAISE EXCEPTION 'the home of request % is protected', NEW.request_id;
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM public.register_sync

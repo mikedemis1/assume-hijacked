@@ -11,7 +11,7 @@
 # Compose stack is down, and remove it when the check is done.
 #
 # Grafana:       kubectl --context kind-ah -n ah-monitoring port-forward svc/kps-grafana 3000:80
-#                login admin, password in the Secret grafana-admin (printed at the first install)
+#                login admin, retrieve its password from the Secret grafana-admin
 # Mailpit:       kubectl --context kind-ah -n ah-monitoring port-forward svc/mailpit 8025:8025
 # Prometheus:    kubectl --context kind-ah -n ah-monitoring port-forward svc/kps-prometheus 9090:9090
 set -eu
@@ -76,7 +76,7 @@ grafana_secret() {
     password=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
     k --namespace "$NAMESPACE" create secret generic grafana-admin \
         --from-literal=admin-user=admin --from-literal=admin-password="$password" >/dev/null
-    echo "Grafana login: admin / $password (kept in the Secret grafana-admin)"
+    echo "Grafana credentials created in Secret ah-monitoring/grafana-admin"
 }
 
 # The dashboard is a ConfigMap with the label the Grafana sidecar looks for.
@@ -102,7 +102,7 @@ install_stack() {
     fi
     helm --kube-context "$CONTEXT" upgrade --install "$RELEASE" \
         "$work/kube-prometheus-stack-$KPS_VERSION.tgz" --namespace "$NAMESPACE" \
-        --values deploy/monitoring/kube-prometheus-values.yaml --wait --timeout 8m
+        --values deploy/monitoring/kube-prometheus-values.yaml --wait --timeout 12m
 }
 
 case "${1:-install}" in

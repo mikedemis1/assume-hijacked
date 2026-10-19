@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import psycopg
+from app.dispatcher import replies
 
 # Every lease the dispatcher opens lists all five tools: what a run may actually do is decided by
 # the gateway and the risk engine on each call, not by a shorter list here.
@@ -162,6 +163,23 @@ class DispatcherDb:
             conn.execute("SELECT revoke_lease(%s)", (lease,))
             return stored is not None
 
+        return self._use(work)
+
+    def finish_reply(self, lease: str, pod: str | None, text: str):
+        """Close the lease, read final facts, guard and store the reply in one transaction."""
+        def work(conn):
+            facts = conn.execute("SELECT * FROM finish_reply_facts(%s, %s)", (lease, pod)).fetchone()
+            if facts is None:
+                return "lease", None, None
+            done = replies.finish(text, facts["account_text"], facts["credit_asked"], facts["moveout_submitted"])
+            stored = conn.execute(
+                "INSERT INTO replies (ticket_id, text) VALUES (%s, %s) ON CONFLICT (ticket_id) DO NOTHING RETURNING ticket_id",
+                (facts["ticket_id"], done.text),
+            ).fetchone()
+            if stored:
+                conn.execute("UPDATE agent_runs SET status = 'replied' WHERE ticket_id = %s AND status = 'claimed'",
+                             (facts["ticket_id"],))
+            return "stored" if stored else "duplicate", facts["ticket_id"], done.blocked
         return self._use(work)
 
     # --- Jobs (Kubernetes) ---

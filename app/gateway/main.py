@@ -104,11 +104,11 @@ def main() -> None:
     )
     app = build_app(gateway, auth)
     # All interfaces of the container: the agent reaches it from another container or pod. The
-    # network is the wall (edge_agent_gateway in compose.yaml, NetworkPolicy in Kubernetes); no
-    # access log, so nothing about a request but the process's own security events is written.
+    # network limits reachability, and the caller check verifies the peer subnet (Compose) or
+    # projected token (Kubernetes). No access log: only the process's security events are written.
     # proxy_headers off: the caller check reads the peer address of the connection, never a header.
-    uvicorn.run(  # nosec B104
-        app, host="0.0.0.0", port=PORT, access_log=False, log_level="warning", proxy_headers=False
+    uvicorn.run(
+        app, host="0.0.0.0", port=PORT, access_log=False, log_level="warning", proxy_headers=False  # nosec B104 - container network and caller authentication restrict access
     )
 
 
