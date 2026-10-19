@@ -11,6 +11,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -547,6 +548,8 @@ def test_a_model_key_exists_in_the_override_and_reaches_the_llm_gateway_only():
 
 
 def test_the_override_merges_into_a_valid_stack_where_only_the_llm_gateway_changes():
+    if shutil.which("docker") is None:
+        pytest.skip("needs the docker CLI to render the merged Compose file")
     done = subprocess.run(
         ["docker", "compose", "--profile", "manual", "-f", "compose.yaml", "-f", "compose.llm-anthropic.yaml", "config", "--format", "json"],
         cwd=ROOT, capture_output=True, text=True, check=False,

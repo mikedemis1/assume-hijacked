@@ -7,6 +7,14 @@
 . ci/lib.sh
 
 if in_ci; then
+    # Some tests ask git which files are ignored, and the kind deploy script tags images with
+    # the commit; python:3.12-slim has no git.
+    if ! command -v git >/dev/null 2>&1; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq --no-install-recommends git >/dev/null
+        git config --global --add safe.directory "$PWD"
+    fi
     install_python_tools
     . ci/db-setup.sh
 fi

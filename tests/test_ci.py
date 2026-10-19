@@ -561,6 +561,8 @@ def _scratch_repo(tmp_path, standins: dict[str, str]):
     bin_dir.mkdir()
     for name, body in standins.items():
         (bin_dir / name).write_text(body, encoding="utf-8", newline="\n")
+        # Windows runs any file sh is pointed at; Linux needs the execute bit.
+        (bin_dir / name).chmod(0o755)
     return str(bin_dir) + os.pathsep + os.environ["PATH"]
 
 
@@ -910,6 +912,7 @@ def test_permissions_script_assesses_first_and_keeps_the_worst_exit_code(tmp_pat
     _scratch_repo(tmp_path, {})
     python = tmp_path / "bin" / "python-standin"
     python.write_text(PYTHON_STANDIN, encoding="utf-8", newline="\n")
+    python.chmod(0o755)
     log = tmp_path / "standin.log"
     env = {**os.environ, "GITLAB_CI": "", "PYTHON": str(python), "STANDIN_LOG": str(log),
            "STANDIN_ASSESS_RC": str(assess_rc), "STANDIN_REPORT_RC": str(report_rc),
