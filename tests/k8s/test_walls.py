@@ -453,11 +453,12 @@ def addresses(probe_pods) -> dict[str, str]:
 @pytest.fixture(scope="session")
 def probe_results(probe_pods, addresses) -> dict[str, dict]:
     results = run_matrix(MATRIX, probe_pods, addresses)
-    # A new pod's identity reaches every node's policy maps within a second or two: an allowed
-    # edge that timed out right after start-up is tried again. A denied edge is never retried:
-    # one connection through is a hole.
+    # A new pod's identity reaches every node's policy maps within a second or two, and the
+    # outside-name control waits on the host's resolver: an allowed edge that timed out or
+    # failed right after start-up is tried again. A denied edge is never retried: one connection
+    # through is a hole.
     for _ in range(2):
-        late = {r["edge"] for r in results if r["expected"] == probes.ALLOW and r["observed"] == probes.DENY}
+        late = {r["edge"] for r in results if r["expected"] == probes.ALLOW and r["observed"] != probes.ALLOW}
         if not late:
             break
         time.sleep(3)
