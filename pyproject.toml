@@ -37,11 +37,12 @@ markers = [
 ]
 addopts = "-m 'not smoke and not k8s' -rs"
 
-# ruff: the errors and pyflakes rules that find real mistakes (unused imports, undefined names),
-# no style opinions. https://docs.astral.sh/ruff/rules/
+# ruff: a narrower set than ruff's default rule set: the errors and pyflakes rules that find real
+# mistakes (unused imports, undefined names). https://docs.astral.sh/ruff/rules/
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
 # A pytest fixture imported from another module and then named as a test argument is "redefined".
-"tests/*" = ["F811"]
+# Only this file, so F811 still catches a duplicated test name everywhere else.
+"tests/test_tokens.py" = ["F811"]

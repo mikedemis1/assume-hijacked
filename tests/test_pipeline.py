@@ -213,6 +213,22 @@ def test_secret_scan_gets_the_full_history():
     assert "reports/gitleaks.json" in job["artifacts"]["paths"]
 
 
+def test_terraform_validation_fails_when_it_finds_no_stack():
+    script = _script("lint")
+    assert 'if [ -z "$stacks" ]' in script
+    assert script.index('if [ -z "$stacks" ]') < script.index("terraform -chdir")
+
+
+def test_local_only_tls_workaround_is_never_set_by_the_pipeline_or_a_script():
+    """TF_DISABLE_PLUGIN_TLS=1 works around the antivirus on one PC; nothing committed may set it."""
+    files = [ROOT / ".gitlab-ci.yml", *sorted((ROOT / "scripts").glob("*.sh"))]
+    assert len(files) > 2
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert not re.search(r"TF_DISABLE_PLUGIN_TLS\s*[=:]", text), path.name
+        assert not re.search(r"export\s+TF_DISABLE_PLUGIN_TLS", text), path.name
+
+
 def test_terraform_providers_follow_the_committed_lock():
     # -lockfile=readonly: a changed provider or a missing hash fails here, not at the first apply.
     assert "-lockfile=readonly" in _script("lint")

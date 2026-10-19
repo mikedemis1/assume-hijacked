@@ -65,7 +65,12 @@ lint:
     - terraform fmt -check -recursive -diff infra
     - |
       set -eu
-      for stack in $(find infra -name versions.tf -not -path '*/.terraform/*' -exec dirname {} \; | sort); do
+      stacks=$(find infra -name versions.tf -not -path '*/.terraform/*' -exec dirname {} \; | sort)
+      if [ -z "$stacks" ]; then
+        echo "no Terraform stack found under infra" >&2
+        exit 1
+      fi
+      for stack in $stacks; do
         echo "== $stack"
         terraform -chdir="$stack" init -backend=false -input=false -lockfile=readonly
         terraform -chdir="$stack" validate

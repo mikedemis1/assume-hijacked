@@ -9,6 +9,8 @@
 # only this job's network reaches it). The first thing done here is to replace it with a random
 # one. Every role password is random too, made here, never printed, gone with the job.
 
+set -eu
+
 # 48 random hex characters, for throwaway passwords. Plain POSIX tools: works on Alpine and Debian.
 rand_hex() {
     od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
