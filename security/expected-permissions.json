@@ -238,6 +238,8 @@
   "pg role api_owner: SELECT (allowed_tools) ON public.leases",
   "pg role api_owner: SELECT (body) ON public.tickets",
   "pg role api_owner: SELECT (bound_pod) ON public.leases",
+  "pg role api_owner: SELECT (created_at) ON public.action_requests",
+  "pg role api_owner: SELECT (created_at) ON public.leases",
   "pg role api_owner: SELECT (customer_id) ON public.accounts",
   "pg role api_owner: SELECT (customer_id) ON public.tickets",
   "pg role api_owner: SELECT (expires_at) ON public.leases",

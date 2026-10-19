@@ -25,7 +25,7 @@
           ],
           "action_requests": [
             "INSERT (account_id, amount_eur, evidence_ref, kind, move_out_date, reason, ticket_id)",
-            "SELECT (id, kind, ticket_id)"
+            "SELECT (created_at, id, kind, ticket_id)"
           ],
           "action_requests_id_seq": [
             "USAGE"
@@ -44,7 +44,7 @@
             "SELECT (supply_point_id)"
           ],
           "leases": [
-            "SELECT (allowed_tools, bound_pod, expires_at, revoked, ticket_id, token_hash)",
+            "SELECT (allowed_tools, bound_pod, created_at, expires_at, revoked, ticket_id, token_hash)",
             "UPDATE (revoked)"
           ],
           "supply_points": [

@@ -442,6 +442,27 @@ def test_reply_waits_for_an_inflight_effect_before_deciding_its_notice(compose_d
         as_role("tool_read_ticket").execute("SELECT * FROM api_read_ticket(%s)", (lease,))
 
 
+def test_reply_notices_ignore_requests_filed_before_the_lease_opened(compose_dispatcher, admin, as_role):
+    # A request left on the same ticket by an earlier run is not this run's doing, so it adds no
+    # notice. The control: the same two kinds of request filed by the tools during the lease do.
+    h = compose_dispatcher
+    admin.execute(
+        "INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref, move_out_date, created_at) "
+        "VALUES ('move_out', 1, 1, NULL, NULL, NULL, current_date, now() - interval '1 hour'), "
+        "('credit', 1, 1, 1.00, 'duplicate_charge', 2, NULL, now() - interval '1 hour')"
+    )
+    ticket, lease = claimed(h)
+    assert post(h.app, "/reply", lease=lease, body={"text": "Thank you."}).status_code == 200
+    assert stored(admin, ticket) == "Thank you."
+    admin.execute("DELETE FROM replies")
+    admin.execute("DELETE FROM agent_runs")
+    ticket, lease = claimed(h)
+    as_role("tool_request_disconnection").execute("SELECT api_request_moveout(%s, current_date)", (lease,))
+    as_role("tool_issue_bill_credit").execute("SELECT api_request_credit(%s, 1, 'duplicate_charge', 2)", (lease,))
+    assert post(h.app, "/reply", lease=lease, body={"text": "Thank you."}).status_code == 200
+    assert replies.CREDIT_NOTICE in stored(admin, ticket) and replies.MEDICAL_QUESTION in stored(admin, ticket)
+
+
 BAD_LEASES = {
     "unknown": "ab" * 32,
     "empty": "",
