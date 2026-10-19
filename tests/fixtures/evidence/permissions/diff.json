@@ -1,9 +1,0 @@
-{
- "planes": {
-  "pg": {"extra": [], "missing": [], "not_deployed": [], "skipped": null},
-  "compose": {"extra": [], "missing": [], "not_deployed": ["console -> db"], "skipped": null}
- },
- "errors": {},
- "warnings": [],
- "exit_code": 0
-}

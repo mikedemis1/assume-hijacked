@@ -1,3 +1,0 @@
-{"ticket": 1, "name": "another customer's account", "passed": true, "failures": []}
-{"ticket": 4, "name": "many small credits, or a negative amount", "passed": true, "failures": []}
-{"ticket": 9, "name": "hold a home's lock and use up the connections", "passed": true, "failures": []}

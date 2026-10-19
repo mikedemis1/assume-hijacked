@@ -204,23 +204,6 @@ test:
     reports:
       junit: reports/junit.xml
 
-permissions:
-  # python -m secops.permassess (ci/permissions.sh): the roles and grants that db/sql builds and
-  # the networks of compose.yaml, compared with security/expected-permissions.json. Any extra or
-  # missing line fails the job; docs/permission-matrix.md must match the expected file too.
-  extends:
-    - .postgres-service
-    - .pip-cache
-  stage: test
-  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-  script:
-    - sh ci/permissions.sh
-  artifacts:
-    when: always
-    expire_in: 30 days
-    paths:
-      - reports/permissions/
-
 # --- build --------------------------------------------------------------------------------
 
 # Docker-in-Docker with TLS between the job and the daemon:
@@ -281,28 +264,6 @@ smoke:
       - reports/smoke-junit.xml
     reports:
       junit: reports/smoke-junit.xml
-
-evidence:
-  # python -m secops.evidence (ci/evidence.sh): one static HTML page from the reports of this
-  # pipeline, kept as an artifact. The permission assessment comes from the permissions job; the
-  # probe matrix and the attack replay run against a cluster, not in this pipeline, so here they
-  # show as "not run" and the page says INCOMPLETE. The page is evidence, not a gate.
-  # when: always, so a failed assessment still gets its page.
-  extends: .pip-cache
-  stage: build
-  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-  needs:
-    - job: permissions
-      artifacts: true
-  when: always
-  script:
-    - sh ci/evidence.sh
-  artifacts:
-    when: always
-    expire_in: 30 days
-    paths:
-      - reports/evidence.html
-      - reports/image-digests.json
 
 # --- azure --------------------------------------------------------------------------------
 

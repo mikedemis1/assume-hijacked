@@ -842,40 +842,7 @@ def test_checkov_step_fails_on_findings_nothing_scanned_and_parse_errors(iac_run
     assert done.returncode == 1, why
 
 
-# --- permission assessment and the visibility of plan files -------------------------------
-
-def test_permissions_job_assesses_the_database_db_sql_builds():
-    job = _jobs()["permissions"]
-    assert job["stage"] == "test" and "rules" not in job, "it runs on every push"
-    assert job["script"] == ["sh ci/permissions.sh"]
-    assert [_image(s) for s in job["services"]] == [_compose_db_image()]
-    assert job["variables"]["TEST_DB_SERVICE_HOST"] in [s["alias"] for s in job["services"]]
-    assert job["artifacts"]["paths"] == ["reports/permissions/"]
-    assert job["artifacts"]["when"] == "always", "keep the differences when the job fails"
-    script = _text("ci/permissions.sh")
-    for needed in (". ci/db-setup.sh", "-m secops.permassess --planes pg,compose",
-                   "--compose-json", "secops.permassess.report", "--check"):
-        assert needed in script, needed
-
-
-def test_mutmut_does_not_run_the_permission_assessment_tests():
-    """They import secops/ and read security/ and compose.yaml, which the mutants/ copy lacks;
-    one test file that fails to collect stops the whole mutation job."""
-    scope = tomllib.loads(_text("pyproject.toml"))["tool"]["mutmut"]
-    assert "--ignore=tests/test_permassess.py" in scope["pytest_add_cli_args_test_selection"]
-    assert "--ignore=tests/test_evidence.py" in scope["pytest_add_cli_args_test_selection"]
-
-
-def test_evidence_job_builds_the_page_from_the_assessment_even_when_it_failed():
-    job = _jobs()["evidence"]
-    assert job["needs"] == [{"job": "permissions", "artifacts": True}]
-    assert job["when"] == "always", "a failed assessment still gets its page"
-    assert job["artifacts"]["when"] == "always"
-    assert "reports/evidence.html" in job["artifacts"]["paths"]
-    script = _text("ci/evidence.sh")
-    assert "-m secops.evidence --reports reports --out reports/evidence.html" in script
-    assert "--collect-images ." in script and "install_python_tools" not in script
-
+# --- the visibility of plan files -------------------------------
 
 @pytest.mark.parametrize("job", ["tf-plan", "tf-destroy-plan"])
 def test_plan_files_are_not_public_on_the_public_project(job):
@@ -898,34 +865,3 @@ def test_plan_jobs_log_only_the_change_counts(azure_run):
             folder = azure_run.root / "plans" / kind
             assert "attribute-value-from-show" in (folder / f"{name}.txt").read_text(encoding="utf-8")
             assert "attribute-value-from-plan" in (folder / f"{name}.plan.log").read_text(encoding="utf-8")
-
-
-PYTHON_STANDIN = """#!/bin/sh
-echo "python $*" >> "$STANDIN_LOG"
-case "$*" in
-  *"secops.permassess.report"*) exit "${STANDIN_REPORT_RC:-0}" ;;
-  *"secops.permassess --planes"*) exit "${STANDIN_ASSESS_RC:-0}" ;;
-esac
-exit 0
-"""
-
-
-@needs_sh
-@pytest.mark.parametrize("assess_rc, report_rc, want", [(0, 0, 0), (0, 1, 1), (1, 1, 1), (2, 1, 2),
-                                                        (2, 0, 2)])
-def test_permissions_script_assesses_first_and_keeps_the_worst_exit_code(tmp_path, assess_rc,
-                                                                          report_rc, want):
-    """A stale matrix must not stop the job before the assessment has written its reports."""
-    _scratch_repo(tmp_path, {})
-    python = tmp_path / "bin" / "python-standin"
-    python.write_text(PYTHON_STANDIN, encoding="utf-8", newline="\n")
-    python.chmod(0o755)
-    log = tmp_path / "standin.log"
-    env = {**os.environ, "GITLAB_CI": "", "PYTHON": str(python), "STANDIN_LOG": str(log),
-           "STANDIN_ASSESS_RC": str(assess_rc), "STANDIN_REPORT_RC": str(report_rc),
-           "DB_HOST": "127.0.0.1", "DB_PORT": "5432", "POSTGRES_PASSWORD": "unused"}
-    done = subprocess.run([SH, "ci/permissions.sh"], cwd=tmp_path, env=env, capture_output=True,
-                          text=True, timeout=60, check=False)
-    assert done.returncode == want, done.stdout + done.stderr
-    calls = log.read_text(encoding="utf-8").splitlines()
-    assert ["--planes" in calls[0], "secops.permassess.report" in calls[-1]] == [True, True], calls

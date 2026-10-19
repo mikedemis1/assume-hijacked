@@ -61,7 +61,3 @@ context/
 reports/
 mutants/
 .cache/
-
-# Operator configuration, saved plans, state backups and isolated kubeconfig.
-activation.toml
-.activation/

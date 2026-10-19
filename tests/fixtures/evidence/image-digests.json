@@ -1,6 +1,0 @@
-{
- "images": [
-  {"reference": "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1", "sources": ["Dockerfile", ".gitlab-ci.yml"]},
-  {"reference": "axllent/mailpit:v1.31.3@sha256:ed9b00c609e77e99c79b93f1178255ebc271868920f2c69a8d166bd5634ed10d", "sources": ["deploy/monitoring/mailpit.yaml"]}
- ]
-}

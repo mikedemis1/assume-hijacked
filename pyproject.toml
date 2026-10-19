@@ -65,11 +65,6 @@ pytest_add_cli_args_test_selection = [
     "--ignore=tests/test_supply_chain.py",
     "--ignore=tests/test_ci.py",
     "--ignore=tests/test_smoke.py",
-    # Imports secops/ and reads security/ and compose.yaml, none of which is in mutants/.
-    "--ignore=tests/test_permassess.py",
-    # Imports secops/, which is not in mutants/ either.
-    "--ignore=tests/test_evidence.py",
     "--ignore=tests/k8s",
     "--ignore=tests/test_capabilities.py",
-    "--ignore=tests/test_activation.py",
 ]

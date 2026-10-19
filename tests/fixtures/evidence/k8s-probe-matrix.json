@@ -1,7 +1,0 @@
-[
- {"edge": "agent -> tool-gateway:8080", "source": "agent", "kind": "tcp", "expected": "allow", "observed": "allow", "detail": "connected", "why": "edge-05 agent -> tool-gateway"},
- {"edge": "agent -> postgres:5432", "source": "agent", "kind": "tcp", "expected": "deny", "observed": "deny", "detail": "timeout", "why": "agent has no database"},
- {"edge": "agent dns {random}.exfil.example.", "source": "agent", "kind": "dns", "expected": "deny", "observed": "deny", "detail": "REFUSED (3f9a01c2b7de.exfil.example.)", "why": "edge-22: DNS for cluster.local names only (exfiltration)"},
- {"edge": "agent resolve kubernetes.default", "source": "agent", "kind": "resolve", "expected": "allow", "observed": "allow", "detail": "resolved to 10.96.0.1", "why": "edge-22: a short service name (search list) resolves"},
- {"edge": "tool-lookup-account -> imds:80", "source": "tool-lookup-account", "kind": "tcp", "expected": "deny", "observed": "deny", "detail": "timeout", "why": "deny-instance-metadata (Cilium egressDeny)"}
-]

@@ -1,4 +1,0 @@
-pg: equal (183 lines collected)
-compose: equal (29 lines collected)
-  (1 expected lines are about names this plane does not run; see diff.json not_deployed)
-result: equal
