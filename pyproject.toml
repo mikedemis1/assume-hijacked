@@ -37,34 +37,11 @@ markers = [
 ]
 addopts = "-m 'not smoke and not k8s' -rs"
 
-# bandit reads this only with `-c pyproject.toml` (ci/sast.sh passes it):
-# https://bandit.readthedocs.io/en/latest/config.html
-# The severity and confidence thresholds are command-line options, also in ci/sast.sh.
-[tool.bandit]
-exclude_dirs = ["tests", ".venv", "mutants"]
+# ruff: the errors and pyflakes rules that find real mistakes (unused imports, undefined names),
+# no style opinions. https://docs.astral.sh/ruff/rules/
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
 
-# mutmut 3.8 option names, checked against mutmut/configuration.py of the installed version
-# and https://mutmut.readthedocs.io/en/latest/ . Run by ci/mutation.sh.
-[tool.mutmut]
-source_paths = ["app/"]
-# The walls: the agent loop and reply guard, the executor, and the account lookup tool.
-only_mutate = [
-    "app/agent/core.py",
-    "app/agent/guard.py",
-    "app/executor/*",
-    "app/risk/rules.py",
-    "app/tools/lookup_account.py",
-]
-# Copied next to the mutated code: conftest.py reloads the seed data from db/sql before each test,
-# and tests/test_fakes.py reads the start order in compose.yaml.
-also_copy = ["db/sql/", "security/capabilities/", "compose.yaml"]
-# These test files read repository files (locks, Dockerfile, pipeline, ci/ scripts) or need the
-# running Compose stack (smoke), not app code; they kill no mutant and would fail in the
-# mutants/ copy, which has none of those files. tests/test_ci.py checks this list.
-pytest_add_cli_args_test_selection = [
-    "--ignore=tests/test_supply_chain.py",
-    "--ignore=tests/test_ci.py",
-    "--ignore=tests/test_smoke.py",
-    "--ignore=tests/k8s",
-    "--ignore=tests/test_capabilities.py",
-]
+[tool.ruff.lint.per-file-ignores]
+# A pytest fixture imported from another module and then named as a test argument is "redefined".
+"tests/*" = ["F811"]

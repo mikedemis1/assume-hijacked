@@ -13,4 +13,3 @@ tests
 build/keys
 __pycache__
 reports
-mutants

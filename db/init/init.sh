@@ -5,7 +5,7 @@
 # supplier_test (the pytest suite only). With DEMO_VULNERABLE=1 the stack database also gets
 # 90-vulnerable-demo.sql, the deliberate hole of the VULNERABLE demo; the test database never does
 # (the tests add it when they need it).
-# CI (ci/db-setup.sh) runs this same file against a service container: SQL_DIR points at the
+# CI (scripts/ci-db-setup.sh) runs this same file against a service container: SQL_DIR points at the
 # checkout and psql takes the server from PGHOST/PGPASSWORD.
 set -eu
 

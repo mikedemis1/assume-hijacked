@@ -187,7 +187,8 @@ def test_unapprovable_tier_refused_even_with_valid_csrf(console,admin,tier):
     async def check(client):
         csrf,response=await login(client)
         assert (await client.post(f"/approve/{rid}",data={"csrf":csrf})).status_code == 409
-        if tier is None: assert "Protected customer" in response.text
+        if tier is None:
+            assert "Protected customer" in response.text
     asyncio.run(browser(console,check))
 
 
@@ -300,10 +301,13 @@ def test_oidc_callback_refuses_unbound_state(monkeypatch,settings,provider,attac
     async def check(client):
         start = await client.get("/login")
         state = parse_qs(urlsplit(start.headers["location"]).query)["state"][0]
-        if attack == "wrong_state": state = "forged"
-        if attack == "no_cookie": client.cookies.clear()
+        if attack == "wrong_state":
+            state = "forged"
+        if attack == "no_cookie":
+            client.cookies.clear()
         if attack == "expired":
-            for pending in app.state.auth.pending.values(): pending.expires_at=0
+            for pending in app.state.auth.pending.values():
+                pending.expires_at=0
         response = await client.get("/auth/callback?"+urlencode({"state":state,"code":"code"}))
         assert response.status_code == 401 and not calls
     asyncio.run(browser(app,check))
@@ -371,7 +375,8 @@ def test_secure_session_cookie_outside_local(console_env,settings,monkeypatch):
 def test_invalid_dev_users_fail_startup(console_env,monkeypatch,users):
     from app.console.main import build_app
     monkeypatch.setenv("CONSOLE_DEV_USERS",users)
-    with pytest.raises(ValueError): build_app()
+    with pytest.raises(ValueError):
+        build_app()
 
 
 def test_protection_free_text_and_unknown_reason_not_rendered(console,admin):

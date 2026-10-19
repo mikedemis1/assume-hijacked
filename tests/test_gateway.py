@@ -28,10 +28,9 @@ from app.gateway.proxy import DENIAL_REASONS, OUTCOMES, RiskClient
 from app.gateway.server import build_app
 from app.security import descriptors
 from app.tools import serve
-from tests.conftest import TOOLS, open_lease
+from tests.conftest import open_lease
 from tests.gatewayharness import (
     AGENT_IP,
-    AGENT_SUBNET,
     AppGatewayClient,
     FakeRisk,
     RealRisk,

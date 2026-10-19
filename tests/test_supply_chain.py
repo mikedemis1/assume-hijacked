@@ -105,7 +105,7 @@ def test_locked_packages_are_installed_from_wheels_only():
     # Every package in requirements.lock had a cp312 manylinux wheel with a locked hash when this
     # was added (checked against PyPI on 2026-10-15), so no setup.py of a dependency runs in the build.
     script = (ROOT / "scripts" / "install-deps.sh").read_text(encoding="utf-8")
-    (line,) = [l for l in script.splitlines() if l.startswith("pip install") and l.endswith("-r requirements.lock")]
+    (line,) = [ln for ln in script.splitlines() if ln.startswith("pip install") and ln.endswith("-r requirements.lock")]
     assert "--only-binary :all:" in line
 
 

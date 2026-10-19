@@ -160,12 +160,6 @@ def test_a_failed_monitoring_download_is_attempted_once(monkeypatch, failed_moni
     assert len(failed_monitoring_chart_fetch) == 1
 
 
-def test_ci_checks_the_monitoring_rendering_as_well_as_the_application_chart():
-    script = (ROOT / "ci" / "chart.sh").read_text(encoding="utf-8")
-    assert "tests/k8s/test_monitoring.py" in script
-    assert "AH_REQUIRE_MONITORING_RENDER=1" in script
-
-
 @cache
 def _fetch_kps_chart() -> tuple[Path, str | None]:
     """The pinned kube-prometheus-stack chart file, downloaded once and checked against the digest

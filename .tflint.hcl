@@ -1,4 +1,4 @@
-# tflint rules for infra/*. Run by ci/iac.sh (step tflint); docs: https://github.com/terraform-linters/tflint
+# tflint rules for infra/*. Not run by the pipeline, only by hand; docs: https://github.com/terraform-linters/tflint
 #
 # The terraform ruleset is bundled with tflint. The azurerm ruleset checks values the provider
 # accepts at plan time but Azure refuses at apply time (VM sizes, SKUs, names). Its version is

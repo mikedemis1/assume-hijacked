@@ -1,11 +1,13 @@
-# Security pipeline for assume-hijacked.
-# Every job runs one script in ci/; each script also runs on a PC (docs/pipeline.md).
+# Pipeline for assume-hijacked: lint, test, build.
 # Keyword reference: https://docs.gitlab.com/ci/yaml/
 #
+# Terraform plan and apply and the Helm deploy are designed at the Azure step and are not here yet.
+#
 # Images: tag for humans, digest for the pull (a tag can move, a digest cannot). Each tag was at
-# least 14 days old on Docker Hub when pinned (checked 2026-10-15). The python and postgres
-# digests are the ones in the Dockerfile and compose.yaml, so CI tests what ships.
-# ci/lib.sh holds the same references for local runs; tests/test_ci.py fails if they differ.
+# least 14 days old on Docker Hub when pinned (checked 2026-10-15). The python image is the one in
+# the Dockerfile and the postgres image is the one in scripts/test-db.sh, so CI tests what ships.
+# Tools a job needs besides its image (ruff, gitleaks, terraform, helm) are downloaded at a pinned
+# version and checked against a sha256 in scripts/ci-tools.sh. tests/test_pipeline.py checks all of it.
 
 # Branch pipelines, or merge request pipelines when a merge request is open, never both:
 # https://docs.gitlab.com/ci/yaml/workflow/
@@ -17,12 +19,9 @@ workflow:
     - if: $CI_COMMIT_BRANCH
 
 stages:
-  - static    # secrets, sast, deps, lock-check, lint-container-*: no database, no Docker daemon
-  - iac       # iac-terraform, iac-tflint, iac-checkov, chart-tests: no Azure, no cluster, no cost
-  - test      # unit and attack tests against a PostgreSQL service
-  - build     # build-scan (image + trivy) and smoke (the whole stack), Docker-in-Docker
-  - azure     # tf-plan, tf-apply, tf-destroy, leftover-check: by hand, and only if AZURE_ENABLED
-  - mutation  # mutmut, schedules and by hand only
+  - lint   # ruff, gitleaks, terraform fmt and validate, helm lint: no database, no Docker daemon
+  - test   # unit and attack tests against a PostgreSQL service, and the chart render tests
+  - build  # the app image and a Trivy scan of it, Docker-in-Docker
 
 default:
   interruptible: true
@@ -40,141 +39,51 @@ default:
     paths:
       - .cache/pip
 
-# --- static -------------------------------------------------------------------------------
+# --- lint ---------------------------------------------------------------------------------
 
-secrets:
+lint:
   # gitleaks: https://github.com/gitleaks/gitleaks
   # Full history: GIT_DEPTH 0 turns off the shallow clone and fetches all branches and tags
   # (https://docs.gitlab.com/ci/pipelines/settings/, "Limit the number of changes fetched during
-  # clone"); ci/secrets.sh also unshallows if a runner ignores it.
-  stage: static
-  image:
-    name: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
-    entrypoint: [""]
+  # clone"); the unshallow below is the second line of defence if a runner ignores it.
+  # terraform: init -backend=false reads no state and needs no Azure login; the provider plugins
+  # come from the registry and the committed .terraform.lock.hcl decides their versions and hashes.
+  # helm lint here has no install values (the chart tests in the test job lint with them).
+  stage: lint
+  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
   variables:
     GIT_DEPTH: "0"
     GIT_STRATEGY: clone
   script:
-    - sh ci/secrets.sh
+    - . scripts/ci-tools.sh
+    - install_tools ruff gitleaks terraform helm
+    - ruff check .
+    - mkdir -p reports
+    - if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then git fetch --unshallow --quiet; fi
+    - echo "commits to scan $(git rev-list --all --count)"
+    - gitleaks git --redact --verbose --log-opts="--all" --report-format json --report-path reports/gitleaks.json .
+    - terraform fmt -check -recursive -diff infra
+    - |
+      set -eu
+      for stack in $(find infra -name versions.tf -not -path '*/.terraform/*' -exec dirname {} \; | sort); do
+        echo "== $stack"
+        terraform -chdir="$stack" init -backend=false -input=false -lockfile=readonly
+        terraform -chdir="$stack" validate
+      done
+    - helm lint deploy/helm/assume-hijacked -f deploy/helm/assume-hijacked/values-kind.yaml
+    - helm lint deploy/helm/assume-hijacked -f deploy/helm/assume-hijacked/values-azure.yaml
   artifacts:
     when: always
     expire_in: 30 days
     paths:
       - reports/gitleaks.json
 
-sast:
-  # bandit: https://bandit.readthedocs.io/en/latest/config.html
-  extends: .pip-cache
-  stage: static
-  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-  script:
-    - sh ci/sast.sh
-
-deps:
-  # pip-audit: https://github.com/pypa/pip-audit
-  extends: .pip-cache
-  stage: static
-  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-  script:
-    - sh ci/deps.sh
-
-lock-check:
-  # pip-tools: https://pip-tools.readthedocs.io/en/stable/
-  # Non-blocking: a wheel added to PyPI later for a pinned version also shows as a difference.
-  extends: .pip-cache
-  stage: static
-  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-  allow_failure: true
-  script:
-    - sh ci/lock-check.sh
-
-lint-container-hadolint:
-  # hadolint: https://github.com/hadolint/hadolint (the -alpine tag has the shell a job needs)
-  stage: static
-  image:
-    name: hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552
-    entrypoint: [""]
-  script:
-    - sh ci/hadolint.sh
-
-lint-container-checkov:
-  # checkov: https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html
-  # Dockerfiles and this pipeline. compose.yaml is not scanned: checkov has no Compose framework.
-  stage: static
-  image:
-    name: bridgecrew/checkov:3.3.21@sha256:9aefe56582004ebdac112fe85c3268dc4d3658231a8f023fb714ba9d29539d53
-    entrypoint: [""]
-  script:
-    - sh ci/checkov.sh
-
-# --- iac ----------------------------------------------------------------------------------
-
-# ci/iac.sh runs three steps. They are three jobs because each tool has its own image (the
-# Terraform image has no tflint and the reverse); IAC_STEP picks the step. None of them talks to
-# Azure. Terraform tags are in ci/lib.sh as well (tests/test_ci.py checks both).
-
-iac-terraform:
-  # fmt -check, init -backend=false, validate and `terraform test` (mock providers) for
-  # infra/base, net, lab and modules/workload-identity. The provider plugins are downloaded
-  # from the registry; the committed .terraform.lock.hcl decides their versions and hashes.
-  stage: iac
-  image:
-    name: hashicorp/terraform:1.15.9@sha256:fd5debae63188975d6febc6aa5bd1a982a588f55e4a4ddb7de28be923f250456
-    entrypoint: [""]
-  variables:
-    IAC_STEP: terraform
-  script:
-    - sh ci/iac.sh
-
-iac-tflint:
-  # https://github.com/terraform-linters/tflint ; rules in .tflint.hcl
-  stage: iac
-  image:
-    name: ghcr.io/terraform-linters/tflint:v0.64.0@sha256:1c595f42d794c32c45a6ea8b58655fd66433d4ca3b1bc631c574a48d120bd19f
-    entrypoint: [""]
-  variables:
-    IAC_STEP: tflint
-  script:
-    - sh ci/iac.sh
-
-iac-checkov:
-  # checkov on infra/ and on the Helm chart in deploy/ (rendered for kind and Azure first).
-  # IAC_REQUIRE_DEPLOY: a pipeline without deploy/ fails here instead of scanning nothing.
-  stage: iac
-  image:
-    name: bridgecrew/checkov:3.3.21@sha256:9aefe56582004ebdac112fe85c3268dc4d3658231a8f023fb714ba9d29539d53
-    entrypoint: [""]
-  variables:
-    IAC_STEP: checkov
-    IAC_REQUIRE_DEPLOY: "true"
-  script:
-    - sh ci/iac.sh
-
-chart-tests:
-  # tests/k8s/test_chart.py: helm lint and helm template of deploy/helm/assume-hijacked, read
-  # back as YAML. The tests skip themselves without helm; ci/chart.sh turns a
-  # skip into a failure, so they cannot pass by not running. The helm image has no Python:
-  # the script adds python3 from Alpine and pytest + PyYAML from requirements-dev.lock.
-  stage: iac
-  image:
-    name: alpine/helm:4.3.0@sha256:a6cf54599ccb99d90cf0712b30f03fdb3cab062e6b94e0418cc4db7e8a1464b2
-    entrypoint: [""]
-  script:
-    - sh ci/chart.sh
-  artifacts:
-    when: always
-    expire_in: 30 days
-    paths:
-      - reports/chart-junit.xml
-    reports:
-      junit: reports/chart-junit.xml
-
 # --- test ---------------------------------------------------------------------------------
 
 # A throwaway PostgreSQL for the job: https://docs.gitlab.com/ci/services/
-# It cannot mount db/init, so ci/db-setup.sh runs db/init/init.sh against it over the network,
-# first swapping the bootstrap password below for a random one. The bootstrap value is not a
-# secret: the database lives for one job, has fake data, and only that job's network reaches it.
+# It cannot mount db/init, so scripts/ci-db-setup.sh runs db/init/init.sh against it over the
+# network, first swapping the bootstrap password below for a random one. The bootstrap value is
+# not a secret: the database lives for one job, has fake data, and only that job's network reaches it.
 .postgres-service:
   services:
     - name: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -188,14 +97,26 @@ chart-tests:
     TEST_DB_SERVICE_HOST: postgres
 
 test:
+  # The whole default suite, including the chart render tests (tests/k8s/test_chart.py and
+  # test_monitoring.py: helm template, then the admission and network-policy objects, no cluster).
+  # Those tests skip themselves without helm, so the job installs it and then the suite must
+  # not skip them (test_helm_is_installed_when_the_pipeline_runs_the_tests). The monitoring chart
+  # is downloaded from its repository; AH_REQUIRE_MONITORING_RENDER makes a failed download fail.
   # pytest JUnit report: https://docs.gitlab.com/ci/testing/unit_test_reports/
   extends:
     - .postgres-service
     - .pip-cache
   stage: test
   image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  variables:
+    AH_REQUIRE_MONITORING_RENDER: "1"
   script:
-    - sh ci/test.sh
+    - . scripts/ci-tools.sh
+    - install_tools helm
+    - python -m pip install --quiet --root-user-action=ignore --require-hashes -r requirements-dev.lock
+    - . scripts/ci-db-setup.sh
+    - mkdir -p reports
+    - python -m pytest -q --junitxml=reports/junit.xml
   artifacts:
     when: always
     expire_in: 30 days
@@ -206,33 +127,73 @@ test:
 
 # --- build --------------------------------------------------------------------------------
 
-# Docker-in-Docker with TLS between the job and the daemon:
-# https://docs.gitlab.com/ci/docker/using_docker_build/
-# https://docs.gitlab.com/ci/docker/docker_in_docker/
-# Needs a runner that allows privileged mode (GitLab.com instance runners do).
-.docker-in-docker:
+build:
+  # Docker-in-Docker with TLS between the job and the daemon:
+  # https://docs.gitlab.com/ci/docker/using_docker_build/
+  # https://docs.gitlab.com/ci/docker/docker_in_docker/
+  # Needs a runner that allows privileged mode (GitLab.com instance runners do).
+  # trivy: https://trivy.dev/latest/docs/configuration/filtering/
+  # Two runs: a full report kept as artifacts, including unfixed and fix_deferred vulnerabilities,
+  # and the gate on HIGH/CRITICAL with a fix. An accepted one goes in .trivyignore with the reason
+  # and an expiry date (exp:YYYY-MM-DD).
+  # Container scanning report format: https://docs.gitlab.com/ci/yaml/artifacts_reports/
+  stage: build
   image: docker:29.8.1-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca
   services:
     - name: docker:29.8.1-dind@sha256:3f3c01aaaebf7cce837356b688b7c059a4749f10bd7660dec7c58fc454a283f0
       alias: docker
   # The client settings are explicit, as in the docs' TLS example: the docker image's entrypoint
   # only sets them if the service's certificates already exist when the job starts.
-  # ci/lib.sh wait_for_docker then waits (at most 30 s) until the daemon answers.
   variables:
     DOCKER_HOST: tcp://docker:2376
     DOCKER_TLS_CERTDIR: "/certs"
     DOCKER_TLS_VERIFY: "1"
     DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
-
-build-scan:
-  # trivy: https://trivy.dev/latest/docs/configuration/filtering/
-  # Two runs (ci/build-scan.sh): a full report kept as artifacts, including unfixed and
-  # fix_deferred vulnerabilities, and the gate on HIGH/CRITICAL with a fix.
-  # Container scanning report format: https://docs.gitlab.com/ci/yaml/artifacts_reports/
-  extends: .docker-in-docker
-  stage: build
+    TRIVY_IMAGE: aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
   script:
-    - sh ci/build-scan.sh
+    - |
+      set -eu
+      # The dind service may still be starting (and writing its TLS certificates) when the job
+      # script begins: wait until `docker info` answers, at most about 30 s.
+      tries=0
+      until docker info >/dev/null 2>&1; do
+        tries=$((tries + 1))
+        if [ "$tries" -ge 30 ]; then
+          echo "the Docker daemon did not answer within 30 s (DOCKER_HOST=${DOCKER_HOST:-unset})" >&2
+          docker info >&2 || true
+          exit 1
+        fi
+        sleep 1
+      done
+      image=assume-hijacked:scan
+      docker build --tag "$image" .
+
+      # trivy runs as a container next to the build and reads the image through the Docker
+      # socket of that daemon; the database is kept in a volume, so the second run reuses it.
+      trivy() {
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/repo" \
+          -v assume-hijacked-trivy-cache:/root/.cache/trivy "$TRIVY_IMAGE" "$@"
+      }
+
+      # 1. Report, never fails the job: every severity, fixed or not (unfixed, will_not_fix and
+      # fix_deferred included), as JSON and in GitLab's container scanning format.
+      mkdir -p reports
+      trivy image --scanners vuln --exit-code 0 --no-progress --skip-version-check \
+        --format json --output /repo/reports/trivy-all.json "$image"
+      trivy convert --format template --template @/contrib/gitlab.tpl \
+        --output /repo/reports/gl-container-scanning-report.json /repo/reports/trivy-all.json
+      echo "== report only: every HIGH and CRITICAL, with or without a fix"
+      trivy convert --format table --severity HIGH,CRITICAL /repo/reports/trivy-all.json
+
+      # 2. Gate: fails on a HIGH or CRITICAL that has a fixed version.
+      ignore=
+      if [ -f .trivyignore ]; then
+        ignore="--ignorefile /repo/.trivyignore"
+      fi
+      echo "== gate: HIGH and CRITICAL with a fixed version"
+      # shellcheck disable=SC2086  # $ignore is empty or two words on purpose
+      trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+        --exit-code 1 --no-progress --skip-version-check $ignore "$image"
   artifacts:
     when: always
     expire_in: 90 days
@@ -241,173 +202,3 @@ build-scan:
       - reports/gl-container-scanning-report.json
     reports:
       container_scanning: reports/gl-container-scanning-report.json
-
-smoke:
-  # The whole Compose stack on the job's Docker daemon, then pytest -m smoke (ci/smoke.sh).
-  # A few minutes (builds the image, starts seven containers), so it runs on the default branch,
-  # on schedules and by hand, not on every push of every branch.
-  # Rules: https://docs.gitlab.com/ci/jobs/job_rules/
-  extends: .docker-in-docker
-  stage: build
-  timeout: 30m
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - when: manual
-      allow_failure: true
-  script:
-    - sh ci/smoke.sh
-  artifacts:
-    when: always
-    expire_in: 30 days
-    paths:
-      - reports/smoke-junit.xml
-    reports:
-      junit: reports/smoke-junit.xml
-
-# --- azure --------------------------------------------------------------------------------
-
-# Defined, switched off. Nothing here is created until the project variable AZURE_ENABLED is
-# "true", and then every job still waits for a click (when: manual). No secret is stored: each
-# job asks GitLab for an ID token (id_tokens) and Entra trades it for an Azure token through the
-# federated credentials of infra/base/ci-identities.tf. Details: ci/tf-common.sh and
-# docs/pipeline.md ("Azure jobs"). infra/base is not part of these jobs, on purpose.
-# https://docs.gitlab.com/ci/secrets/id_token_authentication/
-# Project variables (none is a secret): AZURE_ENABLED, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
-# AZURE_CI_PLAN_CLIENT_ID, AZURE_CI_APPLY_CLIENT_ID, TF_STATE_STORAGE_ACCOUNT, and optionally the
-# File variables TFVARS_NET and TFVARS_LAB with the values that stay out of git.
-.azure-terraform:
-  stage: azure
-  image:
-    name: hashicorp/terraform:1.15.9@sha256:fd5debae63188975d6febc6aa5bd1a982a588f55e4a4ddb7de28be923f250456
-    entrypoint: [""]
-  id_tokens:
-    AZURE_ID_TOKEN:
-      aud: api://AzureADTokenExchange
-
-tf-plan:
-  # Reader identity (ci-plan), any branch: net and lab. -lock=false, nothing is written to Azure.
-  # The plan files and a readable copy are kept for tf-apply of this pipeline. They can hold
-  # resource values, so they expire after a day.
-  extends: .azure-terraform
-  rules:
-    - if: $AZURE_ENABLED == "true"
-      when: manual
-      allow_failure: true
-  script:
-    - sh ci/tf-plan.sh
-  artifacts:
-    when: always
-    expire_in: 1 day
-    # The project is public: only members with the Developer role or above may download the
-    # plans. Jobs of the pipeline still get them. https://docs.gitlab.com/ci/yaml/#artifactsaccess
-    access: developer
-    paths:
-      - plans/apply/
-
-tf-apply:
-  # ci-apply, main only: runs the plan files of tf-plan in this pipeline, net then lab. It never
-  # plans. Without those files (tf-plan not run, or expired) the job fails.
-  # https://docs.gitlab.com/ci/yaml/#needs
-  extends: .azure-terraform
-  needs:
-    - job: tf-plan
-      artifacts: true
-  resource_group: azure-lab
-  interruptible: false
-  rules:
-    - if: $AZURE_ENABLED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual
-      allow_failure: true
-  script:
-    - sh ci/tf-apply.sh
-
-tf-destroy-plan:
-  # Reader identity: what tf-destroy would remove (plan -destroy), lab then net, kept for
-  # tf-destroy of this pipeline. Stops if a state manages a resource group.
-  extends: .azure-terraform
-  rules:
-    - if: $AZURE_ENABLED == "true"
-      when: manual
-      allow_failure: true
-  script:
-    - sh ci/tf-destroy-plan.sh
-  artifacts:
-    when: always
-    expire_in: 1 day
-    # The project is public: only members with the Developer role or above may download the
-    # plans. Jobs of the pipeline still get them. https://docs.gitlab.com/ci/yaml/#artifactsaccess
-    access: developer
-    paths:
-      - plans/destroy/
-
-tf-destroy:
-  # ci-apply, main only: runs the destroy plans of tf-destroy-plan in this pipeline, lab then
-  # net. The contents only, never the resource groups or infra/base. It never plans.
-  extends: .azure-terraform
-  needs:
-    - job: tf-destroy-plan
-      artifacts: true
-  resource_group: azure-lab
-  interruptible: false
-  rules:
-    - if: $AZURE_ENABLED == "true" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual
-      allow_failure: true
-  script:
-    - sh ci/tf-destroy.sh
-
-leftover-check:
-  # Reader identity: is any billable resource left after tf-destroy? Fails with the list.
-  stage: azure
-  image:
-    name: mcr.microsoft.com/azure-cli:2.90.0@sha256:e3768dde8142efa45d8f356a317aaac77abd7da15ba3719b0a150e9453f251db
-    entrypoint: [""]
-  id_tokens:
-    AZURE_ID_TOKEN:
-      aud: api://AzureADTokenExchange
-  rules:
-    - if: $AZURE_ENABLED == "true"
-      when: manual
-      allow_failure: true
-  script:
-    - sh ci/leftover-check.sh
-
-# --- mutation -----------------------------------------------------------------------------
-
-mutation:
-  # mutmut 3: https://mutmut.readthedocs.io/en/latest/ (settings in pyproject.toml [tool.mutmut])
-  # Slow (one mutant at a time, each runs its tests against the database): on schedules
-  # (https://docs.gitlab.com/ci/pipelines/schedules/) and by hand, never on a push.
-  # One job per module (https://docs.gitlab.com/ci/yaml/#parallelmatrix), in parallel, each
-  # with its own database (10 to 15 minutes each when rehearsed locally). Each fails if its
-  # score drops below its "Mutation score baseline" line in README.md.
-  # needs: [] starts it at once, so a red build or smoke job does not skip it on a schedule;
-  # interruptible: false, so a new push does not cancel a long run.
-  extends:
-    - .postgres-service
-    - .pip-cache
-  stage: mutation
-  needs: []
-  interruptible: false
-  image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-  timeout: 1h
-  parallel:
-    matrix:
-      - MUTANTS:
-          - "app.agent.core*"
-          - "app.agent.guard*"
-          - "app.executor*"
-          - "app.risk.rules*"
-          - "app.tools.lookup_account*"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-    - when: manual
-      allow_failure: true
-  script:
-    - sh ci/mutation.sh
-  artifacts:
-    when: always
-    expire_in: 30 days
-    paths:
-      - mutants/mutmut-cicd-stats.json

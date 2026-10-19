@@ -1,6 +1,6 @@
-# CI only, sourced by ci/test.sh and ci/mutation.sh: `. ci/db-setup.sh`.
+# CI only, sourced by the test job in .gitlab-ci.yml: `. scripts/ci-db-setup.sh`.
 # Turns the job's empty PostgreSQL service container (alias TEST_DB_SERVICE_HOST) into what
-# db/init/init.sh builds for Compose: the roles, supplier and supplier_test.
+# db/init/init.sh builds for scripts/test-db.sh: the roles, supplier and supplier_test.
 # A service container cannot mount the init scripts, so the job runs the same init.sh over the
 # network: https://docs.gitlab.com/ci/services/
 #
@@ -9,8 +9,13 @@
 # only this job's network reaches it). The first thing done here is to replace it with a random
 # one. Every role password is random too, made here, never printed, gone with the job.
 
+# 48 random hex characters, for throwaway passwords. Plain POSIX tools: works on Alpine and Debian.
+rand_hex() {
+    od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
+}
+
 if ! command -v psql >/dev/null 2>&1; then
-    # The client for the PostgreSQL major in compose.yaml, pinned to that major: Debian 13
+    # The client for the PostgreSQL major of the service image, pinned to that major: Debian 13
     # (the python:3.12-slim base) ships postgresql-client-17 in its own signed repository, so no
     # extra (PGDG) repository is needed. apt checks the signatures; the minor version is not pinned.
     export DEBIAN_FRONTEND=noninteractive

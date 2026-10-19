@@ -1205,7 +1205,7 @@ def test_a_run_asks_the_llm_gateway_for_every_step():
     _, after = ops_of("llm-gateway")
 
     def served(text):
-        line = next(l for l in text.splitlines() if l.startswith('llmgw_requests_total{outcome="ok"}'))
+        line = next(ln for ln in text.splitlines() if ln.startswith('llmgw_requests_total{outcome="ok"}'))
         return int(line.rsplit(" ", 1)[1])
 
     assert served(after) - served(before) == 2          # ticket 1: ask for the account, then the reply
