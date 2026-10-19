@@ -5,13 +5,18 @@
 #
 # The same image and the same three log flags as the db service in compose.yaml, and the same
 # db/init/init.sh run by the image on an empty data directory, so the roles, supplier and
-# supplier_test are what the suite expects. Only a database for tests: the suite TRUNCATEs every
+# supplier_test are what the suite expects. The init files are copied into the container with
+# `docker cp` before it starts, not bind-mounted: on Docker Desktop for Windows a bind mount from a
+# Git Bash path is sometimes empty (in any path form), and then init.sh silently never runs. Only a database for tests: the suite TRUNCATEs every
 # table (tests/conftest.py refuses a DB_HOST that is not local).
 #
 # Settings come from .env, as in tests/conftest.py (a variable already in the environment wins):
 # POSTGRES_PASSWORD, the DB_PASSWORD_* of every role (.env.example lists them) and DB_PORT
 # (default 5432). The port is published on 127.0.0.1 only.
 set -eu
+
+# Work from the repository root, wherever the script is called from.
+cd "$(dirname "$0")/.."
 
 NAME=ah-test-db
 # Keep in step with the db service in compose.yaml (pinned by digest).
@@ -53,35 +58,17 @@ start() {
     fi
     port="${DB_PORT:-5432}"
 
-    # Git Bash on Windows rewrites paths that start with / before docker sees them. The mount
-    # source stays in the /c/Users/... form: Docker Desktop mounts an empty folder for C:/Users/...
-    root=$(pwd)
+    # Git Bash on Windows rewrites paths that start with / before docker sees them.
     export MSYS_NO_PATHCONV=1
 
     docker rm -fv "$NAME" >/dev/null 2>&1 || true
     # -e NAME without a value passes the variable on from this shell: no password on a command line.
-    docker run -d --name "$NAME" \
-        -p "127.0.0.1:$port:5432" \
-        -e POSTGRES_DB=supplier \
-        -e POSTGRES_PASSWORD \
-        -e DB_PASSWORD_TOOL_READ_TICKET \
-        -e DB_PASSWORD_TOOL_LOOKUP_ACCOUNT \
-        -e DB_PASSWORD_TOOL_REQUEST_DISCONNECTION \
-        -e DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT \
-        -e DB_PASSWORD_TOOL_SET_TEMP_PROTECTION \
-        -e DB_PASSWORD_EXECUTOR \
-        -e DB_PASSWORD_APPROVER \
-        -e DB_PASSWORD_GATEWAY \
-        -e DB_PASSWORD_RISK_ENGINE \
-        -e DB_PASSWORD_DISPATCHER \
-        -e DB_PASSWORD_REGISTER_SYNC \
-        -v "$root/db/init:/docker-entrypoint-initdb.d:ro" \
-        -v "$root/db/sql:/db/sql:ro" \
-        "$IMAGE" \
-        postgres \
-        -c log_min_error_statement=panic \
-        -c log_parameter_max_length=0 \
-        -c log_parameter_max_length_on_error=0 >/dev/null
+    docker create --name "$NAME"         -p "127.0.0.1:$port:5432"         -e POSTGRES_DB=supplier         -e POSTGRES_PASSWORD         -e DB_PASSWORD_TOOL_READ_TICKET         -e DB_PASSWORD_TOOL_LOOKUP_ACCOUNT         -e DB_PASSWORD_TOOL_REQUEST_DISCONNECTION         -e DB_PASSWORD_TOOL_ISSUE_BILL_CREDIT         -e DB_PASSWORD_TOOL_SET_TEMP_PROTECTION         -e DB_PASSWORD_EXECUTOR         -e DB_PASSWORD_APPROVER         -e DB_PASSWORD_GATEWAY         -e DB_PASSWORD_RISK_ENGINE         -e DB_PASSWORD_DISPATCHER         -e DB_PASSWORD_REGISTER_SYNC         "$IMAGE"         postgres         -c log_min_error_statement=panic         -c log_parameter_max_length=0         -c log_parameter_max_length_on_error=0 >/dev/null
+    # The same two folders Compose mounts read-only: db/init into the entrypoint's init folder and
+    # db/sql at /db/sql, where init.sh looks for the SQL (`docker cp db` makes /db, with sql in it).
+    docker cp db/init/. "$NAME:/docker-entrypoint-initdb.d"
+    docker cp db "$NAME:/"
+    docker start "$NAME" >/dev/null
 
     # init.sh runs on a temporary server that listens on the socket only, so a TCP answer means
     # init is finished and supplier_test exists.
@@ -106,8 +93,14 @@ start() {
 case "${1:-}" in
     start) start ;;
     stop)
-        docker rm -fv "$NAME" >/dev/null 2>&1 || true
-        echo "test-db: $NAME removed"
+        # A missing container is fine; a Docker that does not answer is not.
+        docker info >/dev/null 2>&1 || { echo "test-db: Docker is not running" >&2; exit 1; }
+        if docker inspect "$NAME" >/dev/null 2>&1; then
+            docker rm -fv "$NAME" >/dev/null
+            echo "test-db: $NAME removed"
+        else
+            echo "test-db: $NAME is not running"
+        fi
         ;;
     *)
         echo "usage: sh scripts/test-db.sh start|stop" >&2
