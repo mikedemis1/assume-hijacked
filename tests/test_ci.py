@@ -90,6 +90,13 @@ def test_guard_allows_the_local_database(host):
     assert db_host_allowed(host, {})
 
 
+def test_guard_still_refuses_remote_host():
+    # Pins the guard for the test database that scripts/test-db.sh starts: a non-local DB_HOST is
+    # refused, a local one is allowed.
+    assert not db_host_allowed("db.example.com", {})
+    assert db_host_allowed("localhost", {})
+
+
 @pytest.mark.parametrize("host", ["db.example.com", "10.0.0.5", "prod-db", "postgres"])
 def test_guard_refuses_any_other_host_outside_ci(host):
     assert not db_host_allowed(host, {})

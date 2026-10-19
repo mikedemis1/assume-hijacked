@@ -38,9 +38,9 @@ _SERVICE_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,62}")
 def db_host_allowed(host: str, env: Mapping[str, str]) -> bool:
     """Every test truncates all tables, so the suite only runs against a throwaway database.
 
-    On a PC that is the local Compose database (localhost). In GitLab CI it is the job's own
-    PostgreSQL service container, reached by its alias (.gitlab-ci.yml sets TEST_DB_SERVICE_HOST
-    to it). The CI case needs all three: GITLAB_CI=true (set by the runner), DB_HOST equal to the
+    On a PC that is the local test database (localhost), started by `sh scripts/test-db.sh start`.
+    In GitLab CI it is the job's own PostgreSQL service container, reached by its alias
+    (.gitlab-ci.yml sets TEST_DB_SERVICE_HOST to it). The CI case needs all three: GITLAB_CI=true (set by the runner), DB_HOST equal to the
     TEST_DB_SERVICE_HOST named in the pipeline, and a bare alias. An IP address or a dotted name,
     which could point at a shared or production server, is refused even in CI. This stops
     accidents, not a determined admin (docs/pipeline.md).
@@ -67,7 +67,7 @@ def pytest_configure():
         pytest.exit(
             f"Refusing to run: the tests TRUNCATE every table and DB_HOST={host!r} is not "
             f"one of {LOCAL_HOSTS} (or, in GitLab CI only, the job's service alias in "
-            "TEST_DB_SERVICE_HOST). Point DB_HOST at the local Compose database.",
+            "TEST_DB_SERVICE_HOST). Point DB_HOST at the local test database (sh scripts/test-db.sh start).",
             returncode=2,
         )
 
