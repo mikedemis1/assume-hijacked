@@ -1,0 +1,7 @@
+# Findings checked by hand and accepted. Each line is commit:file:rule:line.
+# Code, not a key: the P-256 curve check when a signing key is loaded.
+1dd5e63a4b4446689c14c7fc265c8e9035b89db6:app/security/tokens.py:generic-api-key:142
+# Azure built-in role definition IDs (Key Vault Secrets User and Officer). They are the same
+# public GUIDs in every tenant: https://learn.microsoft.com/azure/role-based-access-control/built-in-roles
+5acfb1fc4d1ca7162116605c5022f0cfa675d704:infra/base/ci-identities.tf:generic-api-key:20
+5acfb1fc4d1ca7162116605c5022f0cfa675d704:infra/base/ci-identities.tf:generic-api-key:21
