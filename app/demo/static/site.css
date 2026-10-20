@@ -48,6 +48,10 @@
 .bubble { padding: 8px 12px; border-radius: 14px; font-size: 14px; max-width: 78%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.mine .bubble { background: #fff; color: var(--navy-0); border-bottom-right-radius: 4px; }
 .msg.bot .bubble { background: rgba(255, 255, 255, .12); border: 1px solid rgba(255, 255, 255, .2); border-bottom-left-radius: 4px; }
+.bubble .intro { margin: 0 0 6px; }
+.card-list { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 13px; }
+.card-list dt { color: var(--ink-soft); }
+.card-list dd { margin: 0; overflow-wrap: anywhere; }
 .typing .bubble { color: var(--ink-soft); font-style: italic; }
 
 .composer { margin-top: 12px; display: grid; gap: 8px; }

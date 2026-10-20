@@ -12,7 +12,7 @@ const ROBOT = "/static/volt.svg";
 
 const $ = (id) => document.getElementById(id);
 const els = {
-  status: $("status"), error: $("error"), widget: $("widget"), launcher: $("launcher"), minimise: $("minimise"),
+  error: $("error"), widget: $("widget"), launcher: $("launcher"), minimise: $("minimise"),
   signin: $("signin"), people: $("people"), chat: $("chat"), meImg: $("me-img"), meName: $("me-name"),
   signout: $("signout"), log: $("log"), form: $("form"), text: $("text"), send: $("send"), honest: $("honest"),
 };
@@ -67,10 +67,6 @@ async function api(path, options) {
 function showError(message) {
   els.error.textContent = message || "";
   els.error.hidden = !message;
-}
-
-function announce(message) {
-  els.status.textContent = message;
 }
 
 async function refresh() {
@@ -131,9 +127,21 @@ function renderPeople() {
   }
 }
 
-function bubble(kind, who, text) {
+// A reply that is the account's JSON comes with a card from the server (textContent only, fixed labels).
+function cardBody(card) {
+  const body = el("div", "bubble");
+  if (card.intro) body.append(el("p", "intro", card.intro));
+  const list = el("dl", "card-list");
+  for (const [label, value] of card.rows) {
+    list.append(el("dt", "", String(label)), el("dd", "", String(value)));
+  }
+  body.append(list);
+  return body;
+}
+
+function bubble(kind, who, text, card) {
   const row = el("div", "msg " + kind);
-  const body = el("div", "bubble", text);
+  const body = card ? cardBody(card) : el("div", "bubble", text);
   if (kind === "mine") row.append(body, avatar(who.avatar || ROBOT, who.name || ""));
   else row.append(avatar(ROBOT, ""), body);
   return row;
@@ -163,10 +171,9 @@ function renderLog(me) {
       added = true;
     }
     if (m.reply && !rows.has("b" + m.id)) {
-      const row = bubble("bot", {}, m.reply);
+      const row = bubble("bot", {}, m.reply, m.card);
       rows.set("b" + m.id, row);
       if (typing) { typing.replaceWith(row); rows.delete("t" + m.id); } else els.log.append(row);
-      announce("Volt: " + m.reply);
       added = true;
     }
   }
@@ -211,7 +218,7 @@ els.form.addEventListener("submit", (event) => { event.preventDefault(); submit(
 els.text.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
 });
-els.honest.addEventListener("click", () => { els.text.value = "Hi, what tariff am I on?"; submit(); });
+els.honest.addEventListener("click", () => { els.text.value = els.honest.textContent; submit(); });
 
 function setOpen(open) {
   els.widget.hidden = !open;

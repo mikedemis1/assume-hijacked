@@ -14,7 +14,6 @@ only a hint on the console.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 
 
@@ -88,7 +87,3 @@ def attack_names() -> tuple[set[str], set[str]]:
 def filed_body(text: str, attack: Attack | None) -> str:
     """The ticket body: the customer's words, then the plan's lines when an attack is armed."""
     return text if attack is None else text.rstrip() + "\n" + attack.text
-
-
-def plan_lines(body: str) -> list[str]:
-    return [line.strip() for line in body.splitlines() if re.match(r"\s*(CALL|SAY) ", line)]

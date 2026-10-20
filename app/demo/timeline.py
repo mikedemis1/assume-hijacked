@@ -30,10 +30,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.agent.core import ALLOWED_ARGS
-from app.demo import vocabulary
 from app.agent.guard import SAFE_REPLY
-from app.agent.llm import Reply, ToolCall
-from app.agent.llm import parse_plan
+from app.agent.llm import Reply, ToolCall, parse_plan
+from app.demo import vocabulary
 from app.dispatcher.replies import CREDIT_NOTICE, MEDICAL_QUESTION
 
 SAFE_NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
@@ -116,7 +115,9 @@ def now_iso() -> str:
 def _drop_text(names: Iterable[object]) -> str:
     """'argument customer_id' / 'arguments a, b'; names outside the vocabulary become one fixed phrase."""
     shown = vocabulary.args(names).split(", ")
-    return f"{_plural(len(shown), 'argument', 'arguments')} {', '.join(shown)}" if vocabulary.UNKNOWN_ARG not in shown         else ", ".join(shown)
+    if vocabulary.UNKNOWN_ARG in shown:
+        return ", ".join(shown)
+    return f"{_plural(len(shown), 'argument', 'arguments')} {', '.join(shown)}"
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -259,7 +260,7 @@ def _request_lines(request: dict, filed_by_call_at=None) -> list[Line]:
     risk = request["risk"]
     if risk is not None:
         tone, meaning = TIERS.get(risk["tier"], ("warn", "unknown tier"))
-        rules = ", ".join(RISK_RULES.get(r, r.replace("_", " ")) for r in risk["reasons"])
+        rules = ", ".join(RISK_RULES.get(r, "another rule") for r in risk["reasons"])
         lines.append(Line(_iso(risk["created_at"]), tone, "risk engine",
                           f"tier {risk['tier'] if risk['tier'] in TIERS else 'unknown'}: {meaning}", rules))
     status = request["status"]
@@ -333,7 +334,7 @@ def build(
             lines.append(Line(at, "bad", "reply guard", "reply blocked and replaced by a safe reply",
                               "the reason is not recorded in the database"))
         elif reply_kind == "template":
-            lines.append(Line(at, "ok", "dispatcher", "an effect was requested, so a fixed reply was stored, not the model's text",
+            lines.append(Line(at, "ok", "dispatcher", "a fixed reply for the request was stored, not the model's text",
                               "stored and sent to the customer"))
         else:
             lines.append(Line(at, "ok", "reply", "stored and sent to the customer"))

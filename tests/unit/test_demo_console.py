@@ -85,7 +85,7 @@ def test_a_database_rule_that_refused_a_write_is_red():
     assert got["database"] == "stopped"
 
 
-@pytest.mark.parametrize("kind, state", [("agent", "ok"), ("template", "changed"), ("safe", "stopped")])
+@pytest.mark.parametrize("kind, state", [("agent", "ok"), ("template", "ok"), ("safe", "stopped")])
 def test_the_reply_guard_follows_the_kind_of_the_stored_reply(kind, state):
     assert states(data(reply_kind=kind))["reply"] == state
 
@@ -110,10 +110,26 @@ def test_the_counters_add_up_denied_dropped_blocked_and_replaced_decisions():
     d = data(calls=[call("fetch_url", "denied", "unknown_tool"), call(dropped=["customer_id"]), call()],
              events=[{"kind": "dropped_argument", "tool": "lookup_account", "arg_names": ["customer_id"], "reported_at": at(2)}],
              requests=[request("pending", "T1"), request("rejected", "REJECT")], reply_kind="template")
-    assert console.decisions(d) == 2 + 1 + 1 + 1       # two calls, one agent event, the template, the rejection
+    assert console.decisions(d) == 2 + 1 + 1           # two calls, one agent event, the rejection (the template is no decision)
     assert console.waiting_for_a_person(d) == 1
     assert console.summary([{"decisions": 5, "waiting": 1}, {"decisions": 2, "waiting": 0}], True) == {
         "blocked": 7, "waiting": 1, "killSwitch": "on"}
+
+
+def test_an_honest_credit_request_with_a_fixed_reply_is_not_an_attack_blocked():
+    d = data(calls=[call("issue_bill_credit")], requests=[request("executed", "T0")], reply_kind="template",
+             assessments=[{"tool": "issue_bill_credit", "decision": "allow", "created_at": at(0)}])
+    nodes = console.flow(d)
+    assert {n["key"]: n["state"] for n in nodes}["reply"] == "ok"
+    assert console.decisions(d) == 0
+    assert console.banner(None, nodes, True) is None
+
+
+def test_a_fixed_reply_alone_never_makes_an_armed_attack_contained():
+    attack = attacks.BY_ID["credits"]
+    d = data(calls=[call("issue_bill_credit")], requests=[request("executed", "T0")], reply_kind="template",
+             assessments=[{"tool": "issue_bill_credit", "decision": "allow", "created_at": at(0)}])
+    assert console.banner(attack, console.flow(d), True)["kind"] == "open"
 
 
 # --- the vocabulary (ruling R14) ---
@@ -135,6 +151,31 @@ def test_the_vocabulary_holds_the_schemas_and_the_attack_tables_names_and_nothin
     assert set(ALLOWED_ARGS) <= vocabulary.TOOLS and attack_tools <= vocabulary.TOOLS
     assert {a for names in ALLOWED_ARGS.values() for a in names} <= vocabulary.ARGS and attack_args <= vocabulary.ARGS
     assert vocabulary.TOOLS == set(ALLOWED_ARGS) | attack_tools
+
+
+def test_the_manifests_load_into_the_vocabulary_and_a_failure_is_logged(monkeypatch, caplog):
+    tools, args = vocabulary._from_manifests()
+    assert tools == {"read_ticket", "lookup_account", "request_disconnection", "issue_bill_credit", "set_temp_protection"}
+    assert {"move_out_date", "amount_eur", "evidence_ref"} <= args
+    import app.gateway.manifest as manifest
+
+    def broken():
+        raise OSError("gone")
+
+    monkeypatch.setattr(manifest, "load_manifests", broken)
+    with caplog.at_level("WARNING"):
+        assert vocabulary._from_manifests() == (set(), set())
+    assert "manifests not loaded" in caplog.text
+
+
+def test_unknown_risk_rules_are_not_echoed():
+    from app.demo import timeline
+
+    request_ = request("pending", "T1")
+    request_["risk"]["reasons"] = ["Eleni_1001_phone", "above_200"]
+    lines = timeline._request_lines(request_)
+    text = str(lines)
+    assert "Eleni" not in text and "another rule" in text and "above 200 EUR" in text
 
 
 def test_unknown_arguments_are_said_once():

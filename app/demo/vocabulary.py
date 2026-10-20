@@ -9,8 +9,12 @@ cannot carry text onto the screen.
 
 from __future__ import annotations
 
+import logging
+
 from app.agent.core import ALLOWED_ARGS
 from app.demo import attacks
+
+LOG = logging.getLogger(__name__)
 
 UNKNOWN_TOOL = "an unknown tool"
 UNKNOWN_ARG = "an argument the tool does not take"
@@ -21,7 +25,8 @@ def _from_manifests() -> tuple[set[str], set[str]]:
         from app.gateway.manifest import load_manifests
 
         specs = load_manifests()
-    except Exception:  # the manifests are a second source; the agent's table still stands
+    except Exception as err:  # the manifests are a second source; the agent's table still stands
+        LOG.warning("demo vocabulary: manifests not loaded (%s)", type(err).__name__)
         return set(), set()
     return set(specs), {a for spec in specs.values() for a in spec.args}
 

@@ -6,7 +6,7 @@
 
 const $ = (id) => document.getElementById(id);
 const els = {
-  status: $("status"), problem: $("problem"), who: $("who"), blocked: $("c-blocked"), waiting: $("c-waiting"),
+  problem: $("problem"), who: $("who"), blocked: $("c-blocked"), waiting: $("c-waiting"),
   kill: $("c-kill"), needed: $("signin-needed"), board: $("board"), picks: $("picks"), note: $("p-note"),
   pickerBox: $("picker-box"), tabs: $("tabs"), orderBox: $("order-box"), order: $("order"), orderTag: $("o-tag"),
   flow: $("flow"), flowTicket: $("f-ticket"), contained: $("contained"), feed: $("feed"), feedEmpty: $("feed-empty"),
@@ -103,7 +103,7 @@ function render() {
   const s = state.summary;
   els.blocked.textContent = String(s.blocked);
   els.waiting.textContent = String(s.waiting);
-  els.kill.textContent = s.killSwitch === "on" ? "agents paused" : "running";
+  els.kill.textContent = s.killSwitch === "on" ? "on \u00b7 agents paused" : "off \u00b7 agents running";
   els.kill.className = "v " + (s.killSwitch === "on" ? "bad" : "ok");
   renderPicks();
   const ticket = current();
@@ -151,7 +151,7 @@ function renderTabs(ticket) {
   for (const t of state.tickets) {
     const tab = el("button", "tab", "#" + t.id);
     tab.type = "button";
-    tab.setAttribute("aria-selected", String(ticket !== null && t.id === ticket.id));
+    tab.setAttribute("aria-pressed", String(ticket !== null && t.id === ticket.id));
     tab.addEventListener("click", () => { selected = t.id; render(); });
     els.tabs.append(tab);
   }
@@ -173,6 +173,7 @@ function renderTicket(ticket) {
     const state_ = node ? node.state : "idle";
     item.className = "node s-" + state_;
     item.querySelector(".n-note").textContent = node ? node.note : "";
+    item.querySelector(".n-state").textContent = ", " + state_ + (node && node.note ? "," : "");
     if (links[i]) {
       // a link takes the colour of the wall it leads into, so the path lights up as far as the work went
       const next = nodes.find((n) => n.key === items[i + 1].dataset.key);

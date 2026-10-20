@@ -21,6 +21,9 @@ does not depend on it. It is a front door, so it is treated as untrusted like th
 - The Host header must be a local name: it is reached with kubectl port-forward only
   (scripts/demo-ui.sh), and this stops a DNS-rebinding page from talking to it.
 
+The security console has no login of its own: it shows the session of the browser it is opened in.
+That is acceptable only because the service is reached with kubectl port-forward on localhost.
+
 Dev sign-in: whoever opens the page picks a fictional customer. That is the point of a demo and
 the reason it is never exposed.
 
@@ -48,15 +51,15 @@ from urllib.parse import urlsplit
 import psycopg
 import uvicorn
 from starlette.applications import Starlette
-from starlette.middleware import Middleware
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.common.ops import Heartbeat, Metrics, start_ops_server
-from app.demo import attacks, console, database, timeline
+from app.demo import attacks, card, console, database, timeline
 from app.demo.sessions import MAX_TICKETS, MAX_WAITING, Sessions, Ticket
 
 PORT = 8085
@@ -193,7 +196,8 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
                 ids = [t.id for t in session.tickets]
                 texts = await run_in_threadpool(database.replies, session.customer, ids)
                 body.update(customer=session.customer, csrf=session.csrf, messages=[
-                    {"id": t.id, "text": t.text, "reply": texts.get(t.id)} for t in session.tickets])
+                    {"id": t.id, "text": t.text, "reply": texts.get(t.id), "card": card.account_card(texts.get(t.id))}
+                    for t in session.tickets])
         except psycopg.Error:
             return error(503, "database")
         return JSONResponse(body)
@@ -305,7 +309,8 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
                 return error(429, "rate")
             ticket_id = await run_in_threadpool(database.open_ticket, session.customer, body)
             session.tickets.append(Ticket(ticket_id, text, timeline.now_iso(), body, armed.id if armed else None))
-            session.armed = None  # one shot: only the message that was just filed carries the plan
+            if armed is not None and session.armed == armed.id:
+                session.armed = None  # one shot: only the message that was just filed carries the plan
         except psycopg.Error:
             return error(503, "database")
         finally:

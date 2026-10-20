@@ -95,7 +95,8 @@ def flow(data: dict) -> list[dict[str, str]]:
     elif kind == "safe":
         reply = _node("reply", "stopped", "blocked and replaced")
     elif kind == "template":
-        reply = _node("reply", "changed", "a fixed reply, not the model's text")
+        # The dispatcher stores a fixed reply for every effect request, honest ones too: not a wall acting.
+        reply = _node("reply", "ok", "fixed reply for a request")
     else:
         reply = _node("reply", "ok", "stored")
     return [agent, gateway, risk, tools, database, reply]
@@ -113,11 +114,12 @@ def banner(attack: attacks.Attack | None, nodes: list[dict], replied: bool) -> d
 
 
 def decisions(data: dict) -> int:
-    """Denied calls, calls with a dropped argument, the agent's own drops and refusals, replies that
-    were blocked or replaced, and effect requests that were rejected or refused."""
+    """Denied calls, calls with a dropped argument, the agent's own drops and refusals, replies the
+    guard blocked and replaced, and effect requests that were rejected or refused. A fixed reply
+    (kind template) is not counted: the dispatcher stores one for every effect request."""
     n = sum(1 for c in data["calls"] if c["outcome"] == "denied" or c["dropped_args"])
     n += len(data["events"])
-    n += 1 if data["reply_kind"] in ("safe", "template") else 0
+    n += 1 if data["reply_kind"] == "safe" else 0
     n += sum(1 for r in data["requests"]
              if r["status"] in ("rejected", "refused") or (r["risk"] is not None and r["risk"]["tier"] == "REJECT"))
     return n

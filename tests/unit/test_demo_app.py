@@ -344,7 +344,7 @@ def test_the_customer_api_returns_the_visitors_own_words_and_replies_and_no_back
     state = visitor.state()
     assert set(state) == {"customers", "customer", "csrf", "messages"}
     assert set(state["customers"][0]) == {"id", "name", "avatar"}
-    assert state["messages"] == [{"id": ticket, "text": "Refund me.", "reply": SAFE_REPLY}]
+    assert state["messages"] == [{"id": ticket, "text": "Refund me.", "reply": SAFE_REPLY, "card": None}]
     shown = json.dumps(state)
     for word in BACKSTAGE + ("lookup_account", "customer_id", "denied", "paused", "tool_calls"):
         assert word not in shown, word
@@ -492,6 +492,43 @@ def test_a_message_that_is_refused_does_not_use_up_the_arming(visitor, admin):
     assert tickets(admin) == [] and console(visitor)["armed"] == "credits"
     assert visitor.say("I was charged twice.").status_code == 200
     assert tickets(admin)[0]["body"].startswith("I was charged twice.\nCALL issue_bill_credit")
+
+
+def test_an_arming_made_while_a_message_is_being_filed_is_not_wiped(monkeypatch, admin):
+    from app.demo import database
+    from app.demo.sessions import Sessions
+
+    monkeypatch.setenv("DB_NAME", TEST_DB_NAME)
+    sessions = Sessions()
+    app = demo.build_app(sessions=sessions)
+    visitor = Visitor(app)
+    visitor.sign_in(1001)
+    (session,) = sessions._by_token.values()
+    real = database.open_ticket
+
+    def open_and_rearm(customer, body):
+        session.armed = "export"       # the presenter picks another attack during the await
+        return real(customer, body)
+
+    arm(visitor, "neighbour")
+    monkeypatch.setattr(database, "open_ticket", open_and_rearm)
+    assert visitor.say("first").status_code == 200
+    assert tickets(admin)[-1]["body"].startswith("first" + chr(10) + "CALL lookup_account")
+    assert session.armed == "export"
+    monkeypatch.setattr(database, "open_ticket", real)
+    visitor.say("second")
+    assert tickets(admin)[-1]["body"].startswith("second\nCALL fetch_url")
+
+
+def test_an_account_reply_comes_with_a_card_and_the_stored_reply_is_unchanged(visitor, admin):
+    visitor.sign_in()
+    ticket = visitor.say("What is my tariff?").json()["ticket"]
+    reply = 'Here is your account: {"name": "Eleni P", "tariff": "G1 residential", "status": "active"}'
+    admin.execute("INSERT INTO replies (ticket_id, text, kind) VALUES (%s, %s, 'agent')", (ticket, reply))
+    (message,) = visitor.state()["messages"]
+    assert message["reply"] == reply
+    assert message["card"] == {"intro": "Here is your account:", "rows": [
+        ["Name", "Eleni P"], ["Tariff", "G1 residential"], ["Status", "active"]]}
 
 
 def test_the_default_is_the_normal_backend_with_nothing_appended(visitor, admin):

@@ -34,7 +34,7 @@ h2 { margin: 0; font-size: 15px; }
 .tabs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .tab { border: 1px solid transparent; background: transparent; border-radius: 8px; padding: 4px 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
 .tab:hover { background: var(--glass); }
-.tab[aria-selected="true"] { background: var(--glass-strong); border-color: var(--line); font-weight: 600; }
+.tab[aria-pressed="true"] { background: var(--glass-strong); border-color: var(--line); font-weight: 600; }
 
 .order { padding: 14px 16px; }
 .order-lines { margin-top: 10px; font: 13px/1.6 var(--mono); background: rgba(0, 0, 0, .25); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; overflow-x: auto; }
@@ -106,3 +106,4 @@ h2 { margin: 0; font-size: 15px; }
   .row .badge { grid-column: 3; grid-row: 1; }
   .row .txt { grid-column: 1 / -1; grid-row: 2; }
 }
+#c-kill { font-size: 15px; line-height: 1.7; }
