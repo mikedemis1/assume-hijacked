@@ -50,7 +50,7 @@ def mutate(settings, path, request_id, fields, person):
             if not row or row["status"] not in {"pending", "notice_sent"}:
                 raise ValueError("request unavailable")
             if path.startswith("/approve/"):
-                if row["tier"] not in {"T0","T1","T2","HOLD"}:
+                if row["tier"] not in {"T0","T1","T2"}:
                     raise ValueError("request cannot be approved")
                 conn.execute("INSERT INTO approvals(request_id,approver,approver_role) VALUES (%s,%s,%s)",(request_id,person.oid,person.role))
             else:

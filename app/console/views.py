@@ -23,12 +23,12 @@ def queue(data, session):
         tier = row["tier"] or "UNKNOWN"
         body += f'<article><h3>Request {text(row["id"])}</h3><p>{text(row["kind"])} | {text(row["status"])} | {text(tier)}</p>'
         # Only codes emitted by the rules are displayed; never arbitrary text from a new writer.
-        reasons = {"invalid_amount","protected_or_unknown_home","flood","above_auto_limit","above_200","no_auto_evidence","evidence_unconfirmed","recent_refusals","blocked_calls"}
+        reasons = {"invalid_amount","protected_or_unknown_home","above_auto_limit","above_200","no_auto_evidence","evidence_unconfirmed","recent_refusals","blocked_calls"}
         body += "<p>"+text(", ".join(r for r in (row["reasons"] or []) if r in reasons))+"</p>"
         if tier in {"HUMAN_ONLY", "UNKNOWN"}:
             body += "<p>⚠ Protected customer: call the registered number first</p>"
         if row["status"] in {"pending", "notice_sent"}:
-            if tier in {"T0","T1","T2","HOLD"}:
+            if tier in {"T0","T1","T2"}:
                 body += form(f'/approve/{row["id"]}', csrf, "Approve")
             body += form(f'/reject/{row["id"]}', csrf, "Reject")
         body += "</article>"

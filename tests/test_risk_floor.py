@@ -3,7 +3,7 @@ check_credit and check_disconnection_order in db/sql/01-schema.sql).
 
 A credit or a disconnection order is written only when its request has a risk assessment, the
 assessment's tier allows the effect at all (required_approvals has a row for it), and enough
-distinct staff approved it, SeniorApprovers where the tier asks for them. The database checks this
+distinct staff approved it. The database checks this
 on the row itself, so a hijacked executor or console cannot skip the humans: the executor can
 write rows, but not assessments; the console can write approvals, but cannot make one person count
 twice.
@@ -20,10 +20,9 @@ from tests.test_executor_moveouts import (
     insert_order,
     notice_73_hours_ago,
     orders,
-    released_hold_notice_73_hours_ago,
 )
 
-TIERS = ["T0", "T1", "T2", "HUMAN_ONLY", "HOLD", "REJECT"]
+TIERS = ["T0", "T1", "T2", "HUMAN_ONLY", "REJECT"]
 ANNA, PETROS = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01", "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3"
 
 
@@ -44,10 +43,7 @@ def _credit(admin, tier):
 
 def _order(admin, tier):
     rid = add_moveout(admin, tier=tier)
-    if tier == "HOLD":  # a held move-out gets its notice only once two seniors released it
-        released_hold_notice_73_hours_ago(admin, rid)
-    else:
-        notice_73_hours_ago(admin, rid)
+    notice_73_hours_ago(admin, rid)
     return rid, lambda conn: insert_order(conn, rid, "SP-1001")
 
 
@@ -126,10 +122,6 @@ FLOOR_CASES = {
         "T2", [(ANNA, "Approver"), (ANNA, "SeniorApprover")], False),
     "T2, the same person in alternative UUID spelling": ("T2", [(ANNA, "Approver"), ("EEAB6C5EF5BC5D16AF4B813D9B88BE01", "Approver")], False),
     "T2, two people": ("T2", [(ANNA, "Approver"), (PETROS, "Approver")], True),
-    "HOLD, two Approvers": ("HOLD", [(ANNA, "Approver"), (PETROS, "Approver")], False),
-    "HOLD, a SeniorApprover and an Approver": ("HOLD", [(ANNA, "SeniorApprover"), (PETROS, "Approver")], False),
-    "HOLD, one SeniorApprover twice": ("HOLD", [(ANNA, "SeniorApprover"), ("EEAB6C5EF5BC5D16AF4B813D9B88BE01", "SeniorApprover")], False),
-    "HOLD, two SeniorApprovers": ("HOLD", [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")], True),
     "T0, no approval (credit only; an order always needs one)": ("T0", [], None),
 }
 
@@ -236,14 +228,14 @@ def test_effect_rows_cannot_be_updated(admin, as_role, ex, table):
     assert rows == 1
 
 
-def test_order_refused_for_human_only_even_with_two_seniors(admin, as_role, ex):
+def test_order_refused_for_human_only_even_with_two_approvals(admin, as_role, ex):
     rid, write = _order(admin, "HUMAN_ONLY")
     approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
     with pytest.raises(psycopg.errors.RaiseException, match="HUMAN_ONLY"):
         write(ex)
     assert orders(admin) == 0
-    # Control: the same approvals on a HOLD request (the strictest tier that allows an order).
-    rid, write = _order(admin, "HOLD")
+    # Control: the same approvals on a T2 request (the strictest tier that allows an order).
+    rid, write = _order(admin, "T2")
     approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
     write(ex)
     assert orders(admin) == 1
@@ -261,16 +253,27 @@ def test_no_effect_for_a_tier_no_approval_allows(admin, as_role, ex, kind, tier)
 
 
 def test_required_approvals_per_tier(admin):
-    expected = {"T0": (0, False), "T1": (1, False), "T2": (2, False), "HOLD": (2, True)}
-    for tier in TIERS + ["t1", "T3", "", None]:
-        rows = admin.execute("SELECT n, senior FROM required_approvals(%s)", (tier,)).fetchall()
-        want = [dict(zip(("n", "senior"), expected[tier]))] if tier in expected else []
+    expected = {"T0": 0, "T1": 1, "T2": 2}
+    for tier in TIERS + ["HOLD", "t1", "T3", "", None]:
+        rows = admin.execute("SELECT n FROM required_approvals(%s)", (tier,)).fetchall()
+        want = [{"n": expected[tier]}] if tier in expected else []
         assert rows == want, tier
+
+
+def test_tier_hold_is_refused_by_the_database(admin):
+    # HOLD (the move-out flood hold) is gone from the closed list of tiers.
+    rid = add_credit(admin, 49, 2, tier=None)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        admin.execute(
+            "INSERT INTO risk_assessments (request_id, tier, score, reasons, engine_version) "
+            "VALUES (%s, 'HOLD', 100, '{flood}', 'rules-1')",
+            (rid,),
+        )
 
 
 def test_assessment_tier_is_on_the_closed_list(admin):
     rid = add_credit(admin, 49, 2, tier=None)
-    for bad in ("T3", "t0", "", "ALLOW"):
+    for bad in ("T3", "t0", "", "ALLOW", "HOLD"):
         with pytest.raises(psycopg.errors.CheckViolation):
             assess(admin, rid, bad)
     for tier in TIERS:  # control: every tier the rules can return (app/risk/rules.py)

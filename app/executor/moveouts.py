@@ -1,16 +1,11 @@
 """Move-outs (decision 6): protected or unknown homes are never disconnected automatically.
 
 Only requests the risk engine assessed are taken. HUMAN_ONLY ends at manual_only and REJECT at
-rejected, before any notice. T1, T2 and HOLD take the path below and wait, at the order step, for
-the approvals their tier needs (T1 one, T2 two people, HOLD two SeniorApprovers). The approvals
+rejected, before any notice. T1 and T2 take the path below and wait, at the order step, for
+the approvals their tier needs (T1 one, T2 two people). The approvals
 count only once given after the occupier notice (the order rule) and after the assessment, so that
 is where the executor waits: an approval before the notice would not count for the order, and the
 same person cannot approve twice.
-
-A HOLD (a flood of move-outs, which may be fake) also waits before its notice: no occupier is told
-until two SeniorApprovers released the request. check_occupier_notice (db/sql/06-risk.sql) refuses
-the notice otherwise. The release does not count for the order, which still needs two
-SeniorApprovers after the notice, so a held move-out that is real takes four seniors.
 
 The executor writes the notice row and the order row and sends nothing outside: no occupier is
 messaged and no grid operator is called.
@@ -64,9 +59,6 @@ def _decide_one(conn, settings: Settings, req, now: datetime, hour_ago: datetime
             return decided
         if protection != "NO":
             return _decide(conn, req["id"], "manual_only", f"protection {protection}: human occupant check only", now)
-        # A HOLD waits, quietly and without a notice, until two SeniorApprovers release it.
-        if req["tier"] == "HOLD" and not approvals_met(conn, req["id"], "HOLD", req["assessed_at"]):
-            return None
         # sent_at is the database's clock (column default); the executor cannot set it.
         conn.execute(
             "INSERT INTO occupier_notices (request_id, supply_point_id) VALUES (%s, %s)",

@@ -221,7 +221,7 @@
       "id": 4,
       "type": "bargauge",
       "title": "Risk tiers (selected range)",
-      "description": "How the risk engine tiered the requested effects: T0 automatic, T1 one approver, T2 two approvers, HOLD two with a senior, HUMAN_ONLY and REJECT never automatic.",
+      "description": "How the risk engine tiered the requested effects: T0 automatic, T1 one approver, T2 two approvers, HUMAN_ONLY and REJECT never automatic.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

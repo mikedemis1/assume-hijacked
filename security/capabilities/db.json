@@ -162,9 +162,6 @@
           "leases": [
             "SELECT (allowed_tools, expires_at, revoked, ticket_id, token_hash)"
           ],
-          "register_sync": [
-            "SELECT (id, last_success)"
-          ],
           "risk_assessments": [
             "SELECT (request_id)"
           ],

@@ -10,7 +10,6 @@
 --   T0          none                       automatic; the executor's own checks still apply
 --   T1          1                          one member of staff
 --   T2          2 distinct                 two people
---   HOLD        2 distinct SeniorApprovers a flood of move-outs; seniors release it
 --   HUMAN_ONLY  never                      a person handles it outside this system
 --   REJECT      never                      refused
 --
@@ -27,7 +26,7 @@
 CREATE TABLE risk_assessments (
     id             serial PRIMARY KEY,
     request_id     int UNIQUE NOT NULL REFERENCES action_requests,
-    tier           text NOT NULL CHECK (tier IN ('T0', 'T1', 'T2', 'HUMAN_ONLY', 'HOLD', 'REJECT')),
+    tier           text NOT NULL CHECK (tier IN ('T0', 'T1', 'T2', 'HUMAN_ONLY', 'REJECT')),
     score          int NOT NULL,
     reasons        text[] NOT NULL,
     engine_version text NOT NULL,
@@ -107,19 +106,18 @@ BEGIN
     END IF;
 END $$;
 
--- How many distinct approvals a tier needs, and whether they must be SeniorApprovers. No row
--- means no number of approvals allows the effect (HUMAN_ONLY, REJECT, or anything unknown).
-CREATE FUNCTION required_approvals(p_tier text) RETURNS TABLE(n int, senior bool)
+-- How many distinct approvals a tier needs. No row means no number of approvals allows the
+-- effect (HUMAN_ONLY, REJECT, or anything unknown).
+CREATE FUNCTION required_approvals(p_tier text) RETURNS TABLE(n int)
 LANGUAGE sql IMMUTABLE SET search_path = public, pg_temp AS $$
-    SELECT v.n, v.senior
-    FROM (VALUES ('T0', 0, false), ('T1', 1, false), ('T2', 2, false), ('HOLD', 2, true))
-         AS v(tier, n, senior)
+    SELECT v.n
+    FROM (VALUES ('T0', 0), ('T1', 1), ('T2', 2)) AS v(tier, n)
     WHERE v.tier = p_tier;
 $$;
 
 -- The approval floor, raised from the credit and order triggers. It raises unless the request has
--- a risk assessment, the tier allows the effect, and enough distinct people approved it, each a
--- SeniorApprover when the tier asks for one, after the assessment was written. An approval given
+-- a risk assessment, the tier allows the effect, and enough distinct people approved it after the
+-- assessment was written. An approval given
 -- before the request had a tier was given without knowing the risk: a console that lets staff
 -- approve early, or a hijacked one that approves everything in advance, cannot pre-pay the floor.
 -- With p_after, only approvals given after that time count too (the occupier notice, for orders).
@@ -140,22 +138,19 @@ BEGIN
     IF v_tier IS NULL THEN
         RAISE EXCEPTION 'request % has no risk assessment', p_request;
     END IF;
-    SELECT q.n, q.senior INTO v_need FROM public.required_approvals(v_tier) q;
+    SELECT q.n INTO v_need FROM public.required_approvals(v_tier) q;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'request % is tier %, which no approval allows', p_request, v_tier;
     END IF;
     SELECT count(DISTINCT a.approver) INTO v_have
     FROM public.approvals a
     WHERE a.request_id = p_request
-      AND (NOT v_need.senior OR a.approver_role = 'SeniorApprover')
       AND a.created_at > v_assessed
       AND (p_after IS NULL OR a.created_at > p_after);
     IF v_have < v_need.n THEN
         RAISE EXCEPTION 'request % is tier % and needs % distinct %, has %',
             p_request, v_tier, v_need.n,
-            CASE WHEN v_need.senior THEN 'SeniorApprover approvals'
-                 WHEN v_need.n = 1 THEN 'approval'
-                 ELSE 'approvals' END,
+            CASE WHEN v_need.n = 1 THEN 'approval' ELSE 'approvals' END,
             v_have;
     END IF;
 END $$;
@@ -224,16 +219,15 @@ CREATE TRIGGER disconnection_orders_no_update BEFORE UPDATE ON disconnection_ord
 --                                 was paused (reasons = {paused}); those say nothing about this
 --                                 ticket. Calls the gateway blocks itself (tool_calls, 05-lease.sql)
 --                                 do not count yet.
---   home_protection(request)      YES, NO or UNKNOWN for the home of one move-out request. The
+--   home_protection(request)      YES or NO for the home of one move-out request. The
 --                                 flags say which homes have life-support equipment (health data);
 --                                 the engine learns one category per move-out it assesses, not the
 --                                 list. It answers only for a move-out that is still pending and
 --                                 has no assessment yet, the one moment the engine needs it, and
 --                                 raises for anything else (a credit, a decided or assessed request,
 --                                 an unknown id): otherwise the engine could ask about any account
---                                 by pointing at an old request. UNKNOWN when the register sync is
---                                 older than 24 hours (the same fixed age check_disconnection_order
---                                 uses): fail closed.
+--                                 by pointing at an old request. YES when a flag row exists for the
+--                                 home, else NO; nothing else is read.
 --
 -- Each is SECURITY DEFINER, owned by risk_owner, with a fixed search_path, granted to risk_engine
 -- only, and checks session_user too, so a grant added by mistake is still refused.
@@ -288,12 +282,6 @@ BEGIN
     IF EXISTS (SELECT 1 FROM public.flags f WHERE f.supply_point_id = v_home) THEN
         RETURN 'YES';
     END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM public.register_sync s
-        WHERE s.id = 1 AND s.last_success >= now() - interval '24 hours'
-    ) THEN
-        RETURN 'UNKNOWN';
-    END IF;
     RETURN 'NO';
 END $$;
 
@@ -317,7 +305,6 @@ GRANT SELECT (id, kind, account_id, status) ON action_requests TO risk_owner;
 GRANT SELECT (request_id) ON risk_assessments TO risk_owner;
 GRANT SELECT (id, supply_point_id) ON accounts TO risk_owner;
 GRANT SELECT (supply_point_id) ON flags TO risk_owner;
-GRANT SELECT (id, last_success) ON register_sync TO risk_owner;
 
 ALTER FUNCTION risk_lease_facts(bytea, text) OWNER TO risk_owner;
 ALTER FUNCTION blocked_calls_on_ticket(int) OWNER TO risk_owner;
@@ -367,30 +354,3 @@ GRANT SELECT (paused) ON agent_control TO approver;
 GRANT SELECT (id, kind, actor, created_at) ON events TO approver;
 GRANT UPDATE (status, decision_reason, decided_at) ON action_requests TO approver;
 
-
--- ---------------------------------------------------------------------------------------------
--- Occupier notices for held move-outs.
---
--- A HOLD is a flood of move-outs, and a flood may be fake requests filed through a hijacked
--- agent. A notice tells a real occupier that their power is about to be cut, so a held request
--- gets none until two distinct SeniorApprovers released it: the approval floor of its tier,
--- counting approvals given after the assessment (check_approval_floor). The executor waits for
--- the same release itself (app/executor/moveouts.py); this is the wall below its code. Other tiers
--- send their notice first and are approved after it (the order rule in check_disconnection_order).
--- The release does not count for the order: that floor counts approvals after the notice, and the
--- approvals primary key stops the same person approving twice, so a real held move-out needs four
--- seniors in all.
--- Runs as the inserting role (executor), which reads risk_assessments and approvals.
-CREATE FUNCTION check_occupier_notice() RETURNS trigger
-LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM public.risk_assessments WHERE request_id = NEW.request_id AND tier = 'HOLD') THEN
-        PERFORM public.check_approval_floor(NEW.request_id, NULL);
-    END IF;
-    RETURN NEW;
-END $$;
-
-CREATE TRIGGER occupier_notices_check BEFORE INSERT ON occupier_notices
-    FOR EACH ROW EXECUTE FUNCTION check_occupier_notice();
-
-REVOKE ALL ON FUNCTION check_occupier_notice() FROM PUBLIC;

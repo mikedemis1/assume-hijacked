@@ -248,17 +248,9 @@ def build_app(decider, metrics: Metrics | None = None) -> Starlette:
 
 def effect_facts(conn: psycopg.Connection, req: dict, settings: Settings, now: datetime) -> EffectFacts:
     hour_ago = now - timedelta(hours=1)
+    protection = "NO"  # not looked up for a credit: no credit rule reads it
     if req["kind"] == "move_out":
         protection = conn.execute("SELECT home_protection(%s) AS p", (req["id"],)).fetchone()["p"]
-        # Move-outs filed in the last hour before this one: the first `limit` of a flood pass,
-        # the rest are held, whatever order the engine sees them in.
-        moveouts = conn.execute(
-            "SELECT count(*) AS n FROM action_requests "
-            "WHERE kind = 'move_out' AND created_at >= %s AND id < %s",
-            (hour_ago, req["id"]),
-        ).fetchone()["n"]
-    else:
-        protection, moveouts = "UNKNOWN", 0  # not looked up: no credit rule reads them
     evidence = False
     if req["kind"] == "credit" and req["amount_eur"] is not None:
         # The same evidence rule as the executor and check_credit (decision 4): a charge on this
@@ -281,7 +273,6 @@ def effect_facts(conn: psycopg.Connection, req: dict, settings: Settings, now: d
         reason=req["reason"],
         protection=protection,
         evidence_confirmed=evidence,
-        moveouts_last_hour=moveouts,
         refused_credits_last_hour=refused,
         blocked_calls_on_ticket=blocked,
     )
@@ -302,7 +293,7 @@ def assess_pending(
     for req in pending:
         try:
             with conn.transaction():
-                verdict = assess_effect(effect_facts(conn, req, settings, now), settings.moveout_max_per_hour, auto_max)
+                verdict = assess_effect(effect_facts(conn, req, settings, now), auto_max)
                 # ON CONFLICT: another engine got there first; its verdict stands (append only).
                 done = conn.execute(
                     "INSERT INTO risk_assessments (request_id, tier, score, reasons, engine_version) "

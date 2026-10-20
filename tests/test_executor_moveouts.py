@@ -469,9 +469,8 @@ def test_trigger_takes_the_home_lock(admin, as_role):  # gap I4
 
 
 # --- risk tiers. A move-out's approvals count only after the occupier notice (the order rule), so
-# the executor waits for the tier's approvals at the order step: T1 one person, T2 two, HOLD two
-# SeniorApprovers. A HOLD also waits for two SeniorApprovers before its notice. HUMAN_ONLY ends at
-# manual_only without a notice.
+# the executor waits for the tier's approvals at the order step: T1 one person, T2 two.
+# HUMAN_ONLY ends at manual_only without a notice.
 
 def test_t2_move_out_needs_two_approvals_after_the_notice(admin, as_role, settings, now):
     from tests.conftest import approve_as
@@ -486,101 +485,6 @@ def test_t2_move_out_needs_two_approvals_after_the_notice(admin, as_role, settin
     approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "executed" and orders(admin) == 1
-
-
-def notices(admin):
-    return admin.execute("SELECT count(*) AS n FROM occupier_notices").fetchone()["n"]
-
-
-def test_hold_move_out_sends_no_notice_until_two_seniors_release_it(admin, as_role, settings, now):
-    # A flood of move-outs (tier HOLD) may be fake requests: a notice would frighten real occupiers
-    # for nothing. So two SeniorApprovers release a held request before its notice goes out.
-    from tests.conftest import approve_as
-
-    ex, staff = as_role("executor"), as_role("approver")
-    rid = add_moveout(admin, tier="HOLD")
-    control = add_moveout(admin, ticket_id=2)  # T1, same home: its notice goes out on the first run
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "pending" and status(admin, control) == "notice_sent"
-    assert notices(admin) == 1 and errors(admin) == []
-    approve_as(staff, rid, "dffe794f-3986-5ba6-80ef-1570ffa86be7", "SeniorApprover")
-    approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3", "Approver")  # not a senior: does not count
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "pending" and notices(admin) == 1 and errors(admin) == []
-    approve_as(staff, rid, "d4dc8207-56b5-50ef-9cbb-3407413c66d9", "SeniorApprover")
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "notice_sent" and notices(admin) == 2 and errors(admin) == []
-
-
-def test_released_hold_move_out_still_needs_two_seniors_after_the_notice(admin, as_role, settings, now):
-    from tests.conftest import approve_as
-
-    ex, staff = as_role("executor"), as_role("approver")
-    rid = add_moveout(admin, tier="HOLD")
-    approve_as(staff, rid, "dffe794f-3986-5ba6-80ef-1570ffa86be7", "SeniorApprover")
-    approve_as(staff, rid, "d4dc8207-56b5-50ef-9cbb-3407413c66d9", "SeniorApprover")
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "notice_sent"
-    # 73 hours later. The release came before the notice, so it does not count for the order.
-    back_date_approvals(admin, rid, 74)
-    back_date_notice(admin, rid, 73)
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve_as(staff, rid, "2d0319c5-aea3-5a3b-8bee-1f4ea4f544e6", "SeniorApprover")
-    approve_as(staff, rid, "138d7ff6-5130-585f-ba5c-7c080d2c53af", "Approver")
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve_as(staff, rid, "54db6a86-f76d-5d19-9b00-fa1d5fa2d2e4", "SeniorApprover")
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "executed" and orders(admin) == 1
-
-
-def insert_notice(conn, request_id, supply_point_id="SP-1001"):
-    conn.execute(
-        "INSERT INTO occupier_notices (request_id, supply_point_id) VALUES (%s, %s)", (request_id, supply_point_id)
-    )
-
-
-def test_database_refuses_notice_for_a_held_move_out_without_two_seniors(admin, as_role):
-    # The same rule below the executor code: check_occupier_notice (db/sql/06-risk.sql).
-    from tests.conftest import approve_as
-
-    ex, staff = as_role("executor"), as_role("approver")
-    rid = add_moveout(admin, tier="HOLD")
-    with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
-        insert_notice(ex, rid)
-    approve_as(staff, rid, "dffe794f-3986-5ba6-80ef-1570ffa86be7", "SeniorApprover")
-    approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3", "Approver")
-    with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
-        insert_notice(ex, rid)
-    assert notices(admin) == 0
-    approve_as(staff, rid, "d4dc8207-56b5-50ef-9cbb-3407413c66d9", "SeniorApprover")
-    insert_notice(ex, rid)  # released
-    insert_notice(ex, add_moveout(admin, ticket_id=2))  # control: T1 needs no release
-    assert notices(admin) == 2
-
-
-def test_release_given_before_the_assessment_does_not_count(admin, as_role):
-    from tests.conftest import approve_as
-
-    ex, staff = as_role("executor"), as_role("approver")
-    rid = add_moveout(admin, tier=None)
-    approve_as(staff, rid, "dffe794f-3986-5ba6-80ef-1570ffa86be7", "SeniorApprover")
-    approve_as(staff, rid, "d4dc8207-56b5-50ef-9cbb-3407413c66d9", "SeniorApprover")
-    assess(admin, rid, "HOLD")
-    with pytest.raises(psycopg.errors.RaiseException, match="SeniorApprover"):
-        insert_notice(ex, rid)
-
-
-def released_hold_notice_73_hours_ago(admin, rid, account_id=1):
-    """A HOLD move-out whose two seniors released it and whose notice went out 73 hours ago. The
-    release approvals are moved before the notice, so they do not count for the order."""
-    for who in ("cbade417-5d9d-5550-9ba6-6cd101563757", "18735c6a-f5e3-5fee-a53a-e57657e654fd"):
-        admin.execute(
-            "INSERT INTO approvals (request_id, approver, approver_role) VALUES (%s, %s, 'SeniorApprover')", (rid, who)
-        )
-    notice_73_hours_ago(admin, rid, account_id)
-    back_date_approvals(admin, rid, 74)
 
 
 def test_human_only_move_out_gets_no_notice_even_at_an_unprotected_home(admin, as_role, settings, now):

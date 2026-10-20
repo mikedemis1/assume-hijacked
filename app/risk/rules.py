@@ -11,7 +11,6 @@ as a low-risk 0. Otherwise the score items are added up and the score picks the 
     -----------------------------  -----------  ------  --------------------
     amount missing or <= 0         credit       hard    invalid_amount (REJECT)
     protection is not NO           move_out     hard    protected_or_unknown_home (HUMAN_ONLY)
-    moveouts_last_hour >= limit    move_out     hard    flood (HOLD)
     amount > auto_max_eur          credit       +40     above_auto_limit
     amount > 200                   credit       +40     above_200
     reason != duplicate_charge     credit       +40     no_auto_evidence
@@ -58,9 +57,8 @@ class EffectFacts:
     kind: str  # credit | move_out
     amount_eur: Decimal | None
     reason: str | None
-    protection: str  # YES | NO | UNKNOWN
+    protection: str  # YES | NO
     evidence_confirmed: bool
-    moveouts_last_hour: int
     refused_credits_last_hour: int
     blocked_calls_on_ticket: int
 
@@ -116,7 +114,7 @@ def _credit_reasons(f: EffectFacts, amount: Decimal, auto_max_eur: Decimal) -> l
     return reasons
 
 
-def assess_effect(f: EffectFacts, moveout_limit: int, auto_max_eur: Decimal) -> Assessment:
+def assess_effect(f: EffectFacts, auto_max_eur: Decimal) -> Assessment:
     if f.kind == "credit":
         if f.amount_eur is None or f.amount_eur <= 0:
             return _hard("REJECT", "invalid_amount")
@@ -125,8 +123,6 @@ def assess_effect(f: EffectFacts, moveout_limit: int, auto_max_eur: Decimal) -> 
     elif f.kind == "move_out":
         if f.protection != "NO":
             return _hard("HUMAN_ONLY", "protected_or_unknown_home")
-        if f.moveouts_last_hour >= moveout_limit:
-            return _hard("HOLD", "flood")
         reasons = []
         tier_for = _moveout_tier
     else:

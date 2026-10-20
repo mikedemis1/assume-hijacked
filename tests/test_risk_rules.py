@@ -17,7 +17,6 @@ from app.risk.rules import (
     assess_effect,
 )
 
-LIMIT = 3  # moveout_limit
 AUTO = Decimal("50")  # auto_max_eur
 
 
@@ -29,7 +28,6 @@ def credit(**over) -> EffectFacts:
         reason="duplicate_charge",
         protection="NO",
         evidence_confirmed=True,
-        moveouts_last_hour=0,
         refused_credits_last_hour=0,
         blocked_calls_on_ticket=0,
     )
@@ -38,14 +36,13 @@ def credit(**over) -> EffectFacts:
 
 
 def moveout(**over) -> EffectFacts:
-    """A clean move-out: the home is not protected, no flood, no blocked calls."""
+    """A clean move-out: the home is not protected, no blocked calls."""
     base = dict(
         kind="move_out",
         amount_eur=None,
         reason=None,
         protection="NO",
         evidence_confirmed=False,
-        moveouts_last_hour=0,
         refused_credits_last_hour=0,
         blocked_calls_on_ticket=0,
     )
@@ -53,8 +50,8 @@ def moveout(**over) -> EffectFacts:
     return EffectFacts(**base)
 
 
-def judge(f: EffectFacts, limit: int = LIMIT, auto: Decimal = AUTO) -> Assessment:
-    return assess_effect(f, limit, auto)
+def judge(f: EffectFacts, auto: Decimal = AUTO) -> Assessment:
+    return assess_effect(f, auto)
 
 
 def test_engine_version():
@@ -89,25 +86,17 @@ def test_moveout_with_protection_not_no_goes_to_humans(protection):
     )
 
 
-def test_moveout_flood_is_held_at_the_limit_not_below_it():
-    assert judge(moveout(moveouts_last_hour=LIMIT - 1)).tier == "T1"
-    assert judge(moveout(moveouts_last_hour=LIMIT)) == Assessment("HOLD", 100, ("flood",))
-    assert judge(moveout(moveouts_last_hour=LIMIT + 5)).tier == "HOLD"
-
-
-def test_flood_uses_the_limit_it_is_given():
-    assert judge(moveout(moveouts_last_hour=1), limit=1).tier == "HOLD"
-    assert judge(moveout(moveouts_last_hour=1), limit=2).tier == "T1"
-
-
-def test_protection_rule_comes_before_flood():
-    f = moveout(protection="YES", moveouts_last_hour=99)
-    assert judge(f) == Assessment("HUMAN_ONLY", 100, ("protected_or_unknown_home",))
+def test_many_moveouts_are_not_a_rule_any_more():
+    # The flood rule is gone: EffectFacts carries no move-out count, so a move-out is judged on
+    # its own facts and a clean one is T1 whatever else was filed (the service-level test
+    # test_many_moveouts_in_an_hour_are_not_held in test_risk_service.py checks it end to end).
+    assert "moveouts_last_hour" not in EffectFacts.__dataclass_fields__
+    assert judge(moveout()) == Assessment("T1", 0, ())
 
 
 def test_hard_rules_apply_only_to_their_own_kind():
     # A credit ignores the move-out rules, a move-out ignores the credit rule.
-    assert judge(credit(protection="YES", moveouts_last_hour=99)).tier == "T0"
+    assert judge(credit(protection="YES")).tier == "T0"
     assert judge(moveout(amount_eur=None)).tier == "T1"
     assert judge(moveout(amount_eur=Decimal("-1"))).tier == "T1"
 
@@ -134,8 +123,8 @@ def test_above_auto_limit_boundary():
 
 def test_auto_limit_comes_from_the_argument():
     f = credit(amount_eur=Decimal("20"))
-    assert assess_effect(f, LIMIT, Decimal("19.99")).reasons == ("above_auto_limit",)
-    assert assess_effect(f, LIMIT, Decimal("20")).reasons == ()
+    assert assess_effect(f, Decimal("19.99")).reasons == ("above_auto_limit",)
+    assert assess_effect(f, Decimal("20")).reasons == ()
 
 
 def test_above_200_boundary_and_both_amount_items_stack():
@@ -146,7 +135,7 @@ def test_above_200_boundary_and_both_amount_items_stack():
 
 
 def test_above_200_alone_when_auto_limit_is_higher():
-    r = assess_effect(credit(amount_eur=Decimal("250")), LIMIT, Decimal("500"))
+    r = assess_effect(credit(amount_eur=Decimal("250")), Decimal("500"))
     assert r.reasons == ("above_200",)
     assert r.score == 40
 
@@ -258,28 +247,26 @@ def test_moveout_stays_t1_with_the_reachable_scores():
 
 AMOUNTS = [None, Decimal("-1"), Decimal("0"), Decimal("0.01"), Decimal("50"), Decimal("201")]
 REASONS = [None, "duplicate_charge", "goodwill"]
-PROTECTIONS = ["YES", "NO", "UNKNOWN"]
+PROTECTIONS = ["YES", "NO"]
 BOOLS = [True, False]
 COUNTS = [0, 1, 2, 3, 10]
 
 
 def all_facts():
-    for kind, amount, reason, prot, ev, mo, refused, blocked in itertools.product(
-        ["credit", "move_out"], AMOUNTS, REASONS, PROTECTIONS, BOOLS, COUNTS, COUNTS, COUNTS
+    for kind, amount, reason, prot, ev, refused, blocked in itertools.product(
+        ["credit", "move_out"], AMOUNTS, REASONS, PROTECTIONS, BOOLS, COUNTS, COUNTS
     ):
-        yield EffectFacts(kind, amount, reason, prot, ev, mo, refused, blocked)
+        yield EffectFacts(kind, amount, reason, prot, ev, refused, blocked)
 
 
 def test_hard_rule_always_wins():
-    seen = {"REJECT": 0, "HUMAN_ONLY": 0, "HOLD": 0, "other": 0}
+    seen = {"REJECT": 0, "HUMAN_ONLY": 0, "other": 0}
     for f in all_facts():
         r = judge(f)
         if f.kind == "credit" and (f.amount_eur is None or f.amount_eur <= 0):
             expected = "REJECT"
         elif f.kind == "move_out" and f.protection != "NO":
             expected = "HUMAN_ONLY"
-        elif f.kind == "move_out" and f.moveouts_last_hour >= LIMIT:
-            expected = "HOLD"
         else:
             expected = None
         if expected:
@@ -295,7 +282,7 @@ def test_hard_rule_always_wins():
 def test_every_verdict_is_consistent_with_its_score():
     for f in all_facts():
         r = judge(f)
-        if r.tier in ("REJECT", "HUMAN_ONLY", "HOLD"):
+        if r.tier in ("REJECT", "HUMAN_ONLY"):
             continue
         assert r.score == sum(rules._WEIGHTS[x] for x in r.reasons), f
         if f.kind == "credit":
