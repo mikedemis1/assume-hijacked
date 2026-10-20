@@ -467,7 +467,7 @@ def test_effect_already_requested_reaches_the_agent_as_denied():
     assert reply_category(reply) == toolerrors.DENIED
 
 
-def test_f4_a_second_effect_the_database_refuses_is_counted_as_its_own_denial(settings, admin, as_role):
+def test_a_second_effect_the_database_refuses_is_counted_as_its_own_denial(settings, admin, as_role):
     # The engine is a stand-in that allows everything, so the second request reaches the tool and the
     # database says no. That only happens when a tool pod calls its function again on a lease that
     # already filed a request: the one signal of a compromised tool pod.
@@ -488,6 +488,6 @@ def test_f4_a_second_effect_the_database_refuses_is_counted_as_its_own_denial(se
     assert metric(built, "gateway_denials_total", tool="request_disconnection", reason="effect_already_requested") == 1
 
 
-def test_f4_the_new_denial_reason_is_a_series_from_the_start(settings, as_role):
+def test_the_new_denial_reason_is_a_series_from_the_start(settings, as_role):
     built = build(settings, as_role)
     assert metric(built, "gateway_denials_total", tool="issue_bill_credit", reason="effect_already_requested") == 0

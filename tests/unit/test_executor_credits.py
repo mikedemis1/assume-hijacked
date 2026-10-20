@@ -58,7 +58,7 @@ def credits_count(admin):
     return admin.execute("SELECT count(*) AS n FROM credits").fetchone()["n"]
 
 
-# --- the charges must back the credit (final review F2) ---
+# --- the charges must back the credit ---
 # Each request below matches its credit row exactly (account, amount, evidence), so only the
 # check against the charges table can refuse it. The executor would not get this far.
 

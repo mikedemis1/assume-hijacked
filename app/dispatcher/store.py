@@ -114,8 +114,10 @@ class DispatcherDb:
         `events` is the agent's list of drops, already checked by app/dispatcher/events.py. It is
         written first, while the lease is still live, in a savepoint of its own: should the database
         refuse it, the reply is still stored. If the lease is no longer live when it is closed, the
-        reply is refused (403) and the events are undone with it: the whole attempt is one savepoint,
-        and the lease is revoked again outside it. If the ticket already has a reply (409, the lease
+        reply is refused (403) and the events are undone with it: the whole attempt is one savepoint.
+        The 403 happens whenever the facts join finds no row (the lease is not live, or it is live
+        but the ticket has no account row); the lease is revoked again outside the savepoint only
+        when events had been stored, since only then did the rollback undo its revocation. If the ticket already has a reply (409, the lease
         was live), the events are kept: the lease was valid and the report is genuine. The
         last item of the answer says what happened to the events: how many were stored, or None (none
         sent, the lease is not live, or the database refused the list)."""

@@ -1,4 +1,4 @@
-"""What the agent reports about its own drops (agent_events), F4.
+"""What the agent reports about its own drops (agent_events).
 
 The agent drops the arguments the model may not set and refuses unknown tools before the gateway. It
 reports that to the dispatcher with its reply, as names only. The dispatcher checks the list hard and
