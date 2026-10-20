@@ -284,6 +284,9 @@
           "SEQUENCE demo_ticket_id_seq",
           "TABLE demo_customers",
           "TABLE demo_tickets"
+        ],
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
         ]
       }
     ],
@@ -405,6 +408,15 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },

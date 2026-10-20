@@ -153,14 +153,14 @@ FROM_EVENTS = "reported by the agent"
 FROM_PLAN = "from your message, no agent event"
 
 
-def _event_lines(events: list[dict], calls: list[dict]) -> tuple[dict[str, list[list[str]]], list[Line]]:
+def _event_lines(events: list[dict]) -> tuple[dict[str, list[tuple[list[str], datetime]]], list[Line]]:
     """The agent's reports (agent_events): dropped arguments per tool, in the order reported, to be
     matched with the gateway's calls to that tool, and a line for each unknown tool it refused."""
-    dropped: dict[str, list[list[str]]] = {}
+    dropped: dict[str, list[tuple[list[str], datetime]]] = {}
     lines: list[Line] = []
     for event in events:
         if event["kind"] == "dropped_argument":
-            dropped.setdefault(event["tool"], []).append(sorted(event["arg_names"]))
+            dropped.setdefault(event["tool"], []).append((sorted(event["arg_names"]), event["reported_at"]))
         elif event["kind"] == "unknown_tool":
             lines.append(Line(_iso(event["reported_at"]), "bad", _shown(event["tool"]),
                               "refused: the agent has no such tool", f"by the agent ({FROM_EVENTS})"))
@@ -173,7 +173,7 @@ def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall]
     there are any; otherwise, and only when a plan is known, from comparing the plan with the record
     (each recorded call is matched with the next plan step that names the same tool)."""
     unused = list(assessments)
-    reported, extra = _event_lines(events, calls) if events else ({}, [])
+    reported, extra = _event_lines(events) if events else ({}, [])
     source = FROM_EVENTS if events else FROM_PLAN
     if events:
         plan = None
@@ -190,7 +190,7 @@ def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall]
     position = 0  # first plan step that has not been matched yet
     for call in calls:
         tool = call["tool"]
-        by_agent: list[str] = reported.get(tool, []).pop(0) if reported.get(tool) else []
+        by_agent: list[str] = reported[tool].pop(0)[0] if reported.get(tool) else []
         # Plan steps skipped on the way (a tool the agent does not have) are shown before the call
         # they precede, so the timeline keeps the order of the message.
         hit = next((i for i in range(position, len(steps)) if steps[i].name == tool), None)
@@ -203,8 +203,8 @@ def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall]
             position = hit + 1
         lines.append(_gateway_line(call, by_agent, verdict_of(call), source))
     for tool, leftovers in reported.items():  # reported drops with no recorded call to hang them on
-        for names in leftovers:
-            lines.append(Line(_iso(events[-1]["reported_at"]), "warn", _shown(tool),
+        for names, reported_at in leftovers:
+            lines.append(Line(_iso(reported_at), "warn", _shown(tool),
                               f"{_plural(len(names), 'argument', 'arguments')} {_names(names)} dropped by the agent",
                               f"no call reached the gateway ({FROM_EVENTS})"))
     lines += extra

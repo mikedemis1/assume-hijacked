@@ -32,7 +32,7 @@
             "SELECT (amount_eur, created_at, decision_reason, id, kind, status, ticket_id)"
           ],
           "agent_events": [
-            "SELECT (arg_names, id, kind, lease_hash, reported_at, ticket_id, tool)"
+            "SELECT (arg_names, id, kind, reported_at, ticket_id, tool)"
           ],
           "agent_runs": [
             "SELECT (created_at, lease_hash, status, ticket_id)"

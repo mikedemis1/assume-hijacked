@@ -195,12 +195,28 @@ def test_asi04_fingerprint_changes_with_description_or_schema():
     assert descriptors.descriptor_sha256(renamed) != hashed
 
 
-def test_owner_roles_with_closed_function_defaults_have_them_in_the_database(admin):
+def test_owner_roles_with_closed_function_defaults_match_the_database_both_ways(admin):
     # db.json says "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC" for these roles: pg_default_acl must hold a
-    # function entry for each (ALTER DEFAULT PRIVILEGES in db/sql/01-schema.sql).
+    # function entry for each (ALTER DEFAULT PRIVILEGES in db/sql/01-schema.sql), and a role that holds
+    # such an entry must be listed in db.json.
     claimed = {r["role"] for r in manifests()["db"]["db"]["roles"]
                if "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC" in r.get("default_privileges", [])}
     held = {r["rolname"] for r in admin.execute(
         "SELECT r.rolname FROM pg_default_acl d JOIN pg_roles r ON r.oid = d.defaclrole WHERE d.defaclobjtype = 'f'"
     ).fetchall()}
-    assert claimed and claimed <= held, claimed - held
+    assert claimed and claimed <= held, ("in db.json, not in the database:", claimed - held)
+    assert held <= claimed, ("in the database, not in db.json:", held - claimed)
+
+
+def test_row_level_security_policies_in_db_json_match_pg_policies_both_ways(admin):
+    claimed = {(table, p["name"], p["command"], tuple(sorted(p["roles"])))
+               for table, spec in manifests()["db"]["db"]["rls"].items() for p in spec["policies"]}
+    held = {(r["tablename"], r["policyname"], r["cmd"], tuple(sorted(r["roles"])))
+            for r in admin.execute("SELECT tablename, policyname, cmd, roles FROM pg_policies "
+                                   "WHERE schemaname = 'public'").fetchall()}
+    assert claimed - held == set(), ("in db.json, not in the database:", claimed - held)
+    assert held - claimed == set(), ("in the database, not in db.json:", held - claimed)
+
+
+def test_the_demo_manifest_is_optional_so_nothing_is_created_in_azure_unless_asked():
+    assert manifests()["demo"]["optional"] is True

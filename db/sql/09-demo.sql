@@ -91,7 +91,7 @@ GRANT SELECT (request_id, tier, reasons, created_at) ON risk_assessments TO demo
 -- replies.kind says where the stored text came from (agent, safe, template); agent_events is the
 -- agent's own report of what it dropped, names only (05-lease.sql). Neither role reads reply text here.
 GRANT SELECT (ticket_id, kind, created_at) ON replies TO demo_ops;
-GRANT SELECT (id, ticket_id, lease_hash, kind, tool, arg_names, reported_at) ON agent_events TO demo_ops;
+GRANT SELECT (id, ticket_id, kind, tool, arg_names, reported_at) ON agent_events TO demo_ops;
 GRANT SELECT (request_id, created_at) ON credits TO demo_ops;
 GRANT SELECT (request_id, created_at) ON disconnection_orders TO demo_ops;
 GRANT SELECT (request_id, approver_role, created_at) ON approvals TO demo_ops;
