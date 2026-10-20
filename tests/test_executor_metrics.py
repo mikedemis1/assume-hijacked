@@ -25,14 +25,15 @@ def test_credit_decisions_are_counted_by_status(admin, as_role, settings, now):
 
 
 def test_move_out_decisions_are_counted_and_unchanged_requests_are_not(admin, as_role, settings, now):
-    add_moveout(admin)
+    add_moveout(admin, tier="HUMAN_ONLY")
+    add_moveout(admin)  # T1 with no approval yet: stays pending, nothing is decided
     metrics = Metrics()
     ex = as_role("executor")
     process_moveouts(ex, settings, now, metrics)
-    assert 'executor_requests_total{kind="move_out",status="notice_sent"} 1' in lines(metrics)
-    # Second pass: the notice is fresh, nothing is decided, so nothing is counted.
+    assert 'executor_requests_total{kind="move_out",status="manual_only"} 1' in lines(metrics)
+    # Second pass: nothing new is decided, so nothing more is counted.
     process_moveouts(ex, settings, now, metrics)
-    assert 'executor_requests_total{kind="move_out",status="notice_sent"} 1' in lines(metrics)
+    assert 'executor_requests_total{kind="move_out",status="manual_only"} 1' in lines(metrics)
     assert sum(1 for line in lines(metrics) if line.startswith("executor_requests_total{")) == 1
 
 

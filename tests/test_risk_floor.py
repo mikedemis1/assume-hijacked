@@ -18,7 +18,6 @@ from tests.test_executor_credits import add_credit, credits_count, insert_credit
 from tests.test_executor_moveouts import (
     add_moveout,
     insert_order,
-    notice_73_hours_ago,
     orders,
 )
 
@@ -32,9 +31,8 @@ def _login_roles(admin, *, exclude=()):
 
 
 # --- one effect of each kind, ready but for the floor ---
-# Everything else the triggers check holds: a credit backed by duplicate charge 2, an order with a
-# 73-hour-old notice to the right home and a move-out date of today. Only the assessment and the
-# approvals decide.
+# Everything else the triggers check holds: a credit backed by duplicate charge 2, an order for an
+# unprotected home with a move-out date of today. Only the assessment and the approvals decide.
 
 def _credit(admin, tier):
     rid = add_credit(admin, 49, 2, tier=tier)
@@ -43,7 +41,6 @@ def _credit(admin, tier):
 
 def _order(admin, tier):
     rid = add_moveout(admin, tier=tier)
-    notice_73_hours_ago(admin, rid)
     return rid, lambda conn: insert_order(conn, rid, "SP-1001")
 
 
@@ -91,7 +88,7 @@ def test_credit_refused_without_assessment(admin, as_role, ex, settings, now):
 
 def test_order_refused_without_assessment(admin, as_role, ex):
     rid, write = _order(admin, tier=None)
-    approve_as(as_role("approver"), rid, ANNA)  # the approval after the notice the order always needs
+    approve_as(as_role("approver"), rid, ANNA)  # an approval, but before any assessment
     with pytest.raises(psycopg.errors.RaiseException, match="no risk assessment"):
         write(ex)
     assert orders(admin) == 0
@@ -141,24 +138,6 @@ def test_floor_counts_distinct_approvers_and_roles(admin, as_role, ex, kind, cas
         with pytest.raises(psycopg.errors.RaiseException, match="approval"):
             write(ex)
         assert written(admin) == 0
-
-
-def test_order_approvals_count_only_after_the_notice(admin, as_role, ex):
-    # The existing order rule, now for every approval the tier needs: T2 with two people, but
-    # one of them approved before the occupier was told.
-    rid, write = _order(admin, "T2")
-    staff = as_role("approver")
-    approve_as(staff, rid, ANNA)
-    admin.execute(
-        "UPDATE approvals SET created_at = now() - interval '80 hours' WHERE request_id = %s", (rid,)
-    )
-    approve_as(staff, rid, PETROS)
-    with pytest.raises(psycopg.errors.RaiseException, match="needs 2 distinct approvals"):
-        write(ex)
-    assert orders(admin) == 0
-    approve_as(staff, rid, "0adc7093-4b20-5a09-b9ef-682eef8811b2")  # control: a second approval after the notice
-    write(ex)
-    assert orders(admin) == 1
 
 
 @pytest.mark.parametrize("kind", EFFECTS)

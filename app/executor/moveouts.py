@@ -1,25 +1,23 @@
-"""Move-outs (decision 6): protected or unknown homes are never disconnected automatically.
+"""Move-outs (decision 6): a protected home is never disconnected automatically.
 
 Only requests the risk engine assessed are taken. HUMAN_ONLY ends at manual_only and REJECT at
-rejected, before any notice. T1 and T2 take the path below and wait, at the order step, for
-the approvals their tier needs (T1 one, T2 two people). The approvals
-count only once given after the occupier notice (the order rule) and after the assessment, so that
-is where the executor waits: an approval before the notice would not count for the order, and the
-same person cannot approve twice.
+rejected. A home with a flag ends at manual_only too. T1 and T2 requests for an unprotected home
+stay pending until the move-out date has come and the approvals their tier needs are in (T1 one,
+T2 two people), at least one approval whatever the tier. Approvals count only once given after
+the assessment, and the same person cannot approve twice. Then the order is written and the
+request is executed: pending -> manual_only | rejected | executed.
 
-The executor writes the notice row and the order row and sends nothing outside: no occupier is
-messaged and no grid operator is called.
+The executor writes the order row and sends nothing outside.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import psycopg
 
 from app.common.ops import Metrics
 from app.config import Settings
-from app.executor.alerts import raise_alert_once
 from app.executor.approvals import approvals_met
 from app.executor.credits import risk_reason
 from app.executor.metrics import count_request
@@ -33,53 +31,23 @@ def _decide(conn, request_id: int, status: str, reason: str, now: datetime) -> s
     return status
 
 
-def _decide_one(conn, settings: Settings, req, now: datetime, hour_ago: datetime) -> str | None:
+def _decide_one(conn, req, now: datetime) -> str | None:
     """The status the request moved to, or None when it stays where it is."""
-    # Held until this request's transaction ends. set_temp_protection takes the same lock,
+    # Held until this request's transaction ends. api_set_temp_protection takes the same lock,
     # so a flag cannot land between the protection check and the order.
     conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (req["supply_point_id"],))
-    protection = protection_status(
-        conn, req["supply_point_id"], now, settings.register_max_age_hours
-    )
-    if req["status"] == "pending":
-        if req["tier"] == "HUMAN_ONLY":
-            return _decide(conn, req["id"], "manual_only", risk_reason(req), now)
-        if req["tier"] == "REJECT":
-            return _decide(conn, req["id"], "rejected", risk_reason(req), now)
-        # Requests decided in the last hour count, whatever their age.
-        # held_rate_limit is terminal: a human releases held requests.
-        accepted = conn.execute(
-            "SELECT count(*) AS n FROM action_requests WHERE kind = 'move_out' "
-            "AND decided_at >= %s AND status NOT IN ('pending', 'held_rate_limit')",
-            (hour_ago,),
-        ).fetchone()["n"]
-        if accepted >= settings.moveout_max_per_hour:
-            decided = _decide(conn, req["id"], "held_rate_limit", "too many move-outs in one hour", now)
-            raise_alert_once(conn, "move-out rate limit reached", hour_ago)
-            return decided
-        if protection != "NO":
-            return _decide(conn, req["id"], "manual_only", f"protection {protection}: human occupant check only", now)
-        # sent_at is the database's clock (column default); the executor cannot set it.
-        conn.execute(
-            "INSERT INTO occupier_notices (request_id, supply_point_id) VALUES (%s, %s)",
-            (req["id"], req["supply_point_id"]),
-        )
-        return _decide(conn, req["id"], "notice_sent", "notice sent to the occupier", now)
-
-    # notice_sent: check again, the home may have become protected meanwhile.
-    if protection != "NO":
-        return _decide(conn, req["id"], "manual_only", f"protection {protection}: human occupant check only", now)
+    if req["tier"] == "HUMAN_ONLY":
+        return _decide(conn, req["id"], "manual_only", risk_reason(req), now)
+    if req["tier"] == "REJECT":
+        return _decide(conn, req["id"], "rejected", risk_reason(req), now)
+    if protection_status(conn, req["supply_point_id"]) != "NO":
+        return _decide(conn, req["id"], "manual_only", "protected home: human occupant check only", now)
     # The same conditions check_disconnection_order applies, so a normal run never hits the trigger.
-    # Anything not met yet leaves the request at notice_sent for a later run.
-    sent = conn.execute(
-        "SELECT sent_at FROM occupier_notices WHERE request_id = %s", (req["id"],)
-    ).fetchone()["sent_at"]
-    waited = now - sent >= timedelta(hours=settings.occupier_wait_hours)
+    # Anything not met yet leaves the request pending for a later run.
     day = req["move_out_date"]
     date_reached = day is not None and day <= now.astimezone(timezone.utc).date()
     # An order always needs at least one person (check_disconnection_order), whatever the tier.
-    after = max(sent, req["assessed_at"])
-    if waited and date_reached and approvals_met(conn, req["id"], req["tier"], after, minimum=1):
+    if date_reached and approvals_met(conn, req["id"], req["tier"], req["assessed_at"], minimum=1):
         # check_disconnection_order checks the whole story again, with the database clock.
         conn.execute(
             "INSERT INTO disconnection_orders (request_id, supply_point_id) VALUES (%s, %s)",
@@ -101,14 +69,13 @@ def process_moveouts(
         "       k.tier, k.reasons AS risk_reasons, k.created_at AS assessed_at "
         "FROM action_requests r JOIN accounts a ON a.id = r.account_id "
         "JOIN risk_assessments k ON k.request_id = r.id "
-        "WHERE r.kind = 'move_out' AND r.status IN ('pending', 'notice_sent') ORDER BY r.id"
+        "WHERE r.kind = 'move_out' AND r.status = 'pending' ORDER BY r.id"
     ).fetchall()
-    hour_ago = now - timedelta(hours=1)
     for req in rows:
         try:
             # One transaction per request: the row written and the status change land together or not at all.
             with conn.transaction():
-                status = _decide_one(conn, settings, req, now, hour_ago)
+                status = _decide_one(conn, req, now)
             if status is not None:
                 count_request(metrics, "move_out", status)
         except Exception as exc:

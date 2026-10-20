@@ -461,20 +461,12 @@ def test_evidence_must_be_a_duplicate_on_the_requests_own_account(admin, engine,
 
 
 def test_many_moveouts_in_an_hour_are_not_held(admin, engine, settings, now):
-    # Far above the old limit (the executor's own rate limit stays, app/executor/moveouts.py): the
-    # risk engine no longer holds a flood. Each clean move-out is T1 from its score.
-    ids = [add_moveout(admin, tier=None) for _ in range(settings.moveout_max_per_hour + 10)]
+    # No flood hold in the risk engine or in the executor. Each clean move-out is T1 from its score.
+    ids = [add_moveout(admin, tier=None) for _ in range(30)]
     service.assess_pending(engine, settings, now)
     got = assessments(admin)
     assert [got[i] for i in ids] == [("T1", [])] * len(ids)
     assert admin.execute("SELECT count(*) AS n FROM risk_assessments WHERE tier = 'HOLD'").fetchone()["n"] == 0
-
-
-def test_register_age_does_not_change_a_move_out_tier(admin, engine, settings, now):
-    admin.execute("UPDATE register_sync SET last_success = now() - interval '25 hours'")
-    rid = add_moveout(admin, tier=None)
-    service.assess_pending(engine, settings, now)
-    assert assessments(admin)[rid] == ("T1", [])
 
 
 def refuse_credits(admin, count, decided_at):
@@ -645,7 +637,7 @@ def test_risk_lease_facts_answers_yes_or_no_only(admin, engine):
 
 def test_risk_engine_cannot_read_leases_or_flags_directly(engine):
     for statement in ("SELECT token_hash FROM leases", "SELECT supply_point_id FROM flags",
-                      "SELECT last_success FROM register_sync", "SELECT * FROM accounts",
+                      "SELECT * FROM accounts",
                       "SELECT body FROM tickets"):
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             engine.execute(statement)
@@ -659,8 +651,7 @@ def test_home_protection_per_request(admin, engine):
 
 
 def test_home_protection_ignores_register_age(admin, engine):
-    # No flag and a register row 48 hours old: NO. A flag: YES. The register is not read.
-    admin.execute("UPDATE register_sync SET last_success = now() - interval '48 hours'")
+    # No flag: NO. A flag: YES. Nothing else is read (no register, no sync age).
     one = "SELECT home_protection(%s) AS p"
     plain = add_moveout(admin, tier=None)
     flagged = add_moveout(admin, account_id=3, ticket_id=3, tier=None)

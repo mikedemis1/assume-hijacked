@@ -14,8 +14,8 @@
 -- could read would tell a hijacked agent which requests pass unseen, and one it could write would
 -- skip the humans. No tool role has a grant on them; this keeps it so if one is added by mistake.
 -- Heartbeats (06-risk.sql) too: a row a tool could write would keep a stopped component looking
--- alive. And the register tables (07-register.sql): the flags are health data, and a tool that
--- could write register_sync or a removal request could make an unprotected home look checked.
+-- alive. And the flags (07-flags.sql): they are health data, and a tool that could write one
+-- outside api_set_temp_protection could change which homes look protected.
 -- And tool_calls (05-lease.sql), the gateway's record of every call: a tool must not be able to
 -- read what was refused or write a row that makes a refusal look like an answer.
 -- And the dispatcher's agent_runs and replies (05-lease.sql): a tool must not be able to write the
@@ -26,14 +26,14 @@ DECLARE
 BEGIN
     FOREACH t IN ARRAY ARRAY['tickets', 'customers', 'accounts', 'supply_points', 'action_requests', 'leases',
                             'risk_assessments', 'call_assessments', 'agent_control', 'heartbeats',
-                            'flags', 'register_sync', 'flag_removal_requests', 'flag_removal_approvals',
+                            'flags',
                             'tool_calls', 'agent_runs', 'replies']
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
         EXECUTE format(
             'CREATE POLICY trusted_all ON %I FOR ALL TO executor, approver, risk_engine, dispatcher, '
-            'gateway, api_owner, lease_owner, flags_writer, flags_remover, '
+            'gateway, api_owner, lease_owner, flags_writer, '
             'risk_owner '
             'USING (true) WITH CHECK (true)', t);
     END LOOP;

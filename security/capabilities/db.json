@@ -185,49 +185,6 @@
         ]
       },
       {
-        "role": "flags_remover",
-        "login": false,
-        "schemas": {
-          "public": [
-            "USAGE"
-          ]
-        },
-        "tables": {
-          "events": [
-            "INSERT (detail, kind)"
-          ],
-          "events_id_seq": [
-            "USAGE"
-          ],
-          "flag_removal_approvals": [
-            "SELECT",
-            "INSERT (approver, approver_role, request_id)"
-          ],
-          "flag_removal_requests": [
-            "SELECT",
-            "INSERT (reason, requested_by, supply_point_id)",
-            "UPDATE (closed_reason, done_at)"
-          ],
-          "flag_removal_requests_id_seq": [
-            "USAGE"
-          ],
-          "flags": [
-            "DELETE",
-            "SELECT (created_at, supply_point_id)"
-          ]
-        },
-        "execute": [
-          "pg_catalog.pg_advisory_xact_lock(bigint)"
-        ],
-        "owns": [
-          "FUNCTION approve_flag_removal(integer, text) SECURITY DEFINER",
-          "FUNCTION request_flag_removal(text, text, text) SECURITY DEFINER"
-        ],
-        "default_privileges": [
-          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
-        ]
-      },
-      {
         "role": "flags_writer",
         "login": false,
         "tables": {},
@@ -260,7 +217,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -284,7 +240,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -308,7 +263,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -332,7 +286,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -356,7 +309,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -380,55 +332,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
-              "flags_writer",
-              "gateway",
-              "lease_owner",
-              "risk_engine",
-              "risk_owner"
-            ],
-            "using": "true",
-            "check": "true"
-          }
-        ]
-      },
-      "flag_removal_approvals": {
-        "enabled": true,
-        "forced": true,
-        "policies": [
-          {
-            "name": "trusted_all",
-            "command": "ALL",
-            "roles": [
-              "api_owner",
-              "approver",
-              "dispatcher",
-              "executor",
-              "flags_remover",
-              "flags_writer",
-              "gateway",
-              "lease_owner",
-              "risk_engine",
-              "risk_owner"
-            ],
-            "using": "true",
-            "check": "true"
-          }
-        ]
-      },
-      "flag_removal_requests": {
-        "enabled": true,
-        "forced": true,
-        "policies": [
-          {
-            "name": "trusted_all",
-            "command": "ALL",
-            "roles": [
-              "api_owner",
-              "approver",
-              "dispatcher",
-              "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -452,7 +355,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -476,7 +378,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -500,31 +401,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
-              "flags_writer",
-              "gateway",
-              "lease_owner",
-              "risk_engine",
-              "risk_owner"
-            ],
-            "using": "true",
-            "check": "true"
-          }
-        ]
-      },
-      "register_sync": {
-        "enabled": true,
-        "forced": true,
-        "policies": [
-          {
-            "name": "trusted_all",
-            "command": "ALL",
-            "roles": [
-              "api_owner",
-              "approver",
-              "dispatcher",
-              "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -548,7 +424,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -572,7 +447,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -596,7 +470,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -620,7 +493,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
@@ -644,7 +516,6 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",

@@ -92,7 +92,7 @@ def test_approve_records_oid_and_role(console, admin):
     assert str(row["approver"]) == BOB and row["approver_role"] == "SeniorApprover"
 
 
-@pytest.mark.parametrize("route", ["/approve/1", "/reject/1", "/flags/removal", "/flags/removal/1/approve", "/agents/resume", "/logout"])
+@pytest.mark.parametrize("route", ["/approve/1", "/reject/1", "/agents/resume", "/logout"])
 @pytest.mark.parametrize("csrf", [None,"forged"])
 def test_csrf_required(console, route, csrf):
     async def check(client):
@@ -102,7 +102,7 @@ def test_csrf_required(console, route, csrf):
     asyncio.run(browser(console, check))
 
 
-def test_resume_needs_senior(console, admin):
+def test_kill_switch_resume_still_needs_senior_approver(console, admin):
     admin.execute("UPDATE agent_control SET paused=true WHERE id=1")
     async def check(client):
         csrf, _ = await login(client)
@@ -116,30 +116,14 @@ def test_resume_needs_senior(console, admin):
     assert not admin.execute("SELECT paused FROM agent_control").fetchone()["paused"]
 
 
-def test_flag_removal_needs_senior_and_distinct_people(console, admin, as_role):
-    async def requested(client):
-        csrf, _ = await login(client)
-        assert (await client.post("/flags/removal", data={"csrf":csrf,"supply_point_id":"SP-1003","reason":"SECRET DIAGNOSIS","requested_by":BOB})).status_code == 303
-    asyncio.run(browser(console, requested))
-    row = admin.execute("SELECT * FROM flag_removal_requests").fetchone()
-    rid = row["id"]
-    assert str(row["requested_by"]) == ANNA
-    async def blocked(client):
-        csrf, _ = await login(client)
-        assert (await client.post(f"/flags/removal/{rid}/approve", data={"csrf":csrf,"role":"SeniorApprover"})).status_code == 403
-    asyncio.run(browser(console, blocked))
-    assert admin.execute("SELECT count(*) AS n FROM flag_removal_approvals").fetchone()["n"] == 0
-    for who in (BOB, CAROL):
-        async def allowed(client):
-            csrf, response = await login(client, who)
-            assert "SECRET" not in response.text
-            assert (await client.post(f"/flags/removal/{rid}/approve", data={"csrf":csrf})).status_code == 303
-        asyncio.run(browser(console, allowed))
-    assert admin.execute("SELECT closed_reason FROM flag_removal_requests").fetchone()["closed_reason"] == "removed"
-    async def closed(client):
-        _, response = await login(client)
-        assert "removed" in response.text and "ALERT" in response.text
-    asyncio.run(browser(console, closed))
+@pytest.mark.parametrize("route", ["/flags/removal", "/flags/removal/1/approve", "/flags/removal/1"])
+def test_console_has_no_flag_removal_route(console, route):
+    async def check(client):
+        csrf, page = await login(client, BOB)
+        assert "removal" not in page.text.lower()  # no form, no list
+        assert (await client.post(route, data={"csrf": csrf, "supply_point_id": "SP-1003", "reason": "x"})).status_code == 404
+        assert (await client.get(route)).status_code == 404
+    asyncio.run(browser(console, check))
 
 
 def test_reject_and_unassessed_approval(console, admin):
@@ -153,8 +137,8 @@ def test_reject_and_unassessed_approval(console, admin):
     assert row["status"] == "refused" and row["decision_reason"] == "staff_rejected"
 
 
-def test_moveout_can_be_approved_after_notice(console,admin):
-    rid=admin.execute("INSERT INTO action_requests(kind,ticket_id,account_id,move_out_date,status) VALUES ('move_out',1,1,CURRENT_DATE,'notice_sent') RETURNING id").fetchone()["id"]
+def test_pending_moveout_can_be_approved(console,admin):
+    rid=admin.execute("INSERT INTO action_requests(kind,ticket_id,account_id,move_out_date,status) VALUES ('move_out',1,1,CURRENT_DATE,'pending') RETURNING id").fetchone()["id"]
     assess(admin,rid,"T1")
     async def check(client):
         csrf,response=await login(client)

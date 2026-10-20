@@ -30,7 +30,6 @@ def read_queue(settings):
     with connect(settings) as conn:
         return dict(
             requests=conn.execute("SELECT r.id,r.kind,r.status,k.tier,k.reasons FROM action_requests r LEFT JOIN risk_assessments k ON k.request_id=r.id ORDER BY r.id DESC LIMIT 200").fetchall(),
-            removals=conn.execute("SELECT id,supply_point_id,done_at,closed_reason FROM flag_removal_requests ORDER BY id DESC LIMIT 200").fetchall(),
             heartbeats=conn.execute("SELECT component,last_beat FROM heartbeats ORDER BY component").fetchall(),
             alerts=conn.execute("SELECT id,created_at,actor FROM events WHERE kind='ALERT' ORDER BY id DESC LIMIT 100").fetchall(),
             paused=(conn.execute("SELECT paused FROM agent_control").fetchone() or {"paused":True})["paused"],
@@ -41,13 +40,9 @@ def mutate(settings, path, request_id, fields, person):
     with connect(settings) as conn, conn.transaction():
         if path == "/agents/resume":
             conn.execute("SELECT resume_agents()")
-        elif path == "/flags/removal":
-            conn.execute("SELECT request_flag_removal(%s,%s,%s)",(fields.get("supply_point_id",""),fields.get("reason",""),person.oid))
-        elif path.startswith("/flags/removal/"):
-            conn.execute("SELECT approve_flag_removal(%s,%s)",(request_id,person.oid))
         else:
             row = conn.execute("SELECT r.status,k.tier FROM action_requests r LEFT JOIN risk_assessments k ON k.request_id=r.id WHERE r.id=%s FOR UPDATE OF r",(request_id,)).fetchone()
-            if not row or row["status"] not in {"pending", "notice_sent"}:
+            if not row or row["status"] != "pending":
                 raise ValueError("request unavailable")
             if path.startswith("/approve/"):
                 if row["tier"] not in {"T0","T1","T2"}:
@@ -151,7 +146,7 @@ def build_app(settings=None, *, oidc_transport=None, heartbeat=None):
             return session_cookie(RedirectResponse("/",303),key)
         if session.identity is None:
             return PlainTextResponse("Unauthorised",401)
-        if (path == "/agents/resume" or path.startswith("/flags/removal/") and path.endswith("/approve")) and session.identity.role != "SeniorApprover":
+        if path == "/agents/resume" and session.identity.role != "SeniorApprover":
             return PlainTextResponse("SeniorApprover required",403)
         if path == "/logout":
             auth.sessions.pop(request.cookies.get(SESSION_COOKIE),None)
@@ -183,7 +178,6 @@ def build_app(settings=None, *, oidc_transport=None, heartbeat=None):
 
     app=Starlette(routes=[Route("/",queue),Route("/login",login),Route("/login",post,methods=["POST"]),Route("/auth/callback",callback),
                          Route("/approve/{id:int}",post,methods=["POST"]),Route("/reject/{id:int}",post,methods=["POST"]),
-                         Route("/flags/removal",post,methods=["POST"]),Route("/flags/removal/{id:int}/approve",post,methods=["POST"]),
                          Route("/agents/resume",post,methods=["POST"]),Route("/logout",post,methods=["POST"])],lifespan=lifespan)
     app.state.auth=auth
 

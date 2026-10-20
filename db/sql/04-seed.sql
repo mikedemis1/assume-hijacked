@@ -28,9 +28,8 @@ INSERT INTO charges VALUES
     (5, 1, '2026-09', 49.00), (6, 1, '2026-09', 49.00),
     (7, 2, '2026-09', 60.00);
 
--- SP-1003: life-support equipment, from the state register.
+-- SP-1003: life-support equipment (protected homes are seed data; no register feeds them).
 INSERT INTO flags (supply_point_id, source) VALUES ('SP-1003', 'state_register');
-INSERT INTO register_sync VALUES (1, now());
 
 -- The agents' stop switch (06-risk.sql) starts open.
 INSERT INTO agent_control (id, paused) VALUES (1, false);

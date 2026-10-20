@@ -43,8 +43,6 @@ def snapshot(ticket):
                 WHERE a.ticket_id = {ticket}), '[]'::json),
             'orders', (SELECT count(*) FROM disconnection_orders d JOIN action_requests a
                 ON a.id = d.request_id WHERE a.ticket_id = {ticket}),
-            'notices', (SELECT count(*) FROM occupier_notices n JOIN action_requests a
-                ON a.id = n.request_id WHERE a.ticket_id = {ticket}),
             'protected', EXISTS(SELECT 1 FROM flags WHERE supply_point_id = 'SP-1003'))
         FROM agent_runs r LEFT JOIN leases l ON l.token_hash = r.lease_hash
         WHERE r.ticket_id = {ticket};
@@ -132,7 +130,7 @@ def test_scripted_attack_runs_as_a_bound_agent_job(case, replay_report):
                     break
                 time.sleep(1)
             assert [(r["tier"], r["status"]) for r in state["requests"]] == [("HUMAN_ONLY", "manual_only")]
-            assert state["orders"] == state["notices"] == 0 and state["protected"] is True
+            assert state["orders"] == 0 and state["protected"] is True
         evidence.update(passed=True, job=state["job"], successful_calls=sum(c["outcome"] == "ok" for c in calls))
     finally:
         sql_json(f"""

@@ -328,7 +328,7 @@ def test_executor_skips_requests_without_assessment(admin, as_role, settings, no
     # Not refused by the trigger (no executor_error): never even tried.
     assert statuses(admin) == ["pending", "pending"]
     assert admin.execute("SELECT count(*) AS n FROM events").fetchone()["n"] == 0
-    assert admin.execute("SELECT count(*) AS n FROM occupier_notices").fetchone()["n"] == 0
+    assert admin.execute("SELECT count(*) AS n FROM disconnection_orders").fetchone()["n"] == 0
     assert credits_count(admin) == 0
     assert "executor_requests_total" not in metrics.render()
     # Control: once assessed, the same requests move on.
@@ -336,7 +336,7 @@ def test_executor_skips_requests_without_assessment(admin, as_role, settings, no
     assess(admin, move_out, "T1")
     process_credits(ex, settings, now, metrics)
     process_moveouts(ex, settings, now, metrics)
-    assert statuses(admin) == ["executed", "notice_sent"]
+    assert statuses(admin) == ["executed", "pending"]  # the move-out waits for its approval
 
 
 def test_t1_credit_executes_after_one_approval(admin, as_role, settings, now):

@@ -1,6 +1,6 @@
 {
   "component": "executor",
-  "description": "Acts on assessed requests: credits, occupier notices and disconnection orders, and the calls to the outside systems.",
+  "description": "Acts on assessed requests: credits and disconnection orders, and the calls to the outside systems.",
   "db": {
     "role": "executor",
     "login": true,
@@ -46,16 +46,6 @@
         "USAGE"
       ],
       "flags": [
-        "SELECT"
-      ],
-      "occupier_notices": [
-        "SELECT",
-        "INSERT (request_id, supply_point_id)"
-      ],
-      "occupier_notices_id_seq": [
-        "USAGE"
-      ],
-      "register_sync": [
         "SELECT"
       ],
       "risk_assessments": [

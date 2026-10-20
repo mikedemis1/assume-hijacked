@@ -120,7 +120,7 @@ $$;
 -- assessment was written. An approval given
 -- before the request had a tier was given without knowing the risk: a console that lets staff
 -- approve early, or a hijacked one that approves everything in advance, cannot pre-pay the floor.
--- With p_after, only approvals given after that time count too (the occupier notice, for orders).
+-- With p_after, only approvals given after that time count too (orders pass NULL).
 -- One person counts once: the primary key already refuses the same approver twice, and the count
 -- uses UUID identities, so alternative spellings cannot become separate people.
 -- Not SECURITY DEFINER: it runs as the trigger's inserting role (executor), which reads

@@ -27,17 +27,11 @@ def queue(data, session):
         body += "<p>"+text(", ".join(r for r in (row["reasons"] or []) if r in reasons))+"</p>"
         if tier in {"HUMAN_ONLY", "UNKNOWN"}:
             body += "<p>⚠ Protected customer: call the registered number first</p>"
-        if row["status"] in {"pending", "notice_sent"}:
+        if row["status"] == "pending":
             if tier in {"T0","T1","T2"}:
                 body += form(f'/approve/{row["id"]}', csrf, "Approve")
             body += form(f'/reject/{row["id"]}', csrf, "Reject")
         body += "</article>"
-    body += "<h2>Protection flag removals</h2>"
-    body += form("/flags/removal",csrf,"Request removal",'<label>Supply point <input name="supply_point_id" required maxlength="80"></label><label>Reason <input name="reason" required maxlength="500"></label>')
-    for row in data["removals"]:
-        body += f'<p>Removal {text(row["id"])} | {text(row["supply_point_id"])} | {text(row["closed_reason"] or "open")}</p>'
-        if row["done_at"] is None and session.identity.role == "SeniorApprover":
-            body += form(f'/flags/removal/{row["id"]}/approve',csrf,"Approve removal")
     body += "<h2>Agents</h2><p>"+("Paused" if data["paused"] else "Running")+"</p>"
     if session.identity.role == "SeniorApprover":
         body += form("/agents/resume",csrf,"Resume agents")

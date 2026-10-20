@@ -19,14 +19,14 @@ GRANT INSERT (kind, detail) ON events TO executor, approver;
 GRANT USAGE ON SEQUENCE events_id_seq TO executor, approver;
 
 -- Executor: reads evidence and flags, decides, writes effects.
-GRANT SELECT ON accounts, supply_points, charges, flags, register_sync, approvals,
-    credits, occupier_notices, disconnection_orders, events, action_requests TO executor;
+GRANT SELECT ON accounts, supply_points, charges, flags, approvals,
+    credits, disconnection_orders, events, action_requests TO executor;
 GRANT UPDATE (status, decision_reason, decided_at) ON action_requests TO executor;
--- No sent_at / created_at: the database sets them, so the executor cannot back-date a notice
--- or date a credit outside the daily and monthly windows.
+-- No created_at: the database sets it, so the executor cannot date a credit outside the daily
+-- and monthly windows.
 GRANT INSERT (request_id, account_id, amount_eur, evidence_ref) ON credits TO executor;
-GRANT INSERT (request_id, supply_point_id) ON occupier_notices, disconnection_orders TO executor;
-GRANT USAGE ON SEQUENCE credits_id_seq, occupier_notices_id_seq, disconnection_orders_id_seq TO executor;
+GRANT INSERT (request_id, supply_point_id) ON disconnection_orders TO executor;
+GRANT USAGE ON SEQUENCE credits_id_seq, disconnection_orders_id_seq TO executor;
 
 -- Staff approval page.
 GRANT SELECT ON action_requests TO approver;

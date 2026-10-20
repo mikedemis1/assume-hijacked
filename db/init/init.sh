@@ -29,7 +29,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
 
 run "$POSTGRES_DB" "$SQL_DIR/02-roles.sql"
 for database in "$POSTGRES_DB" supplier_test; do
-    for f in 01-schema.sql 03-grants.sql 05-lease.sql 06-risk.sql 07-register.sql 08-rls.sql 04-seed.sql; do
+    for f in 01-schema.sql 03-grants.sql 05-lease.sql 06-risk.sql 07-flags.sql 08-rls.sql 04-seed.sql; do
         run "$database" "$SQL_DIR/$f"
     done
 done

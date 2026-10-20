@@ -4,7 +4,7 @@
 -- function added later starts closed even if its file forgets the REVOKE. Default privileges are
 -- per database, which is why this is here and not in 02-roles.sql.
 -- (tests/test_lease.py: test_no_function_in_public_is_executable_by_public)
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres, api_owner, lease_owner, flags_writer, flags_remover,
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres, api_owner, lease_owner, flags_writer,
     risk_owner
     REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
@@ -44,16 +44,12 @@ CREATE TABLE charges (
     amount_eur numeric(10,2) NOT NULL
 );
 
--- A row means "protected". No row and a fresh register sync means "not protected".
+-- A row means "protected". No row means "not protected". Rows are only ever added: nobody may
+-- change or delete one (07-flags.sql).
 CREATE TABLE flags (
     supply_point_id text PRIMARY KEY REFERENCES supply_points,
     source          text NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE register_sync (
-    id           int PRIMARY KEY CHECK (id = 1),
-    last_success timestamptz NOT NULL
 );
 
 CREATE TABLE action_requests (
@@ -74,7 +70,7 @@ CREATE TABLE action_requests (
 -- Each request tool files only its own kind of request, and always for the account of
 -- the customer who opened the ticket: the ticket decides, not the tool or the LLM.
 -- A move-out needs a date that is today or later (UTC, the same date the order trigger uses),
--- or it would wait at notice_sent forever (NULL) or skip the customer's real date (past).
+-- or it would wait forever (NULL) or skip the customer's real date (past).
 -- Tools file requests only through api_request_moveout / api_request_credit (05-lease.sql), which
 -- already set the kind and take the account from the lease's ticket; this is the backstop behind
 -- them. It checks session_user, the role that logged in: inside those SECURITY DEFINER functions
@@ -200,15 +196,6 @@ END $$;
 CREATE TRIGGER credits_check BEFORE INSERT ON credits
     FOR EACH ROW EXECUTE FUNCTION check_credit();
 
--- sent_at and created_at come from the database clock. The executor cannot write them
--- (03-grants.sql), so it cannot back-date a notice to skip the 72-hour wait.
-CREATE TABLE occupier_notices (
-    id              serial PRIMARY KEY,
-    request_id      int NOT NULL UNIQUE REFERENCES action_requests,
-    supply_point_id text NOT NULL REFERENCES supply_points,
-    sent_at         timestamptz NOT NULL DEFAULT now()
-);
-
 CREATE TABLE disconnection_orders (
     id              serial PRIMARY KEY,
     request_id      int NOT NULL UNIQUE REFERENCES action_requests,
@@ -217,24 +204,23 @@ CREATE TABLE disconnection_orders (
 );
 
 -- Decision 6, enforced on every order row whatever the executor code does. An order needs:
--- a move-out request at notice_sent (not pending, nor sent to a human as manual_only or
--- held_rate_limit, nor executed), for that request's own home (exact string), a home that is not
--- protected and a register synced in the last 24 hours, an occupier notice to that same home
--- at least 72 hours old, a staff approval given after that notice, a move-out date that has come,
--- and the approval floor: a risk assessment whose tier allows an order, and as many distinct
--- approvers as that tier asks for, counting only approvals given after the notice
+-- a move-out request that is still pending (not sent to a human as manual_only, nor rejected,
+-- nor executed), for that request's own home (exact string), a home with no flag row, a
+-- move-out date that has come, at least one staff approval given after the risk assessment (no
+-- automatic move-out, even at a score that would be T0), and the approval floor: a risk
+-- assessment whose tier allows an order, and as many distinct approvers as that tier asks for
 -- (check_approval_floor, 06-risk.sql).
 -- All times are the database's (now()), never a value the executor passes in. The date is
 -- taken in UTC so a session cannot move it with SET TimeZone; Greece is ahead of UTC, so the
 -- order can only come later than local midnight, never earlier.
 -- Runs as the inserting role (executor), which can read every table used here.
 -- The advisory lock is the same one api_set_temp_protection takes, so a flag being added and an
--- order being written for the same home cannot interleave.
+-- order being written for the same home cannot interleave: a flag added after the assessment
+-- still blocks the order.
 CREATE FUNCTION check_disconnection_order() RETURNS trigger
 LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 DECLARE
-    req       record;
-    notice_at timestamptz;
+    req record;
 BEGIN
     SELECT r.kind, r.status, r.move_out_date, a.supply_point_id AS home INTO req
     FROM public.action_requests r JOIN public.accounts a ON a.id = r.account_id
@@ -245,8 +231,8 @@ BEGIN
     IF req.kind <> 'move_out' THEN
         RAISE EXCEPTION 'request % is not a move-out request', NEW.request_id;
     END IF;
-    IF req.status IS DISTINCT FROM 'notice_sent' THEN
-        RAISE EXCEPTION 'request % is %, not notice_sent', NEW.request_id, req.status;
+    IF req.status IS DISTINCT FROM 'pending' THEN
+        RAISE EXCEPTION 'request % is %, not pending', NEW.request_id, req.status;
     END IF;
     -- 'SP-1003 ' or 'sp-1003' is a different string, so it is refused here too.
     IF NEW.supply_point_id IS DISTINCT FROM req.home THEN
@@ -256,27 +242,19 @@ BEGIN
     IF EXISTS (SELECT 1 FROM public.flags WHERE supply_point_id = NEW.supply_point_id) THEN
         RAISE EXCEPTION 'the home of request % is protected', NEW.request_id;
     END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM public.register_sync
-        WHERE id = 1 AND last_success >= now() - interval '24 hours'
-    ) THEN
-        RAISE EXCEPTION 'state register sync is missing or older than 24 hours';
-    END IF;
-    -- The notice must have gone to this home: a notice to another address warns nobody here.
-    SELECT sent_at INTO notice_at FROM public.occupier_notices
-    WHERE request_id = NEW.request_id AND supply_point_id = NEW.supply_point_id;
-    IF notice_at IS NULL OR notice_at > now() - interval '72 hours' THEN
-        RAISE EXCEPTION 'request % has no occupier notice at least 72 hours old', NEW.request_id;
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM public.approvals WHERE request_id = NEW.request_id AND created_at > notice_at
-    ) THEN
-        RAISE EXCEPTION 'request % has no staff approval given after the notice', NEW.request_id;
-    END IF;
     IF req.move_out_date IS NULL OR req.move_out_date > (now() AT TIME ZONE 'UTC')::date THEN
         RAISE EXCEPTION 'request % move-out date has not come yet', NEW.request_id;
     END IF;
-    PERFORM public.check_approval_floor(NEW.request_id, notice_at);
+    -- The floor first: it refuses a request without an assessment and counts the tier's approvals.
+    PERFORM public.check_approval_floor(NEW.request_id, NULL);
+    -- Then the rule the floor does not give: an order always needs a person, even at a tier
+    -- that asks for no approval (T0).
+    IF NOT EXISTS (
+        SELECT 1 FROM public.approvals a JOIN public.risk_assessments k ON k.request_id = a.request_id
+        WHERE a.request_id = NEW.request_id AND a.created_at > k.created_at
+    ) THEN
+        RAISE EXCEPTION 'request % has no staff approval given after its risk assessment', NEW.request_id;
+    END IF;
     RETURN NEW;
 END $$;
 

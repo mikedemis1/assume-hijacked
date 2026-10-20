@@ -28,12 +28,6 @@
       "risk_assessments": [
         "SELECT"
       ],
-      "flag_removal_requests": [
-        "SELECT"
-      ],
-      "flag_removal_approvals": [
-        "SELECT"
-      ],
       "heartbeats": [
         "SELECT (component, last_beat)"
       ],
@@ -42,8 +36,6 @@
       ]
     },
     "execute": [
-      "approve_flag_removal(integer, text)",
-      "request_flag_removal(text, text, text)",
       "required_approvals(text)",
       "resume_agents()"
     ]

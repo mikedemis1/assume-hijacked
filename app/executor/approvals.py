@@ -22,7 +22,7 @@ def approve(conn: psycopg.Connection, request_id: int, approver: str) -> bool:
 
 def approver_count(conn: psycopg.Connection, request_id: int, after: datetime | None = None) -> int:
     """Distinct approvers. With `after`, only approvals given after that time count: staff must
-    approve once the occupier has been told, not before. created_at is set by the database."""
+    approve once the request is assessed, not before. created_at is set by the database."""
     row = conn.execute(
         "SELECT count(DISTINCT approver) AS n FROM approvals "
         "WHERE request_id = %s AND (%s::timestamptz IS NULL OR created_at > %s)",
@@ -34,8 +34,7 @@ def approver_count(conn: psycopg.Connection, request_id: int, after: datetime | 
 def approvals_met(
     conn: psycopg.Connection, request_id: int, tier: str, after: datetime, minimum: int = 0
 ) -> bool:
-    """Has the request the approvals its tier needs, given after `after` (the assessment, or the
-    occupier notice if later)? The same count check_approval_floor makes in the database: one
+    """Has the request the approvals its tier needs, given after `after` (the assessment)? The same count check_approval_floor makes in the database: one
     person counts once however they spell their id. The
     executor checks first so that a request still waiting stays quietly pending instead of being
     refused by the trigger on every poll. A tier no approval allows (HUMAN_ONLY, REJECT) is never

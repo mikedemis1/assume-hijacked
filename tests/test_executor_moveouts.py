@@ -9,8 +9,11 @@ from app.executor.moveouts import process_moveouts
 from app.tools.set_temp_protection import set_temp_protection
 from tests.conftest import assess, open_lease
 
+ANNA = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01"
+PETROS = "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3"
+
 # The order trigger uses the database clock, so the tests never jump time with the executor's
-# `now`. They back-date rows as admin instead: notices, approvals, the register sync.
+# `now`. They back-date rows as admin instead (approvals), or pick the move-out date.
 
 
 def utc_today():
@@ -44,18 +47,6 @@ def errors(admin):
     return [r["detail"] for r in admin.execute("SELECT detail FROM events WHERE kind = 'executor_error' ORDER BY id")]
 
 
-def synced_at(admin, when):
-    """Pretend the state register last synced at `when`."""
-    admin.execute("UPDATE register_sync SET last_success = %s", (when,))
-
-
-def back_date_notice(admin, request_id, hours):
-    admin.execute(
-        "UPDATE occupier_notices SET sent_at = now() - make_interval(hours => %s) WHERE request_id = %s",
-        (hours, request_id),
-    )
-
-
 def back_date_approvals(admin, request_id, hours):
     admin.execute(
         "UPDATE approvals SET created_at = now() - make_interval(hours => %s) WHERE request_id = %s",
@@ -64,32 +55,22 @@ def back_date_approvals(admin, request_id, hours):
 
 
 def ready_for_order(admin, staff, account_id=1, ticket_id=1, move_out_date=None) -> int:
-    """A move-out where every condition for an order holds: a T1 risk assessment, notice sent
-    73 hours ago, a staff approval after it, move-out date today. Tests break one condition at a time."""
+    """A move-out where every condition for an order holds: a T1 risk assessment, a staff approval
+    after it, move-out date today. Tests break one condition at a time."""
     rid = add_moveout(admin, account_id, ticket_id, move_out_date)
-    admin.execute(
-        "INSERT INTO occupier_notices (request_id, supply_point_id, sent_at) "
-        "SELECT %s, supply_point_id, now() - interval '73 hours' FROM accounts WHERE id = %s",
-        (rid, account_id),
-    )
-    admin.execute("UPDATE action_requests SET status = 'notice_sent' WHERE id = %s", (rid,))
-    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
+    approve(staff, rid, ANNA)
     return rid
 
 
-def test_unprotected_needs_notice_wait_and_approval(admin, as_role, settings, now):
+def test_order_written_after_one_approval_and_date_reached(admin, as_role, settings, now):
     ex, staff = as_role("executor"), as_role("approver")
-    rid = add_moveout(admin)
+    rid = add_moveout(admin)  # T1, move-out date today
     process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "notice_sent"
-    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
+    # Waiting for the person: the executor's own check holds it, so the trigger never has to refuse.
+    assert status(admin, rid) == "pending" and orders(admin) == 0 and errors(admin) == []
+    approve(staff, rid, ANNA)
     process_moveouts(ex, settings, now)
-    # Still waiting: the executor's own check holds it, so the trigger never has to refuse.
-    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    back_date_notice(admin, rid, settings.occupier_wait_hours + 1)
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "executed" and orders(admin) == 1
-    assert errors(admin) == []
+    assert status(admin, rid) == "executed" and orders(admin) == 1 and errors(admin) == []
 
 
 def test_no_order_before_the_move_out_date(admin, as_role, settings, now):  # gap N1
@@ -97,51 +78,49 @@ def test_no_order_before_the_move_out_date(admin, as_role, settings, now):  # ga
     rid = ready_for_order(admin, staff, move_out_date=utc_today() + timedelta(days=30))
     process_moveouts(ex, settings, now)
     # The executor waits by itself; the trigger would refuse too, but it is not needed here.
-    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
+    assert status(admin, rid) == "pending" and orders(admin) == 0 and errors(admin) == []
 
 
-def test_approval_given_before_the_notice_does_not_count(admin, as_role, settings, now):  # gap N3
+def test_approval_given_before_the_assessment_does_not_count(admin, as_role, settings, now):  # gap N3
     ex, staff = as_role("executor"), as_role("approver")
-    rid = ready_for_order(admin, staff)
-    back_date_approvals(admin, rid, 80)  # the notice is 73 hours old
+    rid = add_moveout(admin, tier=None)
+    approve(staff, rid, ANNA)  # the request has no tier yet
+    assess(admin, rid, "T1")
     process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")  # a fresh approval, after the notice
+    assert status(admin, rid) == "pending" and orders(admin) == 0 and errors(admin) == []
+    approve(staff, rid, PETROS)  # a fresh approval, after the assessment
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "executed" and orders(admin) == 1
 
 
-def notice_73_hours_ago(admin, rid, account_id=1):
-    admin.execute(
-        "INSERT INTO occupier_notices (request_id, supply_point_id, sent_at) "
-        "SELECT %s, supply_point_id, now() - interval '73 hours' FROM accounts WHERE id = %s",
-        (rid, account_id),
-    )
-    admin.execute("UPDATE action_requests SET status = 'notice_sent' WHERE id = %s", (rid,))
-
-
-def test_no_order_without_approval(admin, as_role, settings, now):  # gap I4
+def test_order_refused_without_any_approval_even_at_t0_score(admin, as_role, settings, now):
+    # T0 asks the floor for no approval; an order still always needs one person.
     ex = as_role("executor")
-    rid = add_moveout(admin)
-    notice_73_hours_ago(admin, rid)  # notice, wait and move-out date are all fine; no staff approval
-    process_moveouts(ex, settings, now)
-    # No executor_error: the executor's own approver_count check held it, the trigger was never asked.
-    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve(as_role("approver"), rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")  # control: the same request goes through with one
+    rid = add_moveout(admin, tier="T0")
+    with pytest.raises(psycopg.errors.RaiseException, match="no staff approval"):
+        insert_order(ex, rid, "SP-1001")
+    process_moveouts(ex, settings, now)  # the executor's own check holds it too
+    assert status(admin, rid) == "pending" and orders(admin) == 0 and errors(admin) == []
+    approve(as_role("approver"), rid, ANNA)  # control: the same request goes through with one
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "executed" and orders(admin) == 1 and errors(admin) == []
 
 
-def test_no_order_before_wait(admin, as_role, settings, now):  # gap I4
-    ex = as_role("executor")
-    rid = ready_for_order(admin, as_role("approver"))
-    back_date_notice(admin, rid, settings.occupier_wait_hours - 1)  # 71 hours
+def test_t2_needs_two_distinct_approvers(admin, as_role, settings, now):
+    ex, staff = as_role("executor"), as_role("approver")
+    rid = add_moveout(admin, tier="T2")
+    approve(staff, rid, ANNA)
     process_moveouts(ex, settings, now)
-    # No executor_error: the executor's own `waited` check held it, the trigger was never asked.
-    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    back_date_notice(admin, rid, settings.occupier_wait_hours + 1)  # control: 73 hours
+    # Waiting for the second person, quietly: the trigger was never asked.
+    assert status(admin, rid) == "pending" and orders(admin) == 0 and errors(admin) == []
+    with pytest.raises(psycopg.errors.RaiseException, match="needs 2 distinct approvals"):
+        insert_order(ex, rid, "SP-1001")
+    assert approve(staff, rid, ANNA) is False  # the same person again is still one
     process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "executed" and orders(admin) == 1 and errors(admin) == []
+    assert status(admin, rid) == "pending" and orders(admin) == 0
+    approve(staff, rid, PETROS)
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "executed" and orders(admin) == 1
 
 
 def test_approver_cannot_choose_the_approval_time(admin, as_role):  # gap N3
@@ -153,115 +132,55 @@ def test_approver_cannot_choose_the_approval_time(admin, as_role):  # gap N3
         )
 
 
-def test_protected_home_never_gets_order(admin, as_role, settings, now):  # ⑦
+def test_protected_home_goes_to_manual_only_and_never_gets_an_order(admin, as_role, settings, now):  # ⑦
     ex, staff = as_role("executor"), as_role("approver")
     rid = add_moveout(admin, account_id=3, ticket_id=3)
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "manual_only"
-    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
-    approve(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")
+    approve(staff, rid, ANNA)
+    approve(staff, rid, PETROS)
     process_moveouts(ex, settings, now)
     assert status(admin, rid) == "manual_only" and orders(admin) == 0
+    # Whatever the executor's code does, the database refuses the row. Put the request back to
+    # pending, so that only the flag is wrong: assessed, two approvals, date today.
+    admin.execute("UPDATE action_requests SET status = 'pending' WHERE id = %s", (rid,))
+    with pytest.raises(psycopg.errors.RaiseException, match="protected"):
+        insert_order(ex, rid, "SP-1003")
+    assert orders(admin) == 0
 
 
-def test_stale_register_means_protected(admin, as_role, settings, now):  # fail closed
-    admin.execute("UPDATE register_sync SET last_success = now() - interval '48 hours'")
-    rid = add_moveout(admin)
-    process_moveouts(as_role("executor"), settings, now)
-    assert status(admin, rid) == "manual_only"
-
-
-def test_flag_raised_after_notice_stops_order(admin, as_role, settings, now):
+def test_order_refused_when_flag_added_after_assessment(admin, as_role, settings, now):
     ex, staff = as_role("executor"), as_role("approver")
-    rid = add_moveout(admin)
-    process_moveouts(ex, settings, now)
+    rid = ready_for_order(admin, staff)  # assessed T1, approved, date today, no flag yet
     set_temp_protection(as_role("tool_set_temp_protection"), open_lease(admin, 1))
-    back_date_notice(admin, rid, settings.occupier_wait_hours + 1)
-    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
+    with pytest.raises(psycopg.errors.RaiseException, match="protected"):
+        insert_order(ex, rid, "SP-1001")
     process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "manual_only" and orders(admin) == 0
-
-
-def test_flood_is_rate_limited_and_alerts(admin, as_role, settings, now):  # ⑤
-    for _ in range(50):
-        add_moveout(admin)
-    process_moveouts(as_role("executor"), settings, now)
-    counts = {
-        r["status"]: r["n"]
-        for r in admin.execute("SELECT status, count(*) AS n FROM action_requests GROUP BY status")
-    }
-    assert counts == {"notice_sent": settings.moveout_max_per_hour, "held_rate_limit": 50 - settings.moveout_max_per_hour}
-    alerts = admin.execute("SELECT count(*) AS n FROM events WHERE kind = 'ALERT'").fetchone()["n"]
-    assert alerts == 1
-
-
-def test_forged_alert_does_not_silence_the_flood_alert(admin, as_role, settings, now):
-    # Tools cannot write events at all any more (05-lease.sql); the approver still can.
-    as_role("approver").execute(
-        "INSERT INTO events (kind, detail) VALUES ('ALERT', 'move-out rate limit reached')"
-    )
-    for _ in range(50):
-        add_moveout(admin)
-    process_moveouts(as_role("executor"), settings, now)
-    rows = admin.execute(
-        "SELECT actor FROM events WHERE kind = 'ALERT' AND detail = 'move-out rate limit reached' "
-        "AND actor = 'executor'"
-    ).fetchall()
-    assert len(rows) == 1
+    assert status(admin, rid) == "manual_only" and orders(admin) == 0 and errors(admin) == []
 
 
 def test_same_approver_twice_is_rejected(admin, as_role):  # ⑥
     staff, ex = as_role("approver"), as_role("executor")
     rid = add_moveout(admin)
-    assert approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01") is True
-    assert approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01") is False
+    assert approve(staff, rid, ANNA) is True
+    assert approve(staff, rid, ANNA) is False
     assert approver_count(ex, rid) == 1
-    assert approve(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3") is True
+    assert approve(staff, rid, PETROS) is True
     assert approver_count(ex, rid) == 2
 
 
 def test_one_bad_request_does_not_block_the_batch(admin, as_role, settings, now):
-    first, second = add_moveout(admin), add_moveout(admin, account_id=1, ticket_id=2)
+    # The first request already has an order row (written behind the executor's back), so its own
+    # order insert fails on the unique request id; the second one goes on.
+    staff = as_role("approver")
+    first, second = ready_for_order(admin, staff), ready_for_order(admin, staff, account_id=1, ticket_id=2)
     admin.execute(
-        "INSERT INTO occupier_notices (request_id, supply_point_id, sent_at) VALUES (%s, 'SP-1001', %s)",
-        (first, now),
+        "INSERT INTO disconnection_orders (request_id, supply_point_id) VALUES (%s, 'SP-1001')", (first,)
     )
     process_moveouts(as_role("executor"), settings, now)
     assert status(admin, first) == "pending"
-    assert status(admin, second) == "notice_sent"
+    assert status(admin, second) == "executed"
     assert errors(admin) == [f"move_out request={first}: UniqueViolation"]
-
-
-def test_rate_limit_counts_old_backlog(admin, as_role, settings, now):
-    for _ in range(25):
-        rid = add_moveout(admin)
-        admin.execute("UPDATE action_requests SET created_at = now() - interval '3 hours' WHERE id = %s", (rid,))
-    process_moveouts(as_role("executor"), settings, now)
-    counts = {
-        r["status"]: r["n"]
-        for r in admin.execute("SELECT status, count(*) AS n FROM action_requests GROUP BY status")
-    }
-    assert counts == {"notice_sent": settings.moveout_max_per_hour, "held_rate_limit": 25 - settings.moveout_max_per_hour}
-
-
-def test_protected_home_with_notice_and_two_approvals_still_gets_no_order(admin, as_role, settings, now):
-    ex, staff = as_role("executor"), as_role("approver")
-    rid = ready_for_order(admin, staff, account_id=3, ticket_id=3)
-    approve(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "manual_only" and orders(admin) == 0
-
-
-def test_stale_register_after_notice_stops_order(admin, as_role, settings, now):
-    ex, staff = as_role("executor"), as_role("approver")
-    rid = add_moveout(admin)
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "notice_sent"
-    back_date_notice(admin, rid, settings.occupier_wait_hours + 1)
-    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
-    synced_at(admin, now - timedelta(hours=48))
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "manual_only" and orders(admin) == 0
 
 
 def insert_order(conn, request_id, supply_point_id):
@@ -285,15 +204,7 @@ def test_database_refuses_order_at_protected_home(admin, as_role):  # ⑦ wall b
     assert orders(admin) == 0
 
 
-def test_database_refuses_order_when_register_is_stale(admin, as_role, now):
-    rid = ready_for_order(admin, as_role("approver"))
-    synced_at(admin, now - timedelta(hours=48))
-    with pytest.raises(psycopg.errors.RaiseException, match="register"):
-        insert_order(as_role("executor"), rid, "SP-1001")
-    assert orders(admin) == 0
-
-
-def _credit_request_with_notice_and_approval(admin, staff):
+def _credit_request_with_approval(admin, staff):
     # Everything else holds, move-out date included, so only the request kind is wrong.
     admin.execute(
         "INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref, move_out_date) "
@@ -302,37 +213,18 @@ def _credit_request_with_notice_and_approval(admin, staff):
     )
     rid = admin.execute("SELECT max(id) AS id FROM action_requests").fetchone()["id"]
     assess(admin, rid, "T1")
-    admin.execute(
-        "INSERT INTO occupier_notices (request_id, supply_point_id, sent_at) "
-        "VALUES (%s, 'SP-1001', now() - interval '73 hours')",
-        (rid,),
-    )
-    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
+    approve(staff, rid, ANNA)
     return rid, "SP-1001"
 
 
-def _no_notice(admin, staff):
-    rid = add_moveout(admin)
-    approve(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
-    return rid, "SP-1001"
+def _no_approval(admin, staff):
+    return add_moveout(admin), "SP-1001"
 
 
-def _young_notice(admin, staff):
-    rid = ready_for_order(admin, staff)
-    back_date_notice(admin, rid, 71)
-    return rid, "SP-1001"
-
-
-def _approval_before_notice(admin, staff):
-    rid = ready_for_order(admin, staff)
-    back_date_approvals(admin, rid, 80)  # the notice is 73 hours old
-    return rid, "SP-1001"
-
-
-def _notice_to_another_home(admin, staff):
-    # The occupier at SP-1002 was told; nobody at SP-1001 was.
-    rid = ready_for_order(admin, staff)
-    admin.execute("UPDATE occupier_notices SET supply_point_id = 'SP-1002' WHERE request_id = %s", (rid,))
+def _approval_before_assessment(admin, staff):
+    rid = add_moveout(admin, tier=None)
+    approve(staff, rid, ANNA)
+    assess(admin, rid, "T1")
     return rid, "SP-1001"
 
 
@@ -345,12 +237,10 @@ BROKEN_STORIES = {
     "trailing space": lambda admin, staff: (ready_for_order(admin, staff, 3, 3), "SP-1003 "),
     "lower case": lambda admin, staff: (ready_for_order(admin, staff, 3, 3), "sp-1003"),
     "another home": lambda admin, staff: (ready_for_order(admin, staff, 3, 3), "SP-1002"),
-    "credit request": _credit_request_with_notice_and_approval,
+    "credit request": _credit_request_with_approval,
     "unknown request": lambda admin, staff: (999, "SP-1001"),
-    "no notice": _no_notice,
-    "notice under 72 hours": _young_notice,
-    "notice to another home": _notice_to_another_home,
-    "approval older than the notice": _approval_before_notice,
+    "no approval": _no_approval,
+    "approval older than the assessment": _approval_before_assessment,
     "move-out date in the future": _future_date,
 }
 
@@ -363,13 +253,13 @@ def test_database_refuses_order_unless_the_whole_story_holds(admin, as_role, sto
     assert orders(admin) == 0
 
 
-@pytest.mark.parametrize("held", ["pending", "manual_only", "held_rate_limit", "executed"])
-def test_database_refuses_order_unless_the_request_is_at_notice_sent(admin, as_role, held):
+@pytest.mark.parametrize("held", ["manual_only", "rejected", "executed", "refused"])
+def test_database_refuses_order_unless_the_request_is_pending(admin, as_role, held):
     # Final review F3: every other condition holds, so only the request status is wrong.
-    # manual_only is a human's job; held_rate_limit waits for a human to release it.
+    # manual_only is a human's job; rejected, refused and executed are finished.
     rid = ready_for_order(admin, as_role("approver"))
     admin.execute("UPDATE action_requests SET status = %s WHERE id = %s", (held, rid))
-    with pytest.raises(psycopg.errors.RaiseException, match="notice_sent"):
+    with pytest.raises(psycopg.errors.RaiseException, match="not pending"):
         insert_order(as_role("executor"), rid, "SP-1001")
     assert orders(admin) == 0
 
@@ -384,24 +274,21 @@ def test_order_home_must_be_a_real_supply_point_even_without_the_trigger(admin):
                 insert_order(admin, rid, "SP-1001 ")
 
 
-def test_notice_home_must_be_a_real_supply_point(admin):
-    rid = add_moveout(admin)
-    with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        admin.execute(
-            "INSERT INTO occupier_notices (request_id, supply_point_id) VALUES (%s, 'SP-1001 ')", (rid,)
-        )
-
-
-@pytest.mark.parametrize("table, column", [("occupier_notices", "sent_at"), ("disconnection_orders", "created_at")])
-def test_executor_cannot_choose_the_time_of_a_notice_or_order(admin, as_role, table, column):
-    # A back-dated notice would skip the 72-hour wait; the database sets these times itself.
+def test_executor_cannot_choose_the_time_of_an_order(admin, as_role):
     rid = add_moveout(admin)
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         as_role("executor").execute(
-            f"INSERT INTO {table} (request_id, supply_point_id, {column}) "
+            "INSERT INTO disconnection_orders (request_id, supply_point_id, created_at) "
             "VALUES (%s, 'SP-1001', now() - interval '100 hours')",
             (rid,),
         )
+
+
+def test_there_is_no_notice_table_or_register_for_the_executor_to_use(admin):
+    rows = admin.execute(
+        "SELECT relname FROM pg_class WHERE relkind = 'r' AND relname IN ('occupier_notices', 'register_sync')"
+    ).fetchall()
+    assert rows == []
 
 
 def test_flag_waits_while_the_executor_holds_the_home(admin, as_role):
@@ -416,8 +303,9 @@ def test_flag_waits_while_the_executor_holds_the_home(admin, as_role):
 
 
 def test_a_held_home_lock_fails_that_request_and_the_batch_goes_on(admin, as_role, settings, now):  # gap I9
-    first = add_moveout(admin)  # SP-1001
-    second = add_moveout(admin, account_id=2, ticket_id=2)  # SP-1002
+    staff = as_role("approver")
+    first = ready_for_order(admin, staff)  # SP-1001
+    second = ready_for_order(admin, staff, account_id=2, ticket_id=2)  # SP-1002
     # Someone else holds SP-1001's lock and never lets go (admin here; a tool role can no longer).
     admin.execute("SELECT pg_advisory_lock(hashtext('SP-1001'))")
     try:
@@ -427,14 +315,14 @@ def test_a_held_home_lock_fails_that_request_and_the_batch_goes_on(admin, as_rol
     finally:
         admin.execute("SELECT pg_advisory_unlock_all()")
     assert took < 10  # lock_timeout is 5 s for every executor session
-    assert status(admin, first) == "pending" and status(admin, second) == "notice_sent"
+    assert status(admin, first) == "pending" and status(admin, second) == "executed"
     assert errors(admin) == [f"move_out request={first}: LockNotAvailable"]
 
 
 def test_executor_takes_the_home_lock(admin, as_role, settings, now):  # gap I4
-    # A pending request needs no order, so the trigger's lock is not involved: if the request
-    # leaves 'pending', the executor went on without taking the home lock itself.
-    rid = add_moveout(admin)
+    # Ready for an order: if the request leaves 'pending' while someone else holds the home lock,
+    # the executor went on without taking the lock itself.
+    rid = ready_for_order(admin, as_role("approver"))
     ex = as_role("executor")
     ex.execute("SET lock_timeout = '300ms'")  # the role's 5 s keeps the test slow for no gain
     admin.execute("SELECT pg_advisory_lock(hashtext('SP-1001'))")
@@ -445,11 +333,10 @@ def test_executor_takes_the_home_lock(admin, as_role, settings, now):  # gap I4
     finally:
         admin.execute("SELECT pg_advisory_unlock_all()")
     assert took < 3
-    assert status(admin, rid) == "pending"
-    assert admin.execute("SELECT count(*) AS n FROM occupier_notices").fetchone()["n"] == 0
+    assert status(admin, rid) == "pending" and orders(admin) == 0
     assert errors(admin) == [f"move_out request={rid}: LockNotAvailable"]
     process_moveouts(ex, settings, now)  # lock released: the same request now moves on
-    assert status(admin, rid) == "notice_sent"
+    assert status(admin, rid) == "executed"
 
 
 def test_trigger_takes_the_home_lock(admin, as_role):  # gap I4
@@ -468,30 +355,12 @@ def test_trigger_takes_the_home_lock(admin, as_role):  # gap I4
     assert orders(admin) == 1
 
 
-# --- risk tiers. A move-out's approvals count only after the occupier notice (the order rule), so
-# the executor waits for the tier's approvals at the order step: T1 one person, T2 two.
-# HUMAN_ONLY ends at manual_only without a notice.
+# --- risk tiers. HUMAN_ONLY ends at manual_only and REJECT at rejected, whatever the approvals.
 
-def test_t2_move_out_needs_two_approvals_after_the_notice(admin, as_role, settings, now):
-    from tests.conftest import approve_as
-
-    ex, staff = as_role("executor"), as_role("approver")
-    rid = add_moveout(admin, tier="T2")
-    notice_73_hours_ago(admin, rid)
-    approve_as(staff, rid, "eeab6c5e-f5bc-5d16-af4b-813d9b88be01")
-    process_moveouts(ex, settings, now)
-    # Waiting for the second person, quietly: the trigger was never asked.
-    assert status(admin, rid) == "notice_sent" and orders(admin) == 0 and errors(admin) == []
-    approve_as(staff, rid, "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3")
-    process_moveouts(ex, settings, now)
-    assert status(admin, rid) == "executed" and orders(admin) == 1
-
-
-def test_human_only_move_out_gets_no_notice_even_at_an_unprotected_home(admin, as_role, settings, now):
+def test_human_only_move_out_goes_to_manual_only_even_at_an_unprotected_home(admin, as_role, settings, now):
     rid = add_moveout(admin, tier="HUMAN_ONLY")  # SP-1001: the executor's own check would say NO
     process_moveouts(as_role("executor"), settings, now)
-    assert status(admin, rid) == "manual_only"
-    assert admin.execute("SELECT count(*) AS n FROM occupier_notices").fetchone()["n"] == 0
+    assert status(admin, rid) == "manual_only" and orders(admin) == 0
     reason = admin.execute("SELECT decision_reason FROM action_requests WHERE id = %s", (rid,)).fetchone()
     assert reason["decision_reason"] == "risk: tier HUMAN_ONLY"
 
@@ -500,3 +369,12 @@ def test_rejected_move_out_is_rejected(admin, as_role, settings, now):
     rid = add_moveout(admin, tier="REJECT")
     process_moveouts(as_role("executor"), settings, now)
     assert status(admin, rid) == "rejected" and orders(admin) == 0
+
+
+def test_executor_has_no_move_out_rate_limit(admin, as_role, settings, now):
+    # The flood hold is gone: every ready request is looked at, and none is held.
+    staff = as_role("approver")
+    ids = [ready_for_order(admin, staff) for _ in range(25)]
+    process_moveouts(as_role("executor"), settings, now)
+    assert {status(admin, rid) for rid in ids} == {"executed"}
+    assert admin.execute("SELECT count(*) AS n FROM events WHERE kind = 'ALERT'").fetchone()["n"] == 0

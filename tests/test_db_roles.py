@@ -347,7 +347,7 @@ def test_executor_sessions_time_out_on_locks_and_statements(as_role):  # gap I9
     "move_out_date", ["NULL::date", "(now() AT TIME ZONE 'UTC')::date - 1"], ids=["none", "yesterday"]
 )
 def test_move_out_request_needs_a_date_of_today_or_later(as_role, admin, move_out_date):
-    # NULL would wait at notice_sent forever; a past date would skip the customer's real date.
+    # NULL would wait forever; a past date would skip the customer's real date.
     conn = as_role("tool_request_disconnection")
     with pytest.raises(psycopg.errors.RaiseException, match="today or later"):
         conn.execute(f"SELECT api_request_moveout(%s, {move_out_date})", (open_lease(admin, 1),))

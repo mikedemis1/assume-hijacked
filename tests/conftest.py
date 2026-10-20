@@ -75,9 +75,9 @@ from app import config  # noqa: E402  (after .env is loaded)
 
 SEED_SQL = (ROOT / "db" / "sql" / "04-seed.sql").read_text(encoding="utf-8")
 ALL_TABLES = (
-    "events, disconnection_orders, occupier_notices, credits, approvals, risk_assessments, "
+    "events, disconnection_orders, credits, approvals, risk_assessments, "
     "call_assessments, tool_calls, replies, agent_runs, agent_control, heartbeats, action_requests, "
-    "leases, flag_removal_approvals, flag_removal_requests, register_sync, flags, charges, tickets, "
+    "leases, flags, charges, tickets, "
     "accounts, supply_points, customers"
 )
 # The tool names a lease can list (the leases.allowed_tools check in db/sql/05-lease.sql).
@@ -150,7 +150,7 @@ def approve_as(conn, request_id: int, approver: str, role: str = "Approver") -> 
 
 
 def reset_db(conn) -> None:
-    # The register tables refuse TRUNCATE, even from the superuser (db/sql/07-register.sql). The
+    # The flags table refuses TRUNCATE, even from the superuser (db/sql/07-flags.sql). The
     # reset turns triggers off for its own transaction only, which only a superuser can do.
     with conn.transaction():
         conn.execute("SET LOCAL session_replication_role = replica")

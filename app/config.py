@@ -16,9 +16,6 @@ class Settings:
     credit_auto_max_eur: float
     credit_month_max_eur: float
     credit_day_global_max_eur: float
-    moveout_max_per_hour: int
-    occupier_wait_hours: int
-    register_max_age_hours: int
     caller_auth: str  # k8s, the only mode: how a call says who is calling (app/common/calls.py)
 
 
@@ -30,8 +27,5 @@ def load() -> Settings:
         credit_auto_max_eur=float(os.environ.get("CREDIT_AUTO_MAX_EUR", "50")),
         credit_month_max_eur=float(os.environ.get("CREDIT_MONTH_MAX_EUR", "100")),
         credit_day_global_max_eur=float(os.environ.get("CREDIT_DAY_GLOBAL_MAX_EUR", "1000")),
-        moveout_max_per_hour=int(os.environ.get("MOVEOUT_MAX_PER_HOUR", "20")),
-        occupier_wait_hours=int(os.environ.get("OCCUPIER_WAIT_HOURS", "72")),
-        register_max_age_hours=int(os.environ.get("REGISTER_MAX_AGE_HOURS", "24")),
         caller_auth=caller_auth_mode(),
     )
