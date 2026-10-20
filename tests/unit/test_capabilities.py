@@ -25,7 +25,7 @@ def manifests() -> dict[str, dict]:
 
 def test_every_component_has_exactly_one_manifest():
     assert set(manifests()) == {
-        "agent", "console", "db-migrate", "db", "dispatcher", "executor", "llm-gateway", "risk-engine",
+        "agent", "console", "db-migrate", "db", "demo", "dispatcher", "executor", "llm-gateway", "risk-engine",
         "tool-gateway", "tool-issue-bill-credit", "tool-lookup-account", "tool-read-ticket",
         "tool-request-disconnection", "tool-set-temp-protection",
     }
@@ -54,7 +54,21 @@ def entry(tool="lookup_account"):
 TABLE_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
 SEQUENCE_PRIVILEGES = ("USAGE", "SELECT", "UPDATE")
 SCHEMA_PRIVILEGES = ("USAGE", "CREATE")
-ROLE_COMPONENTS = {m["db"]["role"]: name for name, m in manifests().items() if m["db"]["role"]}
+
+
+def login_roles() -> dict[str, tuple[str, dict]]:
+    """Every login role a manifest names: role -> (component, the role's db manifest). A component
+    with two roles (the demo UI: demo_portal and demo_ops) lists the second under db.extra_roles."""
+    found = {}
+    for name, m in manifests().items():
+        if m["db"]["role"]:
+            found[m["db"]["role"]] = (name, m["db"])
+        for extra in m["db"].get("extra_roles", []):
+            found[extra["role"]] = (name, extra)
+    return found
+
+
+LOGIN_ROLES = login_roles()
 
 
 def manifest_tables(grants: dict[str, list[str]]) -> tuple[set, set]:
@@ -131,9 +145,9 @@ def function_names(admin, oids: set[int]) -> list[str]:
         "SELECT oid::regprocedure::text AS f FROM pg_proc WHERE oid = ANY(%s)", (list(oids),)).fetchall())
 
 
-@pytest.mark.parametrize("role", sorted(ROLE_COMPONENTS))
+@pytest.mark.parametrize("role", sorted(LOGIN_ROLES))
 def test_db_grants_match_the_manifest_of_each_login_role(admin, role):
-    manifest = manifests()[ROLE_COMPONENTS[role]]["db"]
+    _, manifest = LOGIN_ROLES[role]
     row = admin.execute("SELECT rolcanlogin, rolconnlimit FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
     assert row == {"rolcanlogin": manifest["login"], "rolconnlimit": manifest["connection_limit"]}
     can_run, named = functions_the_role_can_run(admin, role), manifest_functions(admin, manifest["execute"])
@@ -152,6 +166,12 @@ def test_db_grants_match_the_manifest_of_each_login_role(admin, role):
         assert held == sorted(manifest["schemas"].get(schema, [])), schema
 
 
+
+
+def test_every_login_role_in_the_database_has_a_manifest(admin):
+    # A role that can log in and that no manifest names would have grants nobody wrote down.
+    rows = admin.execute("SELECT rolname FROM pg_roles WHERE rolcanlogin AND rolname <> 'postgres'").fetchall()
+    assert {r["rolname"] for r in rows} == set(LOGIN_ROLES)
 
 
 def test_no_other_manifest_gives_a_component_a_model_role():

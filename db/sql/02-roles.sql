@@ -13,6 +13,10 @@ CREATE ROLE approver                   LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_ap
 CREATE ROLE gateway                    LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_gateway';
 CREATE ROLE risk_engine                LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_risk_engine';
 CREATE ROLE dispatcher                 LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_dispatcher';
+-- The demo UI (app/demo, 09-demo.sql): a customer chat and a read-only view of the audit tables.
+-- Optional, but the roles exist everywhere, so the database is the same whether the chart runs it or not.
+CREATE ROLE demo_portal                LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_demo_portal';
+CREATE ROLE demo_ops                   LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_demo_ops';
 -- Owners of SECURITY DEFINER functions. Nobody logs in as them; a function runs with its owner's
 -- privileges, so each owner holds only what its functions read and write.
 --   api_owner    the five tool functions (05-lease.sql)
@@ -28,6 +32,8 @@ CREATE ROLE api_owner                  NOLOGIN;
 CREATE ROLE lease_owner                NOLOGIN;
 CREATE ROLE risk_owner                 NOLOGIN;
 CREATE ROLE staff_owner                NOLOGIN;
+--   demo_owner   the three demo_portal functions and demo_request_errors (09-demo.sql)
+CREATE ROLE demo_owner                 NOLOGIN;
 
 -- Every executor session, whatever the code does: a lock it cannot get within 5 s fails that
 -- request (executor_error, the batch goes on) instead of hanging the only component that

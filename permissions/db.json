@@ -229,6 +229,43 @@
         "default_privileges": [
           "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
         ]
+      },
+      {
+        "role": "demo_owner",
+        "login": false,
+        "schemas": {
+          "public": [
+            "USAGE"
+          ]
+        },
+        "tables": {
+          "customers": [
+            "SELECT (id, name)"
+          ],
+          "demo_ticket_id_seq": [
+            "SELECT",
+            "UPDATE",
+            "USAGE"
+          ],
+          "events": [
+            "SELECT (created_at, detail, id, kind)"
+          ],
+          "replies": [
+            "SELECT (text, ticket_id)"
+          ],
+          "tickets": [
+            "INSERT (body, customer_id, id)",
+            "SELECT (customer_id, id)"
+          ]
+        },
+        "execute": [],
+        "owns": [
+          "FUNCTION demo_request_errors(integer[]) SECURITY DEFINER",
+          "FUNCTION portal_customers() SECURITY DEFINER",
+          "FUNCTION portal_open_ticket(integer, text) SECURITY DEFINER",
+          "FUNCTION portal_reply(integer, integer) SECURITY DEFINER",
+          "SEQUENCE demo_ticket_id_seq"
+        ]
       }
     ],
     "public": {
@@ -291,6 +328,15 @@
             "command": "SELECT",
             "roles": [
               "staff_owner"
+            ],
+            "using": "true",
+            "check": null
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
             ],
             "using": "true",
             "check": null
@@ -363,6 +409,15 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },
@@ -386,6 +441,15 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },
@@ -409,6 +473,15 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_owner_customers",
+            "command": "SELECT",
+            "roles": [
+              "demo_owner"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },
@@ -501,6 +574,24 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_owner_replies",
+            "command": "SELECT",
+            "roles": [
+              "demo_owner"
+            ],
+            "using": "true",
+            "check": null
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },
@@ -524,6 +615,15 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },
@@ -570,6 +670,24 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_owner_tickets",
+            "command": "ALL",
+            "roles": [
+              "demo_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },
@@ -593,6 +711,15 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       }

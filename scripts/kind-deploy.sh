@@ -36,7 +36,7 @@ PUSH=127.0.0.1:5001/assume-hijacked
 PULL=localhost:5001/assume-hijacked
 # Every database login role (the chart's ah.dbRoles).
 DB_ROLES="tool_read_ticket tool_lookup_account tool_request_disconnection tool_issue_bill_credit
-tool_set_temp_protection executor approver gateway risk_engine dispatcher"
+tool_set_temp_protection executor approver gateway risk_engine dispatcher demo_portal demo_ops"
 
 # Git Bash on Windows: do not rewrite container-side paths.
 if command -v cygpath >/dev/null 2>&1; then

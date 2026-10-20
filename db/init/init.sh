@@ -21,6 +21,8 @@ run() {  # run <database> <file>
          -v pw_gateway="$DB_PASSWORD_GATEWAY" \
          -v pw_risk_engine="$DB_PASSWORD_RISK_ENGINE" \
          -v pw_dispatcher="$DB_PASSWORD_DISPATCHER" \
+         -v pw_demo_portal="$DB_PASSWORD_DEMO_PORTAL" \
+         -v pw_demo_ops="$DB_PASSWORD_DEMO_OPS" \
          --username "$POSTGRES_USER" --dbname "$1" -f "$2"
 }
 
@@ -29,7 +31,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
 
 run "$POSTGRES_DB" "$SQL_DIR/02-roles.sql"
 for database in "$POSTGRES_DB" supplier_test; do
-    for f in 01-schema.sql 03-grants.sql 05-lease.sql 06-risk.sql 07-flags.sql 08-rls.sql 04-seed.sql; do
+    for f in 01-schema.sql 03-grants.sql 05-lease.sql 06-risk.sql 07-flags.sql 08-rls.sql 09-demo.sql 04-seed.sql; do
         run "$database" "$SQL_DIR/$f"
     done
     # The local staff list (the console's dev sign-in users, public oids). Opt-in: only the local
