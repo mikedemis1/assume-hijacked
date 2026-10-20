@@ -85,7 +85,6 @@
           "FUNCTION api_request_moveout(text, date) SECURITY DEFINER",
           "FUNCTION api_set_temp_protection(text) SECURITY DEFINER",
           "FUNCTION lease_ticket_for_tool(text, text)",
-          "FUNCTION reply_facts(text) SECURITY DEFINER",
           "FUNCTION finish_reply_facts(text, text) SECURITY DEFINER"
         ],
         "default_privileges": [

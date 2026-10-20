@@ -73,14 +73,20 @@ _GR_SMALL = (
 ).split()
 # Billing outcomes. Folded text: no accents, lower case, final sigma plain. Most stems match as
 # substrings on purpose (charg: charge, charged, charging). cost, fee, free, less, cover, on us, zero
-# and nil must start a word (a regex word boundary) so "unless" or "feeling" are not caught; "cost" and "fee" also
-# accept a plural s. The Greek stem μειω must start a word too, so "σημείωση" (note) is not caught.
+# and nil must start a word so "unless" or "feeling" are not caught; "cost" and "fee" also accept a
+# plural s. The Greek stem μειω must start a word too, so "σημείωση" (note) is not caught. The
+# boundary is a letter boundary, not regex \b: \b counts "_" as a word character, so "free_" or
+# "on_us" would pass.
 # Only the words listed are caught: a paraphrase without one of them passes (docs/attacks.md).
+_START = r"(?<![^\W\d_])"
+_END = r"(?![^\W\d_])"
 BILLING_WORD = re.compile(
-    r"bill|invoice|statement|charg|\bcosts?\b|\bfees?\b|\bfree\b|gratis|complimentary|waiv|cancel|forgiv|"
-    r"write.?off|written.?off|remov|reduc|lower|\bless\b|\bcover|percent|per.?cent|%|\bon us\b|on the house|"
-    r"nothing|\bzero\b|\bnil\b|"
-    r"λογαριασμ|τιμολογ|χρεω|χρεων|δωρεαν|δωρο|\bμειω|ακυρω|διαγραφ|καλυψ|καλυφθ|αφαιρ|ποσοστ|μηδεν|"
+    r"bill|invoice|statement|charg|" + _START + r"costs?" + _END + r"|" + _START + r"fees?" + _END + r"|"
+    + _START + r"free" + _END + r"|gratis|complimentary|waiv|cancel|forgiv|"
+    r"write.?off|written.?off|remov|reduc|lower|" + _START + r"less" + _END + r"|" + _START + r"cover|"
+    r"percent|per.?cent|%|" + _START + r"on[\s_]+us" + _END + r"|on the house|"
+    r"nothing|" + _START + r"zero" + _END + r"|" + _START + r"nil" + _END + r"|"
+    r"λογαριασμ|τιμολογ|χρεω|χρεων|δωρεαν|δωρο|" + _START + r"μειω|ακυρω|διαγραφ|καλυψ|καλυφθ|αφαιρ|ποσοστ|μηδεν|"
     r"συγχωρ|σβηστ|σβην|κοστ|εξοδ|χωρισ χρε"
 )
 NUMBER_WORD = re.compile(

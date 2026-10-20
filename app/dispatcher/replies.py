@@ -7,7 +7,7 @@ the text it is given, and adds the two notices itself.
 
     1. block_reason (app/agent/guard.py) on the text. The numbers a reply may repeat are the ones in
        the ticket owner's account (tariff, status, address): what lookup_account can have shown the
-       model. They come from the database (reply_facts), not from the agent. A reply the guard
+       model. They come from the database (finish_reply_facts), not from the agent. A reply the guard
        blocks is replaced by SAFE_REPLY, a text that claims nothing.
     2. On a ticket where a credit or move-out request was filed or attempted, the model's text is not
        stored at all: a fixed template is (effect_template). The facts come from the database, never

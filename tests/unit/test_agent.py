@@ -394,3 +394,21 @@ def test_asi09_property_guard_allows_a_number_only_when_every_reading_was_return
 def test_asi09_agent_blocks_a_number_no_tool_returned(settings, admin, as_role):
     add_ticket(admin, 111, 1001, "CALL lookup_account {}\nSAY Your meter number is 4711.")
     assert make_agent(settings, as_role).handle_ticket(111) == SAFE_REPLY
+
+
+# Python's regex word boundary treats "_" as a word character, so "free_" or "on_us" slipped past the boundary.
+# The boundary is a letter boundary now: an underscore, a digit or a dot next to the word does not
+# hide it, while a letter does ("unless" and "feeling" stay allowed).
+@pytest.mark.parametrize("text", [
+    "November is free_.", "November is free_ of charge", "It is on_us.", "It is on  us.", "It is on	us.",
+    "Το επόμενο είναι η_μείωση.", "November is _free.", "It is zero_.", "It is nil_.", "It is _less.",
+    "cost_ is none", "_fees apply", "November is free2",
+])
+def test_asi09_guard_billing_words_are_not_hidden_by_an_underscore(text):
+    assert block_reason(text, set()) is not None
+
+
+@pytest.mark.parametrize("text", ["Unless you object.", "A feeling of relief.", "Costly mistake, sorry.",
+                                  "Σημείωση: η παροχή σας είναι ενεργή.", "Thanks."])
+def test_asi09_guard_letter_boundaries_still_allow_longer_words(text):
+    assert block_reason(text, set()) is None

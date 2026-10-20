@@ -94,7 +94,7 @@ One JSON file per part in `permissions/` declares its database role and grants, 
 
 | Part | Namespace | DB role | What the role may touch in the database | Receives from | Calls |
 |---|---|---|---|---|---|
-| dispatcher | ah-intake | `dispatcher` | tables: agent_runs (select/insert/update), replies (select/insert), tickets (select); runs: beat, finish_reply_facts, lease_scope, open_lease, reply_facts, revoke_lease | agent | db |
+| dispatcher | ah-intake | `dispatcher` | tables: agent_runs (select/insert/update), replies (select/insert), tickets (select); runs: beat, finish_reply_facts, lease_scope, open_lease, revoke_lease | agent | db |
 | agent | ah-agent | `none` | nothing | - | dispatcher, llm-gateway, tool-gateway |
 | llm-gateway | ah-agent | `none` | nothing | agent | - |
 | tool-gateway | ah-gateway | `gateway` | tables: agent_control (select), tool_calls (insert); runs: beat, lease_scope | agent | db, risk-engine, tool-read-ticket, tool-lookup-account, tool-request-disconnection, tool-issue-bill-credit, tool-set-temp-protection |

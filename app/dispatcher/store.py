@@ -1,8 +1,8 @@
 """The dispatcher's database access (role `dispatcher`, db/sql/05-lease.sql).
 
 What the role can do: read ticket id and status, add and update agent_runs, add a reply, open and
-revoke a lease, read a live lease's scope, and read reply_facts (the numbers of the ticket owner's
-account and whether a credit or a move-out went through the gateway). It cannot read a ticket's text,
+revoke a lease, read a live lease's scope, and close a lease with finish_reply_facts (the numbers of the ticket owner's
+account and whether a credit or a move-out was filed or attempted). It cannot read a ticket's text,
 any customer data, or change a reply.
 
 Every method here is one transaction. One connection, used by one thread at a time; a lost
