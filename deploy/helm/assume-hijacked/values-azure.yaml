@@ -27,7 +27,7 @@ db:
   host: ""
 
 network:
-  # snet-pe in infra/net: cidrsubnet(spoke 10.20.0.0/16, 10, 8). Change both together.
+  # snet-pe in infra/lab (network.tf): cidrsubnet(vnet 10.20.0.0/16, 10, 8). Change both together.
   databaseCidr: 10.20.2.0/26
 
 # AKS has only the system pool (tainted CriticalAddonsOnly) and the Kata sandbox pool, so the

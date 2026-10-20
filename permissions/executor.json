@@ -1,6 +1,6 @@
 {
   "component": "executor",
-  "description": "Acts on assessed requests: credits and disconnection orders, and the calls to the outside systems.",
+  "description": "Carries out assessed and approved requests: the only writer of credits and disconnection orders.",
   "db": {
     "role": "executor",
     "login": true,

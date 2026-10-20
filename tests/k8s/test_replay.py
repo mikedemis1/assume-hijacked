@@ -76,7 +76,7 @@ def test_asi06_scripted_attack_runs_as_a_bound_agent_job(case, replay_report):
     body = case.body
     if case.number == 7:
         body = body.replace("2030-11-01", datetime.now(timezone.utc).date().isoformat())
-    # One ticket at a time avoids having a flood case pause another case's positive control.
+    # One ticket at a time keeps one case's denials from pausing another case's positive control.
     # A sequence chosen by the database also permits rerunning without deleting audit records.
     quoted = body.replace("'", "''")
     ticket = sql_json(f"""

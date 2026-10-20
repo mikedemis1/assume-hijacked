@@ -1,6 +1,6 @@
 {
   "component": "db",
-  "description": "The database itself: the roles that own the SECURITY DEFINER functions (no login), what PUBLIC holds, and row-level security. The db is also on hostaccess, the one network with a route out, so the host can reach its port.",
+  "description": "The database itself: the roles that own the SECURITY DEFINER functions (no login), what PUBLIC holds, and row-level security.",
   "db": {
     "role": null,
     "roles": [

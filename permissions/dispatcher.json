@@ -1,6 +1,6 @@
 {
   "component": "dispatcher",
-  "description": "Hands a ticket and a lease to an agent, takes the agent's reply, runs the reply guard again, stores the reply and ends the lease. In Kubernetes it also starts the agent's Job, one per ticket, from a fixed template. Its database role reads only ticket id and status, keeps the run records, adds replies, opens and revokes leases and reads reply_facts; it cannot read a ticket's text or any customer data.",
+  "description": "Hands a ticket and a lease to an agent, takes the agent's reply, runs the reply guard again, stores the reply and ends the lease. It also starts the agent's Job, one per ticket, from a fixed template. Its database role reads only ticket id and status, keeps the run records, adds replies, opens and revokes leases and reads reply_facts; it cannot read a ticket's text or any customer data.",
   "db": {
     "role": "dispatcher",
     "login": true,

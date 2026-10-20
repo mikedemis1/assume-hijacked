@@ -1,6 +1,6 @@
 {
   "component": "console",
-  "description": "Staff approvals, protection-removal review, operational status and alert identifiers. Browser sessions validate Entra object ids and app roles.",
+  "description": "Staff approvals, resuming the agents after the kill switch, and operational status. Browser sessions validate Entra object ids and app roles.",
   "db": {
     "role": "approver",
     "login": true,

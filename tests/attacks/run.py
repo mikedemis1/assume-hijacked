@@ -8,7 +8,7 @@
   suite SOURCE           the in-cluster run (the chart's attack-suite test pods): every probe of
                          the matrix whose source is SOURCE, against the real Services. One JSON
                          line per probe on stdout. Exit 1 on a mismatch.
-  replay                 attack tickets 1-11 against the dispatcher and the tool gateway
+  replay                 the attack tickets against the dispatcher and the tool gateway
                          (DISPATCHER_URL, GATEWAY_URL). One JSON line per ticket. Exit 1 when
                          one fails.
 """

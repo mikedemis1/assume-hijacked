@@ -46,7 +46,7 @@ db:
   name: supplier
 
 network:
-  # azure only: the private endpoint subnet of PostgreSQL (infra/net snet-pe). The database is
+  # azure only: the private endpoint subnet of PostgreSQL (infra/lab snet-pe). The database is
   # outside the cluster there, so its NetworkPolicy edges end at this CIDR.
   databaseCidr: ""
 
