@@ -57,7 +57,7 @@ flowchart LR
 
 The tools are five processes on purpose. A hijacked tool then holds one database role and one function, and the per-call token names the tool it is for.
 
-The agent also reports, with its reply, which arguments it dropped and which unknown tools it refused: the names of the tool and its arguments, never a value. The model chooses those names, so they are identifiers of up to 64 characters and can still spell short data. The dispatcher validates the list (identifier names, at most 32 events of 16 names, anything else rejects the whole list), and writes it to the append-only `agent_events` table for the ticket of the lease it resolved itself. This is reported by the agent and best effort: a compromised agent pod could lie or leave events out, and the gateway's own records (`tool_calls`) remain the authority.
+The agent also reports which arguments it dropped and which unknown tools it refused (names only, never values). The dispatcher validates the list and stores it in the append-only `agent_events` table. It is best effort: a compromised agent could leave events out, and the gateway's own records (`tool_calls`) remain the authority.
 
 The five: `read_ticket` returns the text of the lease's ticket. `lookup_account` returns the lease's customer only. `issue_bill_credit` files a credit request. `request_disconnection` files a move-out request. `set_temp_protection` marks a home protected and only adds.
 
@@ -89,7 +89,7 @@ Admission policies (`ValidatingAdmissionPolicy`): images only by digest from the
 - **Per call.** The tool-gateway signs an ES256 token for each tool call (audience is that tool, short expiry, replay refused). The signing key is on the tool-gateway only.
 - **Database.** One login role per part and per tool. Passwords come from Kubernetes Secrets on kind and from Key Vault on Azure. A tool role has no table grants, only `EXECUTE` on one function.
 - **Model key.** Only the llm-gateway.
-- **Staff.** On Azure the console signs staff in with Entra ID (authorization code flow with PKCE; app roles `Approver` and `SeniorApprover`; the approver is recorded by the token's `oid`). The database keeps a staff allow-list (`staff`: oid, name, roles, active) that the console role cannot read or write; `approve_request` and `resume_agents` refuse an oid that is not on it, so a compromised console cannot invent approvers. Residual risk: Entra object ids are not secret. A compromised console that knows two listed oids can still approve as both and satisfy T2. Binding each approval to the signed id_token is the stronger fix and is not done. On kind, `AUTH_MODE=dev` lists identities in the chart values and the console accepts the `X-Dev-User` header; it refuses to start in dev mode on Azure. A real Entra sign-in has not been run.
+- **Staff.** On Azure the console signs staff in with Entra ID (authorization code flow with PKCE; app roles `Approver` and `SeniorApprover`). The database keeps a staff allow-list that the console role cannot touch; `approve_request` and `resume_agents` refuse an oid that is not on it. Residual risk and the dev mode on kind are in [attacks.md](attacks.md) and the chart values. A real Entra sign-in has not been run.
 - **Azure.** Terraform builds one user-assigned identity and one Key Vault per part from `permissions/`. Nothing is applied yet.
 
 ## Permissions
@@ -135,8 +135,8 @@ The `SeniorApprover` role stays for one job: resuming the agents after the kill 
 
 ## Console
 
-The queue shows request ids, risk tiers, rule codes and component heartbeats. It never renders ticket bodies, customer details or event detail. Requests that are HUMAN_ONLY, or still waiting for an assessment, show a protected-customer warning and cannot be approved; a rejection records `staff_rejected`. Every write needs the session cookie and a CSRF token, and identity or role fields in a submitted action never override the session. Sessions are in memory, so run one replica. The Secure cookie does not survive plain HTTP port-forwarding outside `APP_ENV=local`; how staff sign in on AKS is still open (see [azure.md](azure.md)).
+The queue shows request ids, risk tiers, rule codes and component heartbeats. It never renders ticket bodies or customer details. HUMAN_ONLY requests cannot be approved. Every write needs the session cookie and a CSRF token. Sessions are in memory, so run one replica.
 
-## What v2 removed from v1
+## Demo UI
 
-Docker Compose and the fake outside world (register, SMS, DSO, notices) are gone, and so are the 72-hour notice, the two-senior flag removal, the move-out flood rule and the Foundry backend. Three Terraform stacks became two (`infra/net` was merged into `lab`), 18 CI jobs became three, and five threat frameworks became one (OWASP ASI). v1 is the git tag `v1`.
+Optional (`demo.enabled`: on for kind, off for Azure) and not one of the nine parts. It has its own namespace `ah-demo`, one egress edge to PostgreSQL and no ingress; reach it with `sh scripts/demo-ui.sh`. Its database role `demo_portal` has no table grant and three functions. When a ticket carries the line `[simulated hijacked model]`, the llm-gateway answers from the scripted model instead of calling Claude. That is how the presenter view shows the worst case without changing any wall.

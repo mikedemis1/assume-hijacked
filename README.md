@@ -1,162 +1,150 @@
 # assume-hijacked
 
-An AI support agent for a fictional electricity supplier, built on one assumption: the model is already hijacked.
+An AI support agent for a fictional electricity supplier, built on one assumption: the model is already hijacked. The walls around it (network, identities, database) do not depend on what the model says.
 
-The agent can ask for a bill credit, a move-out or a temporary protection flag. It cannot choose whose account a tool reads, write an effect, approve its own request or see medical flags, because the network, the identities and the database refuse it, whatever the model says. Risky requests are scored by a separate risk engine and wait for a human. The tests attack the walls with a scripted model that does whatever a ticket tells it; they do not measure how well a real model resists prompt injection.
+Azure deployment: Terraform and CI are ready; first live run in progress.
 
-All customer data is fictional. v1 of this project (Docker Compose, 17 services, five threat frameworks) is kept as the git tag `v1`. v2 is the same idea with the parts that did not add a wall removed.
+Demo video: <link coming>
 
-## Architecture
+## The idea
+
+The agent can ask for a bill credit, a move-out or a temporary protection flag. It cannot choose whose account a tool reads, write an effect, approve its own request or see medical flags. The network, the identities and the database refuse it, whatever the model says. Risky requests are scored by a separate risk engine and wait for a human.
+
+The tests attack those walls with a scripted model that obeys every order in a ticket (the worst case, 100% hijacked). They do not measure how well a real model resists prompt injection. All customer data is fictional.
 
 ```mermaid
 flowchart LR
     Ticket["Ticket<br/>(untrusted text)"] --> Dispatcher
     subgraph intake["ah-intake"]
-        Dispatcher["dispatcher<br/>lease for this customer only,<br/>checks the reply"]
+        Dispatcher["dispatcher"]
     end
-    subgraph agentns["ah-agent: the sandbox"]
-        Agent["agent Job<br/>one per ticket<br/>no DB password, no model key"]
-        LLM["llm-gateway<br/>only holder of the Claude key"]
+    subgraph agentns["ah-agent (sandbox)"]
+        Agent["agent Job<br/>one per ticket"]
+        LLM["llm-gateway<br/>holds the API key"]
     end
     subgraph gw["ah-gateway"]
-        Gateway["tool-gateway<br/>caller, lease, arguments,<br/>fingerprint, signed token"]
+        Gateway["tool-gateway"]
     end
     subgraph core["ah-core"]
-        Risk["risk-engine<br/>allow / deny / human,<br/>kill switch"]
+        Risk["risk-engine"]
         Executor["executor<br/>only writer of effects"]
     end
-    subgraph tools["ah-tools: 5 pods, 1 image"]
-        Tools["read_ticket · lookup_account ·<br/>issue_bill_credit · request_disconnection ·<br/>set_temp_protection"]
+    subgraph tools["ah-tools"]
+        Tools["5 tool pods"]
     end
     subgraph staff["ah-staff"]
-        Console["console<br/>Entra sign-in, approvals"]
+        Console["console<br/>human approval"]
     end
     DB[("PostgreSQL<br/>roles, RLS, triggers")]
     Dispatcher --> Agent
-    Agent --> Dispatcher
     Agent --> LLM
-    LLM -.-> Claude["Claude API"]
+    LLM -.-> Claude["Claude Haiku API"]
     Agent --> Gateway
     Gateway --> Risk
     Gateway --> Tools
     Tools --> DB
     Dispatcher --> DB
-    Gateway --> DB
     Risk --> DB
     Executor --> DB
     Console --> DB
 ```
 
-Nine parts, each with one job: dispatcher, agent, llm-gateway, tool-gateway, risk-engine, tools, executor, console, PostgreSQL. The tools are five pods from one image; each logs in as its own database role and can run one SQL function. Details, allowed edges and the permission table are in [docs/architecture.md](docs/architecture.md).
+Nine parts: dispatcher, agent, llm-gateway, tool-gateway, risk-engine, tools, executor, console, PostgreSQL. Each has one job. Details: [docs/architecture.md](docs/architecture.md).
 
-The same Helm chart runs on kind (local, free) and on AKS. Cilium network policies default-deny every namespace and allow one rule per edge. Admission policies accept only images pinned by digest and only the agent Job from its template.
+## The demo
 
-## OWASP Top 10 for Agentic Applications 2026
+- `/` is a supplier website with the Volt chat. The visitor is one logged-in customer, Eleni.
+- `/security` is the presenter view. The chat is on the left with a switch, "Brain: Claude | Hijacked". On the right, each message shows "The AI tried", "Stopped by" and "The customer got", plus an architecture strip.
+- Brain Claude: honest messages go to real Claude Haiku through the llm-gateway. It is the only holder of the API key and it enforces a token budget.
+- Brain Hijacked: five attack chips send a message whose ticket carries a scripted attack plan (marker line `[simulated hijacked model]`). The llm-gateway routes that ticket to a scripted model that obeys every order.
 
-One test runs every attack ticket through the real agent, tool gateway and risk engine (`attacks/test_attack_table.py`); the tests of the database and component walls are in `tests/unit/`. They are named after the [OWASP Agentic Top 10](https://genai.owasp.org/) ids (`test_asi03_same_approver_twice_is_rejected`). After a test run pytest prints one line per id. The full table with every test name, and every other wall with its test, is in [docs/attacks.md](docs/attacks.md).
+![The customer site](docs/images/demo-ui.png)
 
-| ASI | Attack | Wall that stops it | Test file (under `tests/`) |
+## The five attacks and the wall that stops each
+
+| Attack | OWASP ASI | Wall | Test file (under `tests/`) |
 |---|---|---|---|
-| ASI01 Agent Goal Hijack | Read another customer's account | The agent drops the id; lease-scoped DB function; row-level security | `attacks/test_attack_table.py`, `unit/test_agent.py`, `unit/test_gateway.py`, `unit/test_tools.py`, `unit/test_lease.py` |
-| ASI01, ASI02 | Disconnection at a protected home | Risk tier HUMAN_ONLY; DB trigger refuses the order | `unit/test_risk_rules.py`, `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py` |
-| ASI02 Tool Misuse | Credit too big, negative, or with no real charge | Risk tier and approvals; DB trigger | `unit/test_risk_rules.py`, `unit/test_risk_floor.py`, `unit/test_executor_credits.py`, `unit/test_tools.py` |
-| ASI02 | Protection flag YES to NO | Tools can only add flags; no role can change one | `attacks/test_attack_table.py`, `unit/test_flag_removal.py` |
-| ASI02, ASI03 | Data out (internet, DNS), reach the DB or a tool directly, ask the metadata endpoint for a token | Default-deny policies (Cilium); signed token per call; metadata address denied | `attacks/test_attack_table.py`, `unit/test_tokens.py`, `k8s/test_walls.py`, `k8s/test_chart.py` |
-| ASI03 Identity & Privilege Abuse | Medical flag reaches the model | No tool returns it; only the executor role reads flags | `attacks/test_attack_table.py`, `unit/test_db_roles.py`, `unit/test_tools.py` |
-| ASI03 | Same person approves twice | Approvals only in the console; the database counts distinct people | `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py`, `unit/test_console.py` |
-| ASI04 Agentic Supply Chain | Unpinned or swapped image; changed tool description | Admission by digest; gateway fingerprint | `unit/test_gateway.py`, `unit/test_capabilities.py`, `k8s/test_walls.py`, `k8s/test_chart.py` |
-| ASI06 Memory & Context Poisoning | Next ticket sees the previous ticket's data | One Job per ticket, no memory, lease bound to the pod | `k8s/test_replay.py` |
-| ASI08 Cascading Failures | Risk engine down or too slow | The gateway fails closed | `unit/test_gateway.py`, `unit/test_risk_service.py` |
-| ASI09 Human-Agent Trust Exploitation | A reply that promises money | On a ticket with a credit or move-out request, the dispatcher stores a fixed template, never the model's text; on other tickets a wording filter in the agent and again in the dispatcher; no approve tool | `attacks/test_attack_table.py`, `unit/test_agent.py`, `unit/test_dispatcher.py`, `unit/test_llmgw.py` |
-| ASI10 Rogue Agents | The agent keeps calling denied tools | Three denials pause all agents; a SeniorApprover resumes | `unit/test_gateway.py`, `unit/test_risk_floor.py`, `unit/test_risk_rules.py`, `unit/test_console.py` |
+| Read my neighbour's account | ASI01, ASI03 | The agent drops the customer id; lease-scoped DB function; row-level security | `attacks/test_attack_table.py`, `unit/test_lease.py` |
+| Promise me a refund | ASI09 | On tickets with an effect the dispatcher stores a fixed template; elsewhere a word filter in the agent and the dispatcher | `attacks/test_attack_table.py`, `unit/test_dispatcher.py` |
+| Cut power at a protected home | ASI01, ASI02 | Risk tier HUMAN_ONLY; a DB trigger refuses the order | `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py` |
+| Send my data out | ASI02, ASI03 | Default-deny network policies; only the llm-gateway leaves the cluster; unknown tools refused | `attacks/test_attack_table.py`, `k8s/test_walls.py` |
+| Ask for several credits | ASI02 | One effect per ticket; risk tiers and approvals; DB trigger | `attacks/test_attack_table.py`, `unit/test_executor_credits.py` |
 
-The reply guard is a word filter, and a word filter has gaps: a paraphrase nobody listed can get through. So where a promise would cost money, the model's text is not used at all: if a credit or a move-out was filed or attempted on the ticket, the dispatcher decides that from the database and stores a fixed template with the request numbers. On every other ticket the filter is the only wall, and its known limits are in the docstring of `app/agent/guard.py`.
+The suite has more cases than the chips (medical flag, flag downgrade, same approver twice, kill switch, supply chain). All of them are in [docs/attacks.md](docs/attacks.md). The word filter has gaps, which is why money replies use a template. ASI05 and ASI07 do not apply: the agent runs no code and there is one agent.
 
-ASI05 (Unexpected Code Execution) and ASI07 (Insecure Inter-Agent Communication) are not applicable: the agent runs no code and there is one agent. See [docs/attacks.md](docs/attacks.md).
+## How it is secured
 
-## Run it on kind
+- **Network policies.** Cilium default-deny in every namespace, one allow rule per edge. Nobody reaches the metadata address 169.254.169.254.
+- **Kubernetes-token callers.** Parts prove who they are with projected ServiceAccount tokens checked by TokenReview. The tool-gateway answers only the agent.
+- **Signed per-call tokens.** The tool-gateway signs a short ES256 token for each tool call. The audience is that tool, and a replay is refused.
+- **Risk tiers and human approval.** T0 needs no approval, T1 one, T2 two from distinct people. Protected homes are HUMAN_ONLY. Three denials on one lease pause all agents.
+- **Database roles and RLS.** One login role per part and per tool. A tool role has no table grants and can run one function. Row-level security and triggers are the last wall. Flags can only be added.
+- **Key only in the llm-gateway.** The agent holds no model key and no DB password.
+- **Supply chain.** Admission policies accept only images pinned by digest and only the agent Job from its fixed template. CI runs Trivy.
 
-Needs Docker Desktop (about 6 GB), `kind`, `kubectl` and `helm`. Run the scripts from the repository root with a POSIX shell (Git Bash on Windows).
+## Run it locally
+
+Needs Docker Desktop (about 6 GB), `kind`, `kubectl` and `helm`. Use a POSIX shell (Git Bash on Windows) from the repo root.
 
 ```sh
-sh scripts/kind-up.sh            # cluster "ah": kind, Cilium, Hubble, local registry
-sh scripts/kind-deploy.sh        # build the image, push it, helm install by digest
-sh scripts/kind-monitoring.sh    # Prometheus, Grafana, Alertmanager, Mailpit, the Walls board
-sh scripts/new-ticket.sh 1001 "I was charged twice, please check."
+sh scripts/kind-up.sh                  # cluster "ah": kind, Cilium, local registry
+sh scripts/kind-deploy.sh              # build, push, helm install by digest
+sh scripts/demo-ui.sh                  # then open http://localhost:8085 and /security
+sh scripts/kind-monitoring.sh          # optional: Prometheus, Grafana
 ```
 
-`new-ticket.sh <customer_id> "<text>"` files a ticket in the cluster database and prints its id; the dispatcher picks it up and starts an agent Job. Customers 1001 to 1003 are seed data. The model is the scripted one (`llm.backend: scripted` in the chart values). The `anthropic` backend (Claude Haiku) exists but has not been run; it needs a key and costs money. Staff sign in to the console with the dev identities listed in `deploy/helm/assume-hijacked/values-kind.yaml`.
+With real Claude (costs money, you need your own key):
+
+```sh
+LLM_BACKEND=anthropic ANTHROPIC_KEY_FILE=/path/to/key sh scripts/kind-deploy.sh
+```
 
 Tests:
 
 ```sh
-cp .env.example .env             # then change the passwords
-sh scripts/test-db.sh start      # PostgreSQL in Docker on 127.0.0.1 (port from DB_PORT in .env)
-python -m pytest -q              # unit tests, attack tests, chart render tests
-python -m pytest -m k8s tests/k8s  # network, admission and replay tests against the cluster
+cp .env.example .env && sh scripts/test-db.sh start   # PostgreSQL in Docker
+python -m pytest -q                                   # unit, attack and chart render tests
+python -m pytest -m k8s tests/k8s                     # network and admission tests on the cluster
 ```
 
-`sh scripts/kind-down.sh stop` frees memory and keeps the cluster; `sh scripts/kind-down.sh` deletes it. Alerts and how to react to them: [docs/runbook.md](docs/runbook.md).
+`sh scripts/kind-down.sh` deletes the cluster. Alerts: [docs/runbook.md](docs/runbook.md).
 
-## Demo UI
+## Deploy to Azure
 
-Two small pages for showing the system. `/` is a made-up energy supplier's website with a support chat in the corner: pick a fictional customer, talk to Volt, see only your own words and the replies. `/security` is the security console (not the staff approval console) for the person presenting: counters, a diagram that lights up for the latest ticket (agent, gateway, risk engine, tools, database, reply guard), the order the "hijacked model" was given, and a live feed of what each wall decided.
+The same Helm chart runs on AKS. Two Terraform stacks:
 
-```sh
-sh scripts/demo-ui.sh            # port-forward, then open http://localhost:8085 and http://localhost:8085/security
-```
+- `infra/base`: cheap and persistent. Key Vaults, identities, container registry, state, budgets, policy.
+- `infra/lab`: AKS, network and PostgreSQL. Created for a session and destroyed after it.
 
-![The customer site after a message that carried an armed attack](docs/images/demo-ui.png)
-
-To show an attack, open the security console, choose one under "Next message: simulate a hijacked model", then write any message on the customer site. That one message is filed with the attack's `CALL`/`SAY` lines after your words; the chat shows only your words, the security console shows the order. The lines are copied from the attack suite (`tests/attacks/tickets.py`), and a test keeps the two in step. The ticket is untrusted text like any other: no wall is told anything new.
-
-The demo is optional (`demo.enabled`: on in `values-kind.yaml`, off on Azure) and not one of the nine parts. It gets little: its own namespace, one egress edge to PostgreSQL, a ClusterIP service, no ingress.
-
-What is enforced where: the database role `demo_portal` has no table grant and three functions. It can open a ticket for a demo customer and read replies only to tickets the demo itself opened. `demo_ops` reads audit columns only, and one flag: whether the kill switch is on. Which customer a visitor is, that the security console shows only that visitor's tickets, and that arming an attack works once per session (with the CSRF token), is enforced by the demo's session, not by the database. The customer endpoints return nothing about the walls. The security console prints a tool or argument name only if it is in the schemas or the attack table; any other name becomes "an unknown tool" or "an argument the tool does not take".
-
-The security console has no login of its own: it shows the session of the browser it is opened in, which is acceptable only because the service is reached with `kubectl port-forward` on localhost. It shows what the database records. Two things are less firm than the rest. What the agent's own code dropped before the gateway is the agent's report, stored in `agent_events` (names only) and marked "reported by the agent": a hijacked agent could leave one out. Only when a ticket has no such event does it compare the order the ticket carried with the gateway's record, and it marks that line "from your message, no agent event" (with an armed attack, "your message" is the filed body with the appended order). Why the reply guard blocked a reply is only logged; the security console shows the reply's kind (`agent`, `safe` or `template`). The portraits are AI-generated images of people who do not exist (Canva); see `app/demo/static/avatars/NOTICE`.
+Nothing is applied yet. Costs, order and teardown: [docs/azure.md](docs/azure.md).
 
 ## CI
 
-GitLab CI has three jobs.
+GitLab CI, three jobs:
 
 | Job | Does |
 |---|---|
-| lint | ruff, gitleaks, `terraform fmt` and `validate`, `helm lint`, `trivy config` on the rendered chart, `infra/` and the Dockerfiles (fails on HIGH and CRITICAL; `.trivyignore.yaml` lists what is accepted) |
-| test | the default pytest run against a PostgreSQL service, including the chart render tests (`helm template`, then the network and admission objects, no cluster) |
+| lint | ruff, gitleaks, `terraform fmt` and `validate`, `helm lint`, `trivy config` |
+| test | pytest against a PostgreSQL service, including the chart render tests |
 | build | the app image and a Trivy scan |
 
-CI does not run dispatcher, agent, gateway and tools together, and it does not start a cluster (the free minutes would not last). The network and admission attacks and the end-to-end run happen on kind. Terraform plan, apply and the Helm deploy to AKS are designed at the Azure step and are not in the pipeline yet.
+CI starts no cluster. The network and admission tests run on kind.
 
-## Repository
+## Repo map
 
 | Path | Content |
 |---|---|
 | `app/` | all Python, one image |
-| `permissions/` | one capability manifest per part; Terraform, the chart and the gateway read them |
-| `tests/` | `unit/`, `attacks/` (named by ASI) and `k8s/` |
-| `db/` | schema, roles, grants, seed, `init.sh` |
-| `deploy/` | Helm chart, monitoring values and dashboard, kind config |
+| `permissions/` | one capability manifest per part, read by Terraform, the chart and the gateway |
+| `db/` | schema, roles, grants, seed |
+| `deploy/` | Helm chart, monitoring, kind config |
 | `infra/` | Terraform: `base/`, `lab/`, `modules/` |
-| `scripts/` | test database, kind, deploy, new ticket, demo UI |
+| `tests/` | `unit/`, `attacks/`, `k8s/` |
+| `scripts/` | kind, deploy, demo UI, CI helpers |
 | `docs/` | [architecture](docs/architecture.md), [attacks](docs/attacks.md), [azure](docs/azure.md), [runbook](docs/runbook.md) |
 
-Monitoring is two alerts (executor stopped, kill switch fired) and one Grafana board, "Walls".
+## Not verified
 
-## What is verified
-
-Verified means it ran and the output was read.
-
-- **Test suite.** The default `pytest` run is green: 673 passed, 170 deselected (the deselected ones need a kind cluster). It runs against a real PostgreSQL, so the database walls are tested as the database enforces them.
-- **Images.** The application image and the attack-suite image both build.
-- **kind run.** Pending; the deployed stack and the kind tests have not been run on v2 yet.
-
-<!-- filled after the kind run -->
-
-Not verified, and not claimed:
-
-- **Azure.** The Terraform in `infra/` has `terraform test` files that use mock providers and CI runs `terraform validate`; nothing has been applied. No Azure resource exists for this project, and nothing billable has been started.
-- **Real Entra sign-in.** The console's Entra code has unit tests for tokens with the wrong audience or issuer. A browser login against a real tenant has not happened. On kind the console uses dev identities.
-- **Kata.** On kind the `kata-vm-isolation` RuntimeClass is backed by runc, so there is no micro-VM there. AKS pod sandboxing is configured in Terraform and untested.
-- **Real model.** No test calls a paid API. A real Claude run on a ticket needs a key and a decision from the owner.
-- **Hubble drop panel on AKS.** It depends on the outbound-control decision in [docs/azure.md](docs/azure.md).
+- Azure: `terraform validate` and `terraform test` with mock providers only; nothing applied.
+- Entra sign-in against a real tenant. On kind the console uses dev identities.
+- Kata: on kind the `kata-vm-isolation` RuntimeClass runs on runc, so there is no micro-VM there.
