@@ -72,10 +72,10 @@ SECURITY_HEADERS = {
 def backend_info() -> dict:
     """Which model answers, from the chart's llm settings (DEMO_LLM_BACKEND, DEMO_LLM_MODEL)."""
     if os.environ.get("DEMO_LLM_BACKEND", "scripted") == "scripted":
-        return {"scripted": True, "name": "Scripted model",
+        return {"scripted": True, "name": "Scripted model", "short": "plays a fully hijacked model",
                 "detail": "plays a fully hijacked model: it obeys every instruction in the message"}
     model = os.environ.get("DEMO_LLM_MODEL", "")
-    return {"scripted": False, "name": f"Claude {model}".strip(), "detail": "a real model answers the tickets"}
+    return {"scripted": False, "name": f"Claude {model}".strip(), "short": "a real model", "detail": "a real model answers the tickets"}
 
 
 def allowed_hosts() -> set[str]:
@@ -106,19 +106,35 @@ def error(status: int, code: str) -> JSONResponse:
     return JSONResponse({"error": code}, status_code=status)
 
 
-async def read_json(request: Request) -> dict | None:
+class BadBody(Exception):
+    def __init__(self, status: int, code: str) -> None:
+        super().__init__(code)
+        self.response = error(status, code)
+
+
+async def read_json(request: Request) -> dict:
+    """The JSON object in the body. The body is read piece by piece and the read stops at MAX_BODY
+    bytes, whatever Content-Length says (a chunked request has none), so a big body is never held."""
     if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
-        return None
-    if int(request.headers.get("content-length") or 0) > MAX_BODY:
-        return None
-    body = await request.body()
-    if len(body) > MAX_BODY:
-        return None
+        raise BadBody(400, "bad_request")
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        raise BadBody(400, "bad_request") from None
+    if declared > MAX_BODY:
+        raise BadBody(413, "too_big")
+    body = bytearray()
+    async for piece in request.stream():
+        body += piece
+        if len(body) > MAX_BODY:
+            raise BadBody(413, "too_big")
     try:
         data = json.loads(body)
     except (ValueError, RecursionError):
-        return None
-    return data if isinstance(data, dict) else None
+        raise BadBody(400, "bad_request") from None
+    if not isinstance(data, dict):
+        raise BadBody(400, "bad_request")
+    return data
 
 
 def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None = None,
@@ -174,8 +190,11 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
     async def signin(request: Request):
         if not same_origin(request):
             return error(403, "origin")
-        data = await read_json(request)
-        customer = None if data is None else data.get("customer")
+        try:
+            data = await read_json(request)
+        except BadBody as bad:
+            return bad.response
+        customer = data.get("customer")
         if not isinstance(customer, int) or isinstance(customer, bool):
             return error(400, "bad_request")
         try:
@@ -206,13 +225,21 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
             return error(401, "signin")
         if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
             return error(403, "csrf")
-        data = await read_json(request)
-        text = None if data is None else data.get("text")
+        try:
+            data = await read_json(request)
+        except BadBody as bad:
+            return bad.response
+        text = data.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT or "\x00" in text:
             return error(400, "length")
-        if len(session.tickets) >= MAX_TICKETS:
-            return error(429, "ticket_limit")
+        # One message at a time per session: the checks below and the append at the end have awaits
+        # between them, and without this two requests at once could both pass the caps.
+        if session.sending:
+            return error(429, "busy")
+        session.sending = True
         try:
+            if len(session.tickets) >= MAX_TICKETS:
+                return error(429, "ticket_limit")
             waiting = [t.id for t in session.tickets]
             answered = await run_in_threadpool(database.replies, session.customer, waiting)
             if len(waiting) - len(answered) >= MAX_WAITING:
@@ -220,9 +247,11 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
             if not sessions.allow_message():
                 return error(429, "rate")
             ticket_id = await run_in_threadpool(database.open_ticket, session.customer, text)
+            session.tickets.append(Ticket(ticket_id, text, timeline.now_iso()))
         except psycopg.Error:
             return error(503, "database")
-        session.tickets.append(Ticket(ticket_id, text, timeline.now_iso()))
+        finally:
+            session.sending = False
         return JSONResponse({"ticket": ticket_id})
 
     @asynccontextmanager

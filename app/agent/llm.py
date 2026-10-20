@@ -20,7 +20,7 @@ class Reply:
 DEFAULT_PLAN = [ToolCall("lookup_account", {}), Reply("Here is your account: {last}")]
 
 
-def _parse(body: str) -> list[ToolCall | Reply]:
+def parse_plan(body: str) -> list[ToolCall | Reply]:
     plan: list[ToolCall | Reply] = []
     for raw in body.splitlines():
         line = raw.strip()
@@ -45,7 +45,7 @@ class ScriptedLLM:
     """
 
     def next_action(self, transcript: list[dict]) -> ToolCall | Reply:
-        plan = _parse(transcript[0]["text"])
+        plan = parse_plan(transcript[0]["text"])
         results = [item["result"] for item in transcript if item["role"] == "tool"]
         last = results[-1] if results else ""
         if len(results) < len(plan):

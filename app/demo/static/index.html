@@ -11,12 +11,13 @@
 </head>
 <body>
 <a class="skip" href="#composer">Skip to the message box</a>
+<p class="vh" id="status" role="status" aria-live="polite"></p>
 
 <header class="top">
   <div class="brand">
     <svg class="mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13.5 2 5 13.5h6L10 22l9-12h-6z"/></svg>
     <div>
-      <div class="name">Examplia Energy</div>
+      <h1 class="name">Examplia Energy</h1>
       <div class="sub">Customer support</div>
     </div>
   </div>
@@ -36,7 +37,7 @@
 
 <main id="main">
   <section class="card signin" id="signin" aria-labelledby="signin-title" hidden>
-    <h1 id="signin-title">Choose a customer</h1>
+    <h2 id="signin-title">Choose a customer</h2>
     <p class="muted">This is a demo with made-up people. Pick one to open the support chat.</p>
     <div class="people" id="people"></div>
   </section>
@@ -44,15 +45,15 @@
   <div class="panes" id="panes" hidden>
     <section class="card chat" aria-labelledby="chat-title">
       <header class="card-head">
-        <h1 id="chat-title">Support chat</h1>
+        <h2 id="chat-title">Support chat</h2>
         <p class="muted" id="chat-sub">Messages go to the support agent. Replies appear here.</p>
       </header>
-      <div class="log" id="log" role="log" aria-live="polite" aria-relevant="additions text" tabindex="0" aria-label="Conversation">
+      <div class="log" id="log" role="region" tabindex="0" aria-label="Conversation">
         <p class="empty" id="log-empty">No messages yet. Write one below, or start from an example.</p>
       </div>
       <div class="composer" id="composer">
         <div class="examples" aria-labelledby="examples-title">
-          <h2 id="examples-title">Start from an example</h2>
+          <h3 id="examples-title">Start from an example</h3>
           <div class="chips" id="examples"></div>
         </div>
         <form id="form" autocomplete="off">
@@ -69,7 +70,7 @@
 
     <section class="card scenes" aria-labelledby="scenes-title">
       <header class="card-head">
-        <h1 id="scenes-title">Behind the scenes</h1>
+        <h2 id="scenes-title">Behind the scenes</h2>
         <p class="muted">What each wall recorded for your tickets, newest first.</p>
         <ul class="legend" aria-label="Colour key">
           <li><span class="dot tone-neutral" aria-hidden="true"></span>allowed</li>
@@ -78,7 +79,7 @@
           <li><span class="dot tone-ok" aria-hidden="true"></span>stored</li>
         </ul>
       </header>
-      <div class="tickets" id="tickets" aria-live="polite" aria-relevant="additions text">
+      <div class="tickets" id="tickets">
         <p class="empty" id="tickets-empty">Send a message and each step shows up here: the agent, every tool call, the risk check and the reply.</p>
       </div>
       <footer class="foot">Lines come from the database records. Lines marked "from your message" compare what the scripted model was told with what the records show, because the agent's own checks are only logged.</footer>

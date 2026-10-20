@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from app.agent.core import ALLOWED_ARGS
 from app.agent.guard import SAFE_REPLY
 from app.agent.llm import Reply, ToolCall
-from app.agent.llm import _parse as parse_plan
+from app.agent.llm import parse_plan
 from app.dispatcher.replies import CREDIT_NOTICE, MEDICAL_QUESTION
 
 SAFE_NAME = re.compile(r"[A-Za-z0-9_]{1,64}")

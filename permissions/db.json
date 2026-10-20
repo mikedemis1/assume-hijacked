@@ -242,10 +242,28 @@
           "customers": [
             "SELECT (id, name)"
           ],
+          "demo_customers": [
+            "DELETE",
+            "INSERT",
+            "REFERENCES",
+            "SELECT",
+            "TRIGGER",
+            "TRUNCATE",
+            "UPDATE"
+          ],
           "demo_ticket_id_seq": [
             "SELECT",
             "UPDATE",
             "USAGE"
+          ],
+          "demo_tickets": [
+            "DELETE",
+            "INSERT",
+            "REFERENCES",
+            "SELECT",
+            "TRIGGER",
+            "TRUNCATE",
+            "UPDATE"
           ],
           "events": [
             "SELECT (created_at, detail, id, kind)"
@@ -254,8 +272,7 @@
             "SELECT (text, ticket_id)"
           ],
           "tickets": [
-            "INSERT (body, customer_id, id)",
-            "SELECT (customer_id, id)"
+            "INSERT (body, customer_id, id)"
           ]
         },
         "execute": [],
@@ -264,7 +281,9 @@
           "FUNCTION portal_customers() SECURITY DEFINER",
           "FUNCTION portal_open_ticket(integer, text) SECURITY DEFINER",
           "FUNCTION portal_reply(integer, integer) SECURITY DEFINER",
-          "SEQUENCE demo_ticket_id_seq"
+          "SEQUENCE demo_ticket_id_seq",
+          "TABLE demo_customers",
+          "TABLE demo_tickets"
         ]
       }
     ],
@@ -673,21 +692,12 @@
           },
           {
             "name": "demo_owner_tickets",
-            "command": "ALL",
+            "command": "INSERT",
             "roles": [
               "demo_owner"
             ],
-            "using": "true",
+            "using": null,
             "check": "true"
-          },
-          {
-            "name": "demo_ops_read",
-            "command": "SELECT",
-            "roles": [
-              "demo_ops"
-            ],
-            "using": "true",
-            "check": null
           }
         ]
       },

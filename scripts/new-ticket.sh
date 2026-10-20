@@ -20,12 +20,13 @@ case $customer in
         ;;
 esac
 
-# The ticket id is a plain integer column: take the next free one. psql expands :'body' and
-# :customer only from standard input, so the statement goes in through stdin.
+# The ticket id is a plain integer column: the next number of demo_ticket_id_seq, the same one the
+# demo UI draws from (09-demo.sql), so the two never meet on one id. Seed and attack tickets are below 1000.
+# psql expands :'body' and :customer only from standard input, so the statement goes in through stdin.
 # The pod's own POSTGRES_USER and POSTGRES_DB are used (the chart sets them).
 printf '%s\n' \
     "INSERT INTO tickets (id, customer_id, body)" \
-    "SELECT COALESCE(MAX(id), 0) + 1, :customer, :'body' FROM tickets RETURNING id;" |
+    "SELECT nextval('demo_ticket_id_seq'), :customer, :'body' RETURNING id;" |
     kubectl --context "$CONTEXT" --namespace ah-data exec -i statefulset/postgres -- \
         sh -c 'psql -X -q -t -A -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v customer="$1" -v body="$2"' \
         sh "$customer" "$body"

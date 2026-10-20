@@ -1,6 +1,6 @@
 {
   "component": "demo",
-  "description": "Optional demo UI: a customer chat in front of the agent and a read-only panel of what the walls decided. A viewer picks a fictional customer, sends a message or a ready-made attack, and sees the stored reply next to the records of the tool gateway, the risk engine, the dispatcher and the executor. It is not one of the nine parts and the security story does not depend on it; it is a front door for showing the system, treated as untrusted like any other door. demo_portal has no table grant: it lists the fictional customers, opens a ticket for the customer of the session and reads the reply to that customer's own ticket, through three functions. demo_ops reads the audit tables by column and never ticket text, names, addresses, flags or argument values. Reached with kubectl port-forward only.",
+  "description": "Optional demo UI: a customer chat in front of the agent and a read-only panel of what the walls decided. A viewer picks a fictional customer, sends a message or a ready-made attack, and sees the stored reply next to the records of the tool gateway, the risk engine, the dispatcher and the executor. It is not one of the nine parts and the security story does not depend on it; it is a front door for showing the system, treated as untrusted like any other door. demo_portal has no table grant: it lists the demo's fictional customers, opens a ticket for a customer and reads the reply to a ticket the demo opened for that customer, through three functions; the database refuses any other ticket, and the demo's session decides which customer a visitor is. demo_ops reads the audit tables by column and never ticket text, names, addresses, flags or argument values. Reached with kubectl port-forward only.",
   "db": {
     "role": "demo_portal",
     "login": true,
@@ -37,7 +37,7 @@
             "SELECT (approver_role, created_at, request_id)"
           ],
           "call_assessments": [
-            "SELECT (created_at, decision, id, lease_hash, reasons, tool)"
+            "SELECT (created_at, decision, id, lease_hash, tool)"
           ],
           "credits": [
             "SELECT (created_at, request_id)"
@@ -50,9 +50,6 @@
           ],
           "risk_assessments": [
             "SELECT (created_at, reasons, request_id, tier)"
-          ],
-          "tickets": [
-            "SELECT (id, status)"
           ],
           "tool_calls": [
             "SELECT (arg_names, created_at, dropped_args, id, lease_hash, outcome, reason, tool)"

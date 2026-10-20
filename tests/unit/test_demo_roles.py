@@ -18,6 +18,7 @@ def refused(conn, statement, args=()):
 @pytest.mark.parametrize("table", [
     "tickets", "replies", "customers", "accounts", "supply_points", "charges", "flags", "action_requests",
     "tool_calls", "agent_runs", "leases", "risk_assessments", "call_assessments", "events", "approvals",
+    "demo_tickets", "demo_customers",
 ])
 def test_the_portal_role_reads_no_table(as_role, table):
     refused(as_role("demo_portal"), f"SELECT * FROM {table}")
@@ -39,10 +40,16 @@ def test_the_portal_role_runs_no_other_function(as_role, call):
     refused(as_role("demo_portal"), f"SELECT * FROM {call}")
 
 
-def test_the_portal_lists_customers_by_id_and_name_only(as_role):
-    rows = as_role("demo_portal").execute("SELECT * FROM portal_customers()").fetchall()
-    assert rows == [{"id": 1001, "name": "Eleni Papadopoulou"}, {"id": 1002, "name": "Nikos Georgiou"},
-                    {"id": 1003, "name": "Maria Ioannou"}]
+def test_the_portal_lists_the_demo_customers_by_id_and_name_only(admin, as_role):
+    conn = as_role("demo_portal")
+    expected = [{"id": 1001, "name": "Eleni Papadopoulou"}, {"id": 1002, "name": "Nikos Georgiou"},
+                {"id": 1003, "name": "Maria Ioannou"}]
+    assert conn.execute("SELECT * FROM portal_customers()").fetchall() == expected
+    # A customer that is not a demo customer is neither listed nor given a ticket.
+    admin.execute("INSERT INTO customers VALUES (2000, 'Real Customer', '+30 690 000 2000')")
+    assert conn.execute("SELECT * FROM portal_customers()").fetchall() == expected
+    with pytest.raises(psycopg.errors.RaiseException):
+        conn.execute("SELECT portal_open_ticket(2000, 'Hello')")
 
 
 def test_a_ticket_is_opened_for_the_customer_given_and_above_the_seed_ids(admin, as_role):
@@ -53,6 +60,8 @@ def test_a_ticket_is_opened_for_the_customer_given_and_above_the_seed_ids(admin,
     rows = admin.execute("SELECT id, customer_id, body, status FROM tickets WHERE id >= 1000 ORDER BY id").fetchall()
     assert rows == [{"id": first, "customer_id": 1002, "body": "Hello there", "status": "open"},
                     {"id": second, "customer_id": 1001, "body": "And again", "status": "open"}]
+    marked = admin.execute("SELECT ticket_id, customer_id FROM demo_tickets ORDER BY ticket_id").fetchall()
+    assert marked == [{"ticket_id": first, "customer_id": 1002}, {"ticket_id": second, "customer_id": 1001}]
 
 
 @pytest.mark.parametrize("customer, body", [
@@ -62,6 +71,7 @@ def test_a_ticket_with_no_text_a_long_text_or_no_such_customer_is_refused(admin,
     with pytest.raises((psycopg.errors.RaiseException, psycopg.errors.NotNullViolation)):
         as_role("demo_portal").execute("SELECT portal_open_ticket(%s, %s)", (customer, body))
     assert admin.execute("SELECT count(*) AS n FROM tickets WHERE id >= 1000").fetchone()["n"] == 0
+    assert admin.execute("SELECT count(*) AS n FROM demo_tickets").fetchone()["n"] == 0
 
 
 def test_the_longest_message_is_taken(admin, as_role):
@@ -86,11 +96,22 @@ def test_a_customer_reads_the_reply_to_their_own_ticket_and_nobody_else_does(adm
     assert reply(1001, pending) == []
     assert reply(1002, 1) == []
     assert reply(1001, 424242) == []
+    # Only tickets the demo opened are answered here: not a seeded ticket of the same customer
+    # (ticket 1 belongs to 1001 and has a reply above), and not one filed some other way, even
+    # in the demo's id range and for the same customer.
+    assert reply(1001, 1) == []
+    other = admin.execute("INSERT INTO tickets (id, customer_id, body) VALUES (1500, 1001, 'filed by hand') RETURNING id").fetchone()["id"]
+    admin.execute("INSERT INTO replies (ticket_id, text) VALUES (%s, 'A reply the demo did not ask for.')", (other,))
+    assert reply(1001, other) == []
 
 
 # --- demo_ops ------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("statement", [
+    "SELECT id, status FROM tickets",
+    "SELECT reasons FROM call_assessments",
+    "SELECT * FROM demo_tickets",
+    "SELECT * FROM demo_customers",
     "SELECT body FROM tickets",
     "SELECT customer_id FROM tickets",
     "SELECT text FROM replies",
@@ -117,9 +138,9 @@ def test_the_ops_role_cannot_read_text_customer_data_flags_or_other_columns(as_r
 def test_the_ops_role_reads_the_audit_columns_and_writes_nothing(as_role):
     conn = as_role("demo_ops")
     for statement in (
-        "SELECT id, status FROM tickets", "SELECT ticket_id, lease_hash, status, created_at FROM agent_runs",
+        "SELECT ticket_id, lease_hash, status, created_at FROM agent_runs",
         "SELECT id, lease_hash, tool, arg_names, dropped_args, outcome, reason, created_at FROM tool_calls",
-        "SELECT id, lease_hash, tool, decision, reasons, created_at FROM call_assessments",
+        "SELECT id, lease_hash, tool, decision, created_at FROM call_assessments",
         "SELECT id, kind, ticket_id, amount_eur, status, decision_reason, created_at FROM action_requests",
         "SELECT request_id, tier, reasons, created_at FROM risk_assessments",
         "SELECT ticket_id, created_at FROM replies", "SELECT request_id, created_at FROM credits",

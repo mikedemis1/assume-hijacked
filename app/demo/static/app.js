@@ -2,6 +2,11 @@
 
 // The demo page. Everything shown is put on the page with textContent, never as HTML, because the
 // ticket text is whatever the visitor typed.
+//
+// The page is updated in place: a poll adds the messages and timeline lines that are new and
+// changes the ones that changed, and leaves every other element alone, so the focus, the open or
+// closed state of a ticket and what a screen reader has just read stay as they are. Only the small
+// #status region is announced.
 
 const MAX_TEXT = 2000;
 
@@ -32,7 +37,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   banner: $("banner"), signin: $("signin"), people: $("people"), panes: $("panes"),
   who: $("who"), whoName: $("who-name"), signout: $("signout"),
-  backendName: $("backend-name"), backend: $("backend"),
+  backendName: $("backend-name"), backend: $("backend"), status: $("status"),
   log: $("log"), logEmpty: $("log-empty"), tickets: $("tickets"), ticketsEmpty: $("tickets-empty"),
   examples: $("examples"), form: $("form"), text: $("text"), count: $("count"), send: $("send"), chatSub: $("chat-sub"),
 };
@@ -41,7 +46,10 @@ let state = null;       // the last answer of /api/state
 let csrf = "";
 let timer = null;
 let sending = false;
-let signature = "";  // the last state drawn, so an unchanged poll does not redraw the page
+let signature = "";     // the last state drawn, so an unchanged poll does nothing
+let shownCustomer = null;
+const views = new Map();   // ticket id -> the elements of that ticket
+const opened = new Map();  // ticket id -> what the visitor chose (open or closed); absent: the default
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -73,12 +81,17 @@ function showBanner(message) {
   els.banner.hidden = !message;
 }
 
+function announce(message) {
+  els.status.textContent = message;
+}
+
 const PROBLEMS = {
   database: "The database does not answer. Is the stack running?",
   ticket_limit: "That is enough for one session. Switch customer to start again.",
   busy: "The agent is still working on your earlier messages. Wait for the replies first.",
   rate: "Too many messages at once. Wait a moment.",
   length: "A message needs 1 to 2000 characters.",
+  too_big: "That message is too big.",
   csrf: "The page was out of date. Reload it and try again.",
   signin: "Your session ended. Choose a customer again.",
 };
@@ -101,8 +114,9 @@ async function refresh() {
     return;
   }
   showBanner("");
-  const changed = JSON.stringify(result.body) !== signature;
-  signature = JSON.stringify(result.body);
+  const text = JSON.stringify(result.body);
+  const changed = text !== signature;
+  signature = text;
   state = result.body;
   csrf = state.csrf || "";
   if (changed) render();
@@ -115,19 +129,28 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) refr
 // ---- drawing ----
 
 function render() {
-  els.backendName.textContent = state.backend.name;
+  const scripted = state.backend.scripted;
+  els.backendName.textContent = scripted ? state.backend.name + ": " + state.backend.short : state.backend.name;
   els.backend.title = state.backend.detail;
   const signedIn = state.customer !== null;
   els.signin.hidden = signedIn;
   els.panes.hidden = !signedIn;
   els.who.hidden = !signedIn;
+  if (state.customer !== shownCustomer) resetTickets();
+  shownCustomer = state.customer;
   if (!signedIn) { renderPeople(); return; }
   const me = state.customers.find((c) => c.id === state.customer);
   els.whoName.textContent = me ? me.name : String(state.customer);
   els.chatSub.textContent = "You are writing as " + (me ? me.name : "a customer") + ".";
   renderExamples();
-  renderLog();
-  renderTickets();
+  syncTickets(state.tickets || []);
+}
+
+function resetTickets() {
+  views.clear();
+  opened.clear();
+  els.log.replaceChildren(els.logEmpty);
+  els.tickets.replaceChildren(els.ticketsEmpty);
 }
 
 function renderPeople() {
@@ -152,89 +175,131 @@ function renderExamples() {
   }));
 }
 
-function renderLog() {
-  const tickets = state.tickets || [];
-  els.logEmpty.hidden = tickets.length > 0;
-  const stick = els.log.scrollHeight - els.log.scrollTop - els.log.clientHeight < 80;
-  const nodes = [];
-  for (const t of tickets) {
-    const mine = el("div", "msg me");
-    const body = el("div", "bubble" + (isScript(t.text) ? " script" : ""), t.text);
-    mine.append(body, el("div", "meta", "You · " + time(t.filedAt)));
-    nodes.push(mine);
-    const theirs = el("div", "msg them");
-    if (t.reply === null) {
-      const typing = el("div", "bubble typing");
-      typing.setAttribute("aria-label", "The agent is working");
-      typing.append(el("i"), el("i"), el("i"));
-      theirs.append(typing);
-    } else {
-      const blocked = t.replyState.blocked;
-      theirs.append(el("div", "bubble" + (blocked ? " blocked" : ""), t.reply));
-      const meta = el("div", "meta", "Support");
-      if (blocked) meta.append(" · ", el("span", "flag", "reply blocked, safe text sent"));
-      theirs.append(meta);
-    }
-    nodes.push(theirs);
-  }
-  els.log.replaceChildren(els.logEmpty, ...nodes);
-  if (stick) els.log.scrollTop = els.log.scrollHeight;
-}
-
 function isScript(text) { return /^\s*(CALL|SAY) /m.test(text); }
-
-function renderTickets() {
-  const tickets = [...(state.tickets || [])].reverse();
-  els.ticketsEmpty.hidden = tickets.length > 0;
-  els.tickets.replaceChildren(els.ticketsEmpty, ...tickets.map((t, i) => ticketCard(t, i === 0)));
-}
-
-const opened = new Map();  // ticket id -> what the visitor chose; the newest ticket starts open
-
-function ticketCard(t, newest) {
-  const lines = t.timeline;
-  const stops = lines.filter((l) => l.tone === "bad").length;
-  const changes = lines.filter((l) => l.tone === "warn").length;
-  const card = el("details", "ticket");
-  card.open = opened.has(t.id) ? opened.get(t.id) : newest;
-
-  const head = el("summary", "t-head");
-  head.addEventListener("click", () => opened.set(t.id, !card.open));  // runs before the browser toggles it
-  head.append(el("span", "t-title", "Ticket #" + t.id));
-  const [tone, status] = t.reply === null ? ["neutral", "Working"]
-    : t.replyState.blocked ? ["bad", "Reply blocked"] : ["ok", "Answered"];
-  const pill = el("span", "pill tone-" + tone);
-  pill.append(el("span", "dot tone-" + tone), status);
-  head.append(pill);
-  head.append(el("span", "t-quote", firstLine(t.text)));
-  card.append(head);
-
-  const list = el("ol", "tl");
-  for (const line of lines) {
-    const item = el("li", "step tone-" + line.tone);
-    item.append(el("span", "dot tone-" + line.tone));
-    const body = el("div");
-    const row = el("div", "line");
-    if (line.label) row.append(el("span", "label", line.label));
-    row.append(el("span", "text", line.text));
-    if (line.note) row.append(el("span", "note", line.note));
-    body.append(row);
-    item.append(body, el("time", "", time(line.at)));
-    list.append(item);
-  }
-  card.append(list);
-
-  const summary = stops + changes === 0
-    ? "No wall had to act on this ticket."
-    : [stops && stops + (stops === 1 ? " thing denied or blocked" : " things denied or blocked"),
-       changes && changes + (changes === 1 ? " thing changed or held" : " things changed or held")].filter(Boolean).join(", ") + ".";
-  card.append(el("p", "summary", summary));
-  return card;
-}
 
 function firstLine(text) {
   const line = text.split("\n").find((l) => l.trim()) || "";
   return line.length > 90 ? line.slice(0, 89) + "…" : line;
+}
+
+function counts(lines) {
+  return {
+    stops: lines.filter((l) => l.tone === "bad").length,
+    changes: lines.filter((l) => l.tone === "warn").length,
+  };
+}
+
+function syncTickets(tickets) {
+  const stick = els.log.scrollHeight - els.log.scrollTop - els.log.clientHeight < 80;
+  let grew = false;
+  for (const t of tickets) {
+    let view = views.get(t.id);
+    if (!view) {
+      view = createView(t);
+      views.set(t.id, view);
+      grew = true;
+    }
+    if (updateView(view, t)) grew = true;
+  }
+  els.logEmpty.hidden = tickets.length > 0;
+  els.ticketsEmpty.hidden = tickets.length > 0;
+  if (grew && stick) els.log.scrollTop = els.log.scrollHeight;
+}
+
+function createView(t) {
+  // The chat: the visitor's message and a place for the answer, added at the end.
+  const mine = el("div", "msg me");
+  mine.append(el("div", "bubble" + (isScript(t.text) ? " script" : ""), t.text), el("div", "meta", "You · " + time(t.filedAt)));
+  const theirs = el("div", "msg them");
+  els.log.append(mine, theirs);
+
+  // The card: the newest ticket is open and the one before it folds, unless the visitor chose.
+  const card = el("details", "ticket");
+  const head = el("summary", "t-head");
+  head.addEventListener("click", () => opened.set(t.id, !card.open));  // runs before the browser toggles it
+  const title = el("span", "t-title", "Ticket #" + t.id);
+  const pill = el("span", "pill");
+  const walls = el("span", "walls");
+  const quote = el("span", "t-quote", firstLine(t.text));
+  head.append(title, walls, pill, quote);
+  const list = el("ol", "tl");
+  card.append(head, list);
+  for (const [id, other] of views) {
+    if (!opened.has(id)) other.card.open = false;
+  }
+  card.open = true;
+  els.tickets.prepend(card);
+  return { id: t.id, mine, theirs, card, pill, walls, list, replyKey: null, stops: null };
+}
+
+// Returns true when the chat got new content.
+function updateView(view, t) {
+  let grew = false;
+  const replyKey = t.reply === null ? "" : (t.replyState.blocked ? "blocked:" : "ok:") + t.reply;
+  if (view.replyKey !== replyKey) {
+    const first = view.replyKey === null;
+    const hadReply = view.replyKey !== null && view.replyKey !== "";
+    view.replyKey = replyKey;
+    view.theirs.replaceChildren(...replyNodes(t));
+    grew = true;
+    if (t.reply !== null && !hadReply && !first) {
+      announce("Ticket " + t.id + ": " + (t.replyState.blocked ? "the reply was blocked and replaced by a safe reply." : "the agent replied."));
+    }
+  }
+  const [tone, status] = t.reply === null ? ["neutral", "Working"]
+    : t.replyState.blocked ? ["bad", "Reply blocked"] : ["ok", "Answered"];
+  view.pill.className = "pill tone-" + tone;
+  view.pill.replaceChildren(el("span", "dot tone-" + tone), status);
+  const { stops, changes } = counts(t.timeline);
+  const parts = [];
+  if (stops) parts.push(el("span", "w-bad", stops + " stopped"));
+  if (changes) parts.push(el("span", "w-warn", changes + " changed or held"));
+  if (!parts.length) parts.push(el("span", "w-none", t.reply === null ? "no wall has acted yet" : "no wall had to act"));
+  view.walls.replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
+  if (view.stops !== null && stops > view.stops) {
+    announce("Ticket " + t.id + ": " + stops + (stops === 1 ? " thing was stopped." : " things were stopped."));
+  }
+  view.stops = stops;
+  syncTimeline(view.list, t.timeline);
+  return grew;
+}
+
+function replyNodes(t) {
+  if (t.reply === null) {
+    const typing = el("div", "bubble typing");
+    typing.append(el("span", "vh", "The agent is working"), el("i"), el("i"), el("i"));
+    return [typing];
+  }
+  const blocked = t.replyState.blocked;
+  const meta = el("div", "meta", "Support");
+  if (blocked) meta.append(" · ", el("span", "flag", "reply blocked, safe text sent"));
+  return [el("div", "bubble" + (blocked ? " blocked" : ""), t.reply), meta];
+}
+
+function lineKey(line) { return [line.at, line.tone, line.label, line.text, line.note].join("|"); }
+
+// Make the list match the lines, keeping every item that is already right and adding the rest.
+function syncTimeline(list, lines) {
+  lines.forEach((line, i) => {
+    const existing = list.children[i];
+    if (existing && existing.dataset.key === lineKey(line)) return;
+    list.insertBefore(stepNode(line), existing || null);
+  });
+  while (list.children.length > lines.length) list.lastChild.remove();
+}
+
+function stepNode(line) {
+  const item = el("li", "step tone-" + line.tone);
+  item.dataset.key = lineKey(line);
+  item.append(el("span", "dot tone-" + line.tone));
+  const body = el("div");
+  const row = el("div", "line");
+  if (line.label) row.append(el("span", "label", line.label));
+  row.append(el("span", "text", line.text));
+  if (line.note) row.append(el("span", "note", line.note));
+  body.append(row);
+  item.append(body, el("time", "", time(line.at)));
+  return item;
 }
 
 // ---- actions ----
@@ -249,11 +314,7 @@ async function signIn(customer) {
 }
 
 async function useExample(example) {
-  if (example.as !== null && state.customer !== example.as) {
-    const draft = els.text.value;
-    if (!(await signIn(example.as))) return;
-    els.text.value = draft;
-  }
+  if (example.as !== null && state.customer !== example.as && !(await signIn(example.as))) return;
   els.text.value = example.text;
   onInput();
   els.text.focus();

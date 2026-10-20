@@ -3,6 +3,10 @@ INSERT INTO customers VALUES
     (1002, 'Nikos Georgiou',     '+30 690 000 1002'),
     (1003, 'Maria Ioannou',      '+30 690 000 1003');
 
+-- The customers the demo UI signs in as (09-demo.sql). Seeded here because the test suite re-runs
+-- this file after it truncates the tables.
+INSERT INTO demo_customers VALUES (1001), (1002), (1003);
+
 INSERT INTO supply_points VALUES
     ('SP-1001', 'Patision 10, Athens'),
     ('SP-1002', 'Egnatias 5, Thessaloniki'),

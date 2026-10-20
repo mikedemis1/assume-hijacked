@@ -108,7 +108,11 @@ sh scripts/demo-ui.sh            # port-forward, then open http://localhost:8085
 
 ![The demo UI after one honest question and two attacks](docs/images/demo-ui.png)
 
-The scripted model plays a fully hijacked model, so an example like "Read my neighbour's account" fills the box with the `CALL` lines it will obey, and you can see the walls stop each one. It is optional (`demo.enabled`, on in `values-kind.yaml`, off on Azure) and it is not one of the nine parts. It is a front door, so it gets little: its own namespace, one egress edge to PostgreSQL, a ClusterIP service and no ingress, a database role that only opens a ticket and reads the reply to your own ticket, and a second one that reads audit columns only. The panel shows what the database records. Two things are only logged, not recorded: what the agent's own code dropped before the gateway, and why the reply guard blocked a reply. For the first, the panel compares your message with the gateway's record and marks that line "from your message".
+The scripted model plays a fully hijacked model, so an example fills the box with the `CALL` lines it will obey. The demo is optional (`demo.enabled`: on in `values-kind.yaml`, off on Azure) and not one of the nine parts. It gets little: its own namespace, one egress edge to PostgreSQL, a ClusterIP service, no ingress.
+
+What is enforced where: the database role `demo_portal` has no table grant and three functions. It can open a ticket for a demo customer and read replies only to tickets the demo itself opened; a seeded or hand-filed ticket gets nothing. Which customer a visitor is, and that the panel shows only that visitor's tickets, is enforced by the demo's session, not by the database. `demo_ops` reads audit columns only.
+
+The panel shows what the database records. Two things are only logged: what the agent's own code dropped before the gateway (the panel compares your message with the record and marks that line "from your message"), and why the reply guard blocked a reply.
 
 ## CI
 

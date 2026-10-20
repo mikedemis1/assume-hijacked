@@ -167,18 +167,53 @@ def test_a_message_of_no_text_too_long_or_not_text_is_refused(visitor, admin, te
     assert tickets(admin) == []
 
 
-def test_a_body_that_is_not_json_or_too_big_is_refused(visitor, admin):
+def raw_post(visitor, content, extra=None):
+    sent = {"Host": HOST, "Content-Type": "application/json", "X-CSRF-Token": visitor.csrf,
+            "Cookie": "ah_demo=" + visitor.cookies["ah_demo"], **(extra or {})}
+
+    async def go():
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=visitor.app), base_url="http://" + HOST) as http:
+            return await http.post("/api/message", headers=sent, content=content)
+
+    return asyncio.run(go())
+
+
+def test_a_body_that_is_not_a_json_object_is_refused(visitor, admin):
     visitor.sign_in()
-    for raw in ("[1]", "not json", "x" * 9000):
-        sent = {"Host": HOST, "Content-Type": "application/json", "X-CSRF-Token": visitor.csrf,
-                "Cookie": "ah_demo=" + visitor.cookies["ah_demo"]}
-
-        async def go():
-            async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=visitor.app), base_url="http://" + HOST) as http:
-                return await http.post("/api/message", headers=sent, content=raw)
-
-        assert asyncio.run(go()).status_code == 400, raw[:10]
+    for raw in ("[1]", "not json", '"text"', ""):
+        assert raw_post(visitor, raw).status_code == 400, raw
     assert tickets(admin) == []
+
+
+def test_a_body_over_the_cap_is_refused_with_or_without_a_content_length(visitor, admin):
+    visitor.sign_in()
+    assert raw_post(visitor, "x" * 9000).status_code == 413
+    assert raw_post(visitor, "x" * 9000, {"Content-Length": "9000"}).status_code == 413
+    assert raw_post(visitor, "{}", {"Content-Length": "many"}).status_code == 400
+    assert tickets(admin) == []
+
+
+def test_a_chunked_body_has_no_length_and_is_still_cut_off_at_the_cap(visitor, admin):
+    visitor.sign_in()
+    read = []
+
+    async def endless():
+        for n in range(10_000):
+            read.append(n)
+            yield b"x" * 1024
+
+    answer = raw_post(visitor, endless())
+    assert answer.status_code == 413 and answer.json() == {"error": "too_big"}
+    assert "content-length" not in answer.request.headers and answer.request.headers["transfer-encoding"] == "chunked"
+    # The app stopped reading soon after the cap (8 KiB), not after 10 MB.
+    assert len(read) < 100
+    assert tickets(admin) == []
+    # Control: a small chunked body is taken.
+    async def small():
+        yield b'{"text": "hel'
+        yield b'lo"}'
+
+    assert raw_post(visitor, small()).status_code == 200
 
 
 def test_the_longest_message_is_taken_and_a_session_may_send_only_so_many_tickets(visitor, admin, monkeypatch):
@@ -188,6 +223,22 @@ def test_the_longest_message_is_taken_and_a_session_may_send_only_so_many_ticket
     assert visitor.say("two").status_code == 200
     assert visitor.say("three").status_code == 429 and visitor.last.json() == {"error": "ticket_limit"}
     assert len(tickets(admin)) == 2
+
+
+def test_two_messages_at_once_cannot_get_past_the_caps(app, admin, monkeypatch):
+    monkeypatch.setattr(demo, "MAX_TICKETS", 1)
+    visitor = Visitor(app)
+    visitor.sign_in()
+    sent = {"Host": HOST, "Content-Type": "application/json", "X-CSRF-Token": visitor.csrf,
+            "Cookie": "ah_demo=" + visitor.cookies["ah_demo"]}
+
+    async def both():
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://" + HOST) as http:
+            return await asyncio.gather(*[http.post("/api/message", headers=sent, content='{"text": "hi"}') for _ in range(4)])
+
+    codes = sorted(r.status_code for r in asyncio.run(both()))
+    assert codes == [200, 429, 429, 429]
+    assert len(tickets(admin)) == 1
 
 
 def test_only_three_tickets_may_wait_for_an_answer_and_an_answer_frees_a_place(visitor, admin):
@@ -240,11 +291,14 @@ def test_the_panel_shows_what_the_database_recorded_and_a_blocked_reply(visitor,
     assert item["timeline"][-1]["tone"] == "bad"
 
 
-def test_signing_out_ends_the_session(visitor):
+def test_signing_out_ends_the_session_even_for_a_copy_of_the_cookie(visitor):
     visitor.sign_in()
     assert visitor.state()["customer"] == 1001
+    old = dict(visitor.cookies)
     assert visitor.send("POST", "/api/signout", {}).status_code == 200
-    visitor.cookies.clear()
+    # The browser's cookie is cleared; a copy of the old one must be dead on the server too.
+    visitor.cookies = old
+    assert visitor.state()["customer"] is None
     assert visitor.say("hello").status_code == 401
 
 

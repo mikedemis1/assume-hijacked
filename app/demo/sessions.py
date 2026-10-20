@@ -32,6 +32,7 @@ class Session:
     csrf: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     started: float = field(default_factory=time.monotonic)
     tickets: list[Ticket] = field(default_factory=list)
+    sending: bool = False  # one message at a time per session, so the caps below cannot be raced
 
 
 class Sessions:
