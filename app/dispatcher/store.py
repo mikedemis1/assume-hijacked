@@ -31,13 +31,6 @@ class Scope:
     bound_pod: str | None
 
 
-@dataclass(frozen=True)
-class Facts:
-    account_text: str
-    credit_asked: bool
-    moveout_submitted: bool
-
-
 def lease_hash(lease: str) -> bytes:
     """sha256 of the lease as UTF-8 text, the same value the database stores."""
     return hashlib.sha256(lease.encode()).digest()
@@ -111,35 +104,6 @@ class DispatcherDb:
         def work(conn):
             row = conn.execute("SELECT ticket_id, bound_pod FROM lease_scope(%s)", (lease,)).fetchone()
             return None if row is None else Scope(row["ticket_id"], row["bound_pod"])
-
-        return self._use(work)
-
-    def facts(self, lease: str) -> Facts | None:
-        def work(conn):
-            row = conn.execute(
-                "SELECT account_text, credit_asked, moveout_submitted FROM reply_facts(%s)", (lease,)
-            ).fetchone()
-            return None if row is None else Facts(row["account_text"], row["credit_asked"], row["moveout_submitted"])
-
-        return self._use(work)
-
-    def store_reply(self, ticket_id: int, text: str, lease: str) -> bool:
-        """Store the reply, mark the run replied and revoke the lease, in one transaction. False if
-        the ticket already has a reply (the lease is revoked all the same: it has been used)."""
-
-        def work(conn):
-            stored = conn.execute(
-                "INSERT INTO replies (ticket_id, text) VALUES (%s, %s) ON CONFLICT (ticket_id) DO NOTHING "
-                "RETURNING ticket_id",
-                (ticket_id, text),
-            ).fetchone()
-            if stored is not None:
-                conn.execute(
-                    "UPDATE agent_runs SET status = 'replied' WHERE ticket_id = %s AND status = 'claimed'",
-                    (ticket_id,),
-                )
-            conn.execute("SELECT revoke_lease(%s)", (lease,))
-            return stored is not None
 
         return self._use(work)
 

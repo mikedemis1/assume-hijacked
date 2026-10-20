@@ -49,9 +49,15 @@ CREDIT_NOTICE = (
 
 # Stored instead of the model's text when an effect tool was called on the lease. Fixed text: no amount,
 # no date, no promise. The only variable part is the numbers of the requests the database holds.
-EFFECT_RECEIVED = (
-    "We have received your {what}. A member of staff will review it and you will hear from us.\n"
-    "Λάβαμε {what_gr}. Μέλος του προσωπικού θα το εξετάσει και θα ενημερωθείτε."
+# With no request filed (the call was refused or failed) it promises nothing at all.
+NO_REQUEST = "We have received your message.\nΛάβαμε το μήνυμά σας."
+ONE_REQUEST = (
+    "We have received your request ({numbers}). A member of staff will review it and you will hear from us.\n"
+    "Λάβαμε το αίτημά σας ({numbers}). Μέλος του προσωπικού θα το εξετάσει και θα ενημερωθείτε."
+)
+SEVERAL_REQUESTS = (
+    "We have received your requests ({numbers}). A member of staff will review them and you will hear from us.\n"
+    "Λάβαμε τα αιτήματά σας ({numbers}). Μέλος του προσωπικού θα τα εξετάσει και θα ενημερωθείτε."
 )
 
 
@@ -59,9 +65,9 @@ def effect_template(request_ids: tuple[int, ...]) -> str:
     """The fixed reply for an effect ticket. `request_ids` are the ids of the requests filed on the
     ticket (action_requests), or none when the effect was attempted and nothing was filed."""
     if not request_ids:
-        return EFFECT_RECEIVED.format(what="message", what_gr="το μήνυμά σας")
+        return NO_REQUEST
     numbers = ", ".join(f"#{i}" for i in request_ids)
-    return EFFECT_RECEIVED.format(what=f"request ({numbers})", what_gr=f"το αίτημά σας ({numbers})")
+    return (ONE_REQUEST if len(request_ids) == 1 else SEVERAL_REQUESTS).format(numbers=numbers)
 
 
 # The longest reply that is taken, in characters. The longest text the agent sends is far shorter.
@@ -76,7 +82,7 @@ class Finished:
 
 
 def finish(text: str, account_text: str, credit_asked: bool, moveout_submitted: bool,
-           effect_attempted: bool = False, request_ids: tuple[int, ...] = ()) -> Finished:
+           effect_attempted: bool, request_ids: tuple[int, ...]) -> Finished:
     if effect_attempted or credit_asked or moveout_submitted or request_ids:
         parts, reason, kind = [effect_template(request_ids)], None, "template"
     else:

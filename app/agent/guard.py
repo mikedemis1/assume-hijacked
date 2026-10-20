@@ -13,10 +13,13 @@ this conversation. Anything else is replaced by SAFE_REPLY (fail closed). A repl
    Category: number_word.
 4. it has money wording (credit, refund, back, off, pay, balance, πίσω, επιστροφ ...), with or without
    a number: "your credit has been approved" is a promise too. Category: money_wording.
-5. it has billing-outcome wording: bill, invoice, charge, cost, fee, free, waive, cancel, remove,
-   reduce, lower, less, cover, percent, "%", "on us", write off, forgive, and the Greek ones (χρέωση,
-   λογαριασμός, τιμολόγιο, δωρεάν, μείωση, ακύρωση, διαγραφή, κάλυψη, ποσοστό ...). A promise about a
-   bill needs no digit ("your next bill is free", "you will not be charged"). Category: billing_outcome.
+5. it contains one of the billing-outcome words in BILLING_WORD (bill, invoice, charge, cost, fee, free,
+   waive, cancel, remove, reduce, lower, less, cover, percent, "%", "on us", write off, forgive, nothing,
+   zero, nil, and Greek stems such as χρεω, λογαριασμ, τιμολογ, δωρεαν, μειω, ακυρω, διαγραφ, καλυψ,
+   ποσοστ). A promise about a bill needs no digit ("your next bill is free"). Only those words are
+   caught: "Next month is our treat" or "The double debit has been reversed" pass. Category:
+   billing_outcome. Greek costs: λογαριασμ means both "bill" and "account", so a Greek reply about the
+   account is blocked too.
 6. it has a number (digits) that is not in `allowed_numbers`. Category: unapproved_number.
 
 How text is compared. Before any matching the text is folded: Unicode NFKC (full-width digits and
@@ -68,14 +71,16 @@ _GR_SMALL = (
     "δυο τρια τρεισ τεσσερα τεσσερισ τεσσαρα τεσσαρισ πεντε εξι επτα εφτα οκτω οχτω εννια εννεα "
     "ενδεκα δωδεκα"
 ).split()
-# Billing outcomes. Folded text: no accents, lower case, final sigma plain. Matches are substrings on
-# purpose (charg: charge, charged, charging); "less" and "free" are whole words so "unless" and
-# "carefree-looking" ids are not caught by accident.
+# Billing outcomes. Folded text: no accents, lower case, final sigma plain. Most stems match as
+# substrings on purpose (charg: charge, charged, charging). cost, fee, free, less, cover, on us, zero
+# and nil must start a word (a regex word boundary) so "unless" or "feeling" are not caught; "cost" and "fee" also
+# accept a plural s. The Greek stem μειω must start a word too, so "σημείωση" (note) is not caught.
+# Only the words listed are caught: a paraphrase without one of them passes (docs/attacks.md).
 BILLING_WORD = re.compile(
-    r"bill|invoice|statement|charg|costs?|fees?|free|gratis|complimentary|waiv|cancel|forgiv|"
-    r"write.?off|written.?off|remov|reduc|lower|less|cover|percent|per.?cent|%|on us|on the house|"
-    r"nothing|zero|nil|"
-    r"λογαριασμ|τιμολογ|χρεω|χρεων|δωρεαν|δωρο|μειω|ακυρω|διαγραφ|καλυψ|καλυφθ|αφαιρ|ποσοστ|μηδεν|"
+    r"bill|invoice|statement|charg|\bcosts?\b|\bfees?\b|\bfree\b|gratis|complimentary|waiv|cancel|forgiv|"
+    r"write.?off|written.?off|remov|reduc|lower|\bless\b|\bcover|percent|per.?cent|%|\bon us\b|on the house|"
+    r"nothing|\bzero\b|\bnil\b|"
+    r"λογαριασμ|τιμολογ|χρεω|χρεων|δωρεαν|δωρο|\bμειω|ακυρω|διαγραφ|καλυψ|καλυφθ|αφαιρ|ποσοστ|μηδεν|"
     r"συγχωρ|σβηστ|σβην|κοστ|εξοδ|χωρισ χρε"
 )
 NUMBER_WORD = re.compile(

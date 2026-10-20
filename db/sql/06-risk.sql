@@ -301,6 +301,8 @@ GRANT SELECT (lease_hash, outcome, reason) ON tool_calls TO risk_engine, risk_ow
 -- risk_owner holds exactly what the three functions read.
 GRANT SELECT (token_hash, ticket_id, allowed_tools, expires_at, revoked) ON leases TO risk_owner;
 GRANT SELECT (lease_hash, decision, reasons) ON call_assessments TO risk_owner;
+-- finish_reply_facts (05-lease.sql, owner api_owner) counts effect-tool verdicts on the lease.
+GRANT SELECT (lease_hash, tool) ON call_assessments TO api_owner;
 GRANT SELECT (id, kind, account_id, status) ON action_requests TO risk_owner;
 GRANT SELECT (request_id) ON risk_assessments TO risk_owner;
 GRANT SELECT (id, supply_point_id) ON accounts TO risk_owner;

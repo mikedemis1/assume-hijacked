@@ -30,6 +30,9 @@
           "action_requests_id_seq": [
             "USAGE"
           ],
+          "call_assessments": [
+            "SELECT (lease_hash, tool)"
+          ],
           "customers": [
             "SELECT (id, name)"
           ],

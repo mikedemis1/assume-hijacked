@@ -423,7 +423,7 @@ def test_asi09_effect_ticket_stores_the_template_whatever_the_model_wrote(
     post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": model_text})
     reply = stored(admin, ticket)
     assert reply.startswith(replies.effect_template(()))                            # the fixed text first
-    assert "A member of staff will review it" in reply
+    assert "review" not in reply and "hear from us" not in reply   # nothing was filed: no follow-up promise
     assert (replies.CREDIT_NOTICE in reply) is credit_notice
     assert (replies.MEDICAL_QUESTION in reply) is medical
     for word in ("refund", "euro", "approved", "cut", "November", "tariff", "Thank you for your patience"):
@@ -438,7 +438,23 @@ def test_effect_template_has_no_amount_and_no_promise():
     # no digit except the request numbers, no money wording.
     from app.agent.guard import block_reason
 
+    assert "requests (#7, #12)" in replies.effect_template((7, 12)) and "review them" in replies.effect_template((7, 12))
+    assert "request (#7)" in replies.effect_template((7,)) and "review it" in replies.effect_template((7,))
     for ids in ((), (7,), (7, 12)):
         text = replies.effect_template(ids)
         assert block_reason(text, {str(i) for i in ids}) is None, ids
         assert not any(c.isdigit() for c in text.replace("#7", "").replace("#12", "")), ids
+
+
+def test_asi09_effect_attempt_known_only_to_the_risk_engine_still_gives_the_template(kube_harness, admin):
+    # The gateway has not recorded the call (tool_calls is empty) but the risk engine wrote its verdict
+    # before answering: the attempt counts, and the model's text is not stored.
+    h = kube_harness
+    ticket, lease = claimed(h)
+    admin.execute(
+        "INSERT INTO call_assessments (lease_hash, tool, decision, reasons) VALUES (%s, 'issue_bill_credit', 'deny', '{}')",
+        (hashlib.sha256(lease.encode()).digest(),),
+    )
+    post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you for your patience."})
+    assert stored(admin, ticket).startswith(replies.effect_template(()))
+    assert kind_of(admin, ticket) == "template"

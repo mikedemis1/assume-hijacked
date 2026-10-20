@@ -5,7 +5,7 @@ import pytest
 from hypothesis import example, given, settings as hypothesis_settings, strategies as st
 
 from app.agent.core import ALLOWED_ARGS, GIVE_UP, Agent
-from app.agent.guard import SAFE_REPLY, guard_reply, numbers_in
+from app.agent.guard import SAFE_REPLY, block_reason, guard_reply, numbers_in
 from app.agent.llm import ScriptedLLM
 from tests.conftest import admin_connect
 from tests.dispatcherharness import Harness, post
@@ -270,22 +270,56 @@ def test_asi09_guard_blocks_the_gap_review_phrases(text):
     assert guard_reply(text, numbers_in("G1 residential active Patision 10, Athens")) == SAFE_REPLY
 
 
-# Billing outcomes written in ways no list was built from: a subject about the bill, an outcome, filler.
-_BILL_SUBJECTS = ["Your next bill", "Next month's invoice", "The statement for March",
-                  "Ο επόμενος λογαριασμός σας", "Το τιμολόγιο του μήνα", "Your electricity bill"]
-_OUTCOMES = ["is free", "will be free of charge", "will not be charged", "is waived", "is cancelled", "is reduced",
+# Every billing word on its own, in a sentence that holds no other listed word. A word that never
+# matches (a broken pattern) shows here, which the paraphrase property below cannot see when its
+# sentences hold a second listed word.
+_BILLING_WORDS = [
+    "bill", "invoice", "statement", "charged", "cost", "costs", "fee", "fees", "free", "gratis", "complimentary",
+    "cancelled", "forgiven", "removed", "reduced", "lower", "less", "cover",
+    "covered", "%", "on us", "on the house", "nothing", "zero", "nil",
+    "λογαριασμός", "τιμολόγιο", "δωρεάν", "δώρο", "μείωση", "ακύρωση", "διαγραφή", "κάλυψη", "αφαίρεση",
+    "ποσοστό", "μηδέν", "συγχώρεση", "σβήνω", "κόστος", "έξοδα",
+]
+
+
+# These are also caught by an earlier category (waive and off by money_wording, cent by currency,
+# χρεωσ by money_wording): blocked all the same.
+_CAUGHT_EARLIER = ["waived", "written off", "write off", "percent", "per cent", "χρέωση"]
+
+
+@pytest.mark.parametrize("word", _CAUGHT_EARLIER)
+def test_asi09_guard_blocks_billing_words_another_rule_also_catches(word):
+    assert block_reason(f"November is {word}.", set()) is not None
+
+
+@pytest.mark.parametrize("word", _BILLING_WORDS)
+def test_asi09_guard_blocks_each_billing_word_on_its_own(word):
+    assert block_reason(f"November is {word}.", set()) == "billing_outcome"
+
+
+# Subjects that are on no list, so each outcome word is tested by itself.
+_NEUTRAL_SUBJECTS = ["November", "Next month", "Το επόμενο μήνα", "On Tuesday", "Τον Οκτώβριο", "The next period"]
+_OUTCOMES = ["is free", "will be free", "will not be charged", "is waived", "is cancelled", "is reduced",
              "will be 20% lower", "will be lower by 10", "is on us", "will be written off", "has been forgiven",
-             "will come to nothing", "will be covered by us", "will carry no cost", "is removed",
-             "δεν θα χρεωθεί", "θα είναι δωρεάν", "θα μειωθεί", "θα ακυρωθεί", "θα διαγραφεί", "θα καλυφθεί από εμάς"]
+             "will come to nothing", "will be covered by us", "will carry no cost", "is removed", "is zero",
+             "is nil", "has no fee", "will be less", "δεν θα χρεωθεί", "θα είναι δωρεάν", "θα μειωθεί",
+             "θα ακυρωθεί", "θα διαγραφεί", "θα καλυφθεί από εμάς", "θα είναι μηδέν"]
 _ADDRESS_NUMBER = {"10"}   # a number the account returned: the number rule alone would let a "10" through
 
 
-@given(subject=st.sampled_from(_BILL_SUBJECTS), outcome=st.sampled_from(_OUTCOMES), before=_filler, after=_filler)
-@example(subject="Your next bill", outcome="is free", before="", after="")
+@given(subject=st.sampled_from(_NEUTRAL_SUBJECTS), outcome=st.sampled_from(_OUTCOMES), before=_filler, after=_filler)
+@example(subject="November", outcome="is free", before="", after="")
 @PROPERTY
 def test_asi09_property_guard_blocks_billing_outcome_paraphrases(subject, outcome, before, after):
     text = f"{before} {subject} {outcome}. {after}"
     assert guard_reply(text, _ADDRESS_NUMBER) == SAFE_REPLY
+
+
+def test_asi09_greek_honest_reply_is_blocked_accepted_cost():
+    # Accepted cost, not a goal: "λογαριασμός" means both "bill" and "account", so a Greek reply that
+    # names the account is blocked like one that names the bill. "Σημείωση" (note) is not caught.
+    assert block_reason("Ο λογαριασμός σας είναι ενεργός.", set()) == "billing_outcome"
+    assert block_reason("Σημείωση: η παροχή σας είναι ενεργή.", set()) is None
 
 
 @given(tariff=st.sampled_from(["G1 residential", "G1 commercial"]), status=st.sampled_from(["active", "suspended"]))

@@ -339,7 +339,7 @@ CREATE TABLE agent_runs (
 CREATE TABLE replies (
     ticket_id  int PRIMARY KEY REFERENCES tickets,
     text       text NOT NULL CHECK (text <> '' AND length(text) <= 10000),
-    kind       text NOT NULL DEFAULT 'agent' CHECK (kind IN ('agent', 'safe', 'template')),
+    kind       text NOT NULL CHECK (kind IN ('agent', 'safe', 'template')),
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -410,6 +410,10 @@ BEGIN
         -- dispatcher stores a template then, never the model's text.
         (EXISTS (SELECT 1 FROM public.tool_calls c WHERE c.lease_hash = v_hash
                  AND c.tool IN ('issue_bill_credit', 'request_disconnection'))
+         -- the risk engine writes its verdict before it answers, so a call the gateway has not
+         -- recorded yet (or could not) still counts
+         OR EXISTS (SELECT 1 FROM public.call_assessments a WHERE a.lease_hash = v_hash
+                    AND a.tool IN ('issue_bill_credit', 'request_disconnection'))
          OR EXISTS (SELECT 1 FROM public.action_requests r WHERE r.ticket_id = v_ticket AND r.created_at >= v_opened)),
         ARRAY(SELECT r.id FROM public.action_requests r
               WHERE r.ticket_id = v_ticket AND r.created_at >= v_opened ORDER BY r.id)
