@@ -183,6 +183,7 @@ Call with a dict:
   ops        true when the component serves /healthz and /metrics on 9000
   env        list of (dict "name" "value"), plain settings
   dbRole     PostgreSQL role it logs in as ("" for none): DB_* settings + DB_PASSWORD_<ROLE>
+  extraDbRoles  more roles the same component logs in as (the demo UI has two): a DB_PASSWORD_<ROLE> each
   files      list of (dict "key" "env" "value" "kvObject" "what"): secret files, mounted under
              /var/run/secrets/ah-files/<key>, path given to the app in env <env>
   configMaps list of (dict "name" "mountPath"), read-only
@@ -215,6 +216,13 @@ files/ops-stub.py instead of its entry point; everything else about the pod stay
       "kvObject" (printf "db-password-%s" (replace "_" "-" .dbRole))
       "what" (printf "secrets.dbPasswords.%s" .dbRole)) -}}
 {{- end -}}
+{{- range .extraDbRoles -}}
+{{- $items = append $items (dict
+      "key" (printf "DB_PASSWORD_%s" (upper .))
+      "value" (index $v.secrets.dbPasswords .)
+      "kvObject" (printf "db-password-%s" (replace "_" "-" .))
+      "what" (printf "secrets.dbPasswords.%s" .)) -}}
+{{- end -}}
 {{- range .files -}}
 {{- $items = append $items . -}}
 {{- end -}}
@@ -239,6 +247,10 @@ no pod label: its process holds no Azure token. Only a component that calls Azur
       (dict "name" "DB_NAME" "value" $v.db.name)
       (dict "name" (printf "DB_PASSWORD_%s" (upper .dbRole))
             "valueFrom" (dict "secretKeyRef" (dict "name" $secretName "key" (printf "DB_PASSWORD_%s" (upper .dbRole)))))) -}}
+{{- end -}}
+{{- range .extraDbRoles -}}
+{{- $env = append $env (dict "name" (printf "DB_PASSWORD_%s" (upper .))
+      "valueFrom" (dict "secretKeyRef" (dict "name" $secretName "key" (printf "DB_PASSWORD_%s" (upper .))))) -}}
 {{- end -}}
 {{- range .files -}}
 {{- $env = append $env (dict "name" .env "value" (printf "/var/run/secrets/ah-files/%s" .key)) -}}
@@ -403,9 +415,10 @@ spec:
 ["read_ticket", "lookup_account", "request_disconnection", "issue_bill_credit", "set_temp_protection"]
 {{- end }}
 
-{{/* Every DB login role that has a password (db/sql/02-roles.sql plus the gateway, risk engine and dispatcher roles). */}}
+{{/* Every DB login role that has a password (db/sql/02-roles.sql plus the gateway, risk engine, dispatcher and demo UI roles). The demo roles exist
+whether the chart runs the demo or not: db/init/init.sh creates them in every database. */}}
 {{- define "ah.dbRoles" -}}
-["tool_read_ticket", "tool_lookup_account", "tool_request_disconnection", "tool_issue_bill_credit", "tool_set_temp_protection", "executor", "approver", "gateway", "risk_engine", "dispatcher"]
+["tool_read_ticket", "tool_lookup_account", "tool_request_disconnection", "tool_issue_bill_credit", "tool_set_temp_protection", "executor", "approver", "gateway", "risk_engine", "dispatcher", "demo_portal", "demo_ops"]
 {{- end }}
 
 {{/*
@@ -417,6 +430,8 @@ role's password lives in that component's Secret (kind) or Key Vault (Azure).
   "executor" "executor" "approver" "console" "gateway" "tool-gateway" "risk_engine" "risk-engine"
   "dispatcher" "dispatcher" -}}
 {{- range include "ah.tools" . | fromJsonArray }}{{ $_ := set $out (printf "tool_%s" .) (printf "tool-%s" (replace "_" "-" .)) }}{{ end -}}
+{{- /* The demo's roles have a password to keep only where the demo runs. */ -}}
+{{- if .Values.demo.enabled }}{{ $_ := set $out "demo_portal" "demo" }}{{ $_ := set $out "demo_ops" "demo" }}{{ end -}}
 {{- toJson $out -}}
 {{- end }}
 
@@ -491,6 +506,7 @@ chart runs PostgreSQL itself). ah-monitoring belongs to the monitoring stack (de
 {{- define "ah.namespaces" -}}
 {{- $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" -}}
 {{- if eq .Values.env "kind" }}{{ $ns = append $ns "ah-data" }}{{ end -}}
+{{- if .Values.demo.enabled }}{{ $ns = append $ns "ah-demo" }}{{ end -}}
 {{- toJson $ns -}}
 {{- end }}
 
@@ -540,6 +556,10 @@ database for every caller. */ -}}
   (dict "id" "edge-14-executor-to-db"           "from" (dict "ns" "ah-core"    "pods" (list "executor"))      "to" $db)
   (dict "id" "edge-18-console-to-db"            "from" (dict "ns" "ah-staff"   "pods" (list "console"))       "to" $db)
 -}}
+{{- /* The demo UI (optional): its own namespace, and only the database. */ -}}
+{{- if $v.demo.enabled -}}
+{{- $edges = append $edges (dict "id" "edge-23-demo-to-db" "from" (dict "ns" "ah-demo" "pods" (list "demo")) "to" $db) -}}
+{{- end -}}
 {{- /* The database setup job: postgres-init on kind, db-migrate on Azure. */ -}}
 {{- if eq $v.env "kind" -}}
 {{- $edges = append $edges (dict "id" "edge-db-setup-to-db" "from" (dict "ns" "ah-data" "pods" (list "postgres-init")) "to" $db) -}}
@@ -547,7 +567,9 @@ database for every caller. */ -}}
 {{- $edges = append $edges (dict "id" "edge-db-setup-to-db" "from" (dict "ns" "ah-core" "pods" (list "db-migrate")) "to" $db) -}}
 {{- end -}}
 {{- /* Row 21: Prometheus (namespace ah-monitoring, deploy/monitoring) scrapes the ops port, and only that. */ -}}
-{{- range $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" -}}
+{{- $scraped := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" -}}
+{{- if $v.demo.enabled }}{{ $scraped = append $scraped "ah-demo" }}{{ end -}}
+{{- range $ns := $scraped -}}
 {{- $edges = append $edges (dict "id" "edge-21-monitoring-to-metrics" "from" (dict "ns" "ah-monitoring" "pods" (list) "external" true) "to" (dict "ns" $ns "pods" (list) "ports" (list 9000))) -}}
 {{- end -}}
 {{- toJson $edges -}}

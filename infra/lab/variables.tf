@@ -91,6 +91,7 @@ variable "service_account_namespaces" {
     executor       = "ah-core"
     "db-migrate"   = "ah-core"
     console        = "ah-staff"
+    demo           = "ah-demo"
   }
 }
 

@@ -37,6 +37,12 @@
         "devUsers": {"type": "string"}
       }
     },
+    "demo": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {"enabled": {"type": "boolean"}}
+    },
     "llm": {
       "type": "object",
       "required": ["backend", "model", "tokenBudgetPerLease"],

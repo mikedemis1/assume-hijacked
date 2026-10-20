@@ -1,0 +1,25 @@
+{{- /*
+Demo UI (ah-demo), optional: a customer chat in front of the agent and a read-only panel of what the
+walls recorded (app/demo). Rendered only with demo.enabled; on in values-kind.yaml, off by default
+and on Azure. It is not one of the nine parts, so nothing else depends on it.
+
+It is a front door, so it is treated as untrusted like the others: its own namespace and ServiceAccount,
+default-deny with one egress edge (PostgreSQL) and DNS like every pod, no token, the same app image by
+digest, Pod Security restricted. Two database roles (demo_portal: three functions, no table;
+demo_ops: audit columns) and nothing else. Reached with kubectl port-forward only
+(scripts/demo-ui.sh): the Service is a ClusterIP, there is no ingress and no LoadBalancer.
+*/ -}}
+{{- if .Values.demo.enabled }}
+{{ include "ah.workload" (dict
+    "root" .
+    "name" "demo"
+    "namespace" "ah-demo"
+    "command" (list "python" "-m" "app.demo.main")
+    "ports" (list (dict "name" "http" "port" 8085))
+    "ops" true
+    "env" (list
+      (dict "name" "DEMO_LLM_BACKEND" "value" .Values.llm.backend)
+      (dict "name" "DEMO_LLM_MODEL" "value" .Values.llm.model))
+    "dbRole" "demo_portal"
+    "extraDbRoles" (list "demo_ops")) }}
+{{- end }}

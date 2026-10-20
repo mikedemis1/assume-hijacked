@@ -35,6 +35,11 @@ console:
     tenantId: ""
     clientId: ""
 
+# The demo UI (templates/demo.yaml, app/demo): a customer chat and a panel of what the walls did.
+# Off by default and on Azure; values-kind.yaml turns it on. Reached with scripts/demo-ui.sh only.
+demo:
+  enabled: false
+
 llm:
   backend: scripted          # scripted | anthropic
   model: claude-haiku-5-5

@@ -18,6 +18,10 @@ console:
   # Local demo identities, for local use. These UUIDs are not Entra credentials.
   devUsers: '{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa":["Approver"],"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb":["SeniorApprover"],"cccccccc-cccc-4ccc-8ccc-cccccccccccc":["SeniorApprover"]}'
 
+# The demo UI (scripts/demo-ui.sh opens it).
+demo:
+  enabled: true
+
 # The control-plane node stands in for the AKS system pool (deploy/kind/cluster.yaml).
 placement:
   system:

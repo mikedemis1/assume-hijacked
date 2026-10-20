@@ -41,12 +41,15 @@ COMPONENTS = {
     "executor": ("ah-core", "executor"),
     "console": ("ah-staff", "approver"),
 }
-DB_ROLES = sorted({role for _, role in COMPONENTS.values() if role})
+# The demo UI (templates/demo.yaml) runs where demo.enabled is true: kind. It logs in as two roles.
+DEMO_ROLES = ("demo_portal", "demo_ops")
+# Every role has a password in the kind Secret, as the roles exist in every database.
+DB_ROLES = sorted({role for _, role in COMPONENTS.values() if role} | set(DEMO_ROLES))
 # Components that call the Kubernetes API: TokenReview of their callers' tokens (the three the
 # agent calls); the dispatcher also creates Jobs.
 API_CALLERS = {"tool-gateway", "llm-gateway", "dispatcher"}
 NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff",
-              "ah-data"}
+              "ah-data", "ah-demo"}
 PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\ntest-only\n-----END PUBLIC KEY-----\n"
 
 
@@ -245,11 +248,11 @@ def test_every_container_is_restricted_and_non_root(env):
 def test_each_component_gets_only_its_own_db_password(env):
     for d in objects(env, "Deployment"):
         name = d["metadata"]["name"]
-        _, role = COMPONENTS[name]
+        roles = list(DEMO_ROLES) if name == "demo" else [COMPONENTS[name][1]] if COMPONENTS[name][1] else []
         [container] = d["spec"]["template"]["spec"]["containers"]
         assert "envFrom" not in container
         from_secrets = [e for e in container["env"] if "valueFrom" in e]
-        expected = [f"DB_PASSWORD_{role.upper()}"] if role else []
+        expected = [f"DB_PASSWORD_{role.upper()}" for role in roles]
         assert [e["name"] for e in from_secrets] == expected, name
         for e in from_secrets:
             assert e["valueFrom"]["secretKeyRef"]["name"] == f"{name}-secrets"
@@ -282,7 +285,7 @@ POLICIES = {"ah-images-pinned", "ah-no-host-access", "ah-sandbox-runtime", "ah-a
 
 
 def chart_namespaces(env: str) -> set[str]:
-    return NAMESPACES if env == "kind" else NAMESPACES - {"ah-data"}
+    return NAMESPACES if env == "kind" else NAMESPACES - {"ah-data", "ah-demo"}
 
 
 def name_values(selector: dict) -> tuple:
@@ -296,6 +299,8 @@ def name_values(selector: dict) -> tuple:
 
 def expected_edges(env: str) -> set:
     edges = set(MATRIX) | {(*DB_SETUP[env], DB, (), (5432,))}
+    if env == "kind":  # the demo UI: one edge, to the database
+        edges.add(("ah-demo", ("demo",), DB, (), (5432,)))
     target = {"kind": ("ah-data", ("postgres",)), "azure": (AZURE_DB_CIDR, ())}[env]
     return {(a, b, *(target if c == DB else (c, d)), e) for a, b, c, d, e in edges}
 
@@ -350,7 +355,7 @@ def test_network_edges_are_exactly_the_matrix(env):
     assert egress == expected
     # Ingress halves: the same edges where the callee is in the cluster, plus Prometheus
     # (ah-monitoring, its own chart) to the ops port of every namespace with ops endpoints.
-    metrics = {("ah-monitoring", (), ns, (), (9000,)) for ns in OPS_NAMESPACES}
+    metrics = {("ah-monitoring", (), ns, (), (9000,)) for ns in OPS_NAMESPACES | ({"ah-demo"} if env == "kind" else set())}
     assert ingress == {e for e in expected if e[2] != AZURE_DB_CIDR} | metrics
 
 
@@ -487,7 +492,7 @@ MANIFESTS = {p.stem: json.loads(p.read_text(encoding="utf-8"))
              for p in sorted((ROOT / "permissions").glob("*.json"))}
 # The namespace of each component the manifests name (COMPONENTS lacks the agent and db-migrate).
 MANIFEST_NAMESPACES = {**{n: ns for n, (ns, _) in COMPONENTS.items()},
-                       "agent": "ah-agent", "db-migrate": "ah-core"}
+                       "agent": "ah-agent", "db-migrate": "ah-core", "demo": "ah-demo"}
 
 
 @pytest.mark.parametrize("env", ENVS)
@@ -497,7 +502,7 @@ def test_every_manifest_has_its_service_account_in_its_namespace(env):
     a ServiceAccount the chart creates in that component's namespace."""
     accounts = {(o["metadata"]["namespace"], o["metadata"]["name"]) for o in objects(env, "ServiceAccount")}
     for name, manifest in MANIFESTS.items():
-        if name == "db" or (name == "db-migrate" and env == "kind"):
+        if name == "db" or (name == "db-migrate" and env == "kind") or (name == "demo" and env == "azure"):
             continue
         assert (MANIFEST_NAMESPACES[name], manifest["k8s"]["service_account"]) in accounts, (env, name)
 
@@ -545,3 +550,82 @@ def test_init_script_seeds_dev_staff_only_when_asked():
     script = (ROOT / "db" / "init" / "init.sh").read_text(encoding="utf-8")
     assert '[ "${SEED_DEV_STAFF:-no}" = yes ]' in script
     assert script.count("09-dev-staff.sql") == 1
+
+
+# --- the demo UI (templates/demo.yaml) ------------------------------------------------------------
+
+def values_file(name: str) -> dict:
+    return yaml.safe_load((CHART / name).read_text(encoding="utf-8"))
+
+
+def demo_objects(docs) -> list[dict]:
+    return [o for o in docs if o["metadata"].get("namespace") == "ah-demo" or o["metadata"]["name"] in ("demo", "ah-demo")
+            or o["metadata"]["name"].startswith("demo-")]
+
+
+def test_the_demo_is_on_in_kind_and_off_by_default_and_in_azure():
+    assert values_file("values.yaml")["demo"] == {"enabled": False}
+    assert values_file("values-kind.yaml")["demo"] == {"enabled": True}
+    assert values_file("values-azure.yaml")["demo"] == {"enabled": False}
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_without_demo_enabled_nothing_of_the_demo_is_rendered(env):
+    docs = rendered(env, "demo.enabled=false")
+    assert demo_objects(docs) == []
+    assert chart_namespaces(env) - {"ah-demo"} == {o["metadata"]["name"] for o in docs if o["kind"] == "Namespace"}
+    assert "DEMO_LLM_BACKEND" not in json.dumps(docs)
+
+
+def test_the_demo_is_one_cluster_ip_service_in_its_own_namespace_reached_by_port_forward_only():
+    deployment = find("kind", "Deployment", "demo")
+    assert deployment["metadata"]["namespace"] == "ah-demo"
+    service = find("kind", "Service", "demo")
+    assert service["spec"].get("type", "ClusterIP") == "ClusterIP"
+    assert {p["port"] for p in service["spec"]["ports"]} == {8085, 9000}
+    assert not {o["kind"] for o in rendered("kind")} & {"Ingress", "Gateway", "HTTPRoute"}
+    assert all(o["spec"].get("type", "ClusterIP") == "ClusterIP" for o in objects("kind", "Service"))
+
+
+def test_the_demo_pod_is_restricted_has_no_token_and_runs_the_app_image_by_digest():
+    deployment = find("kind", "Deployment", "demo")
+    spec = deployment["spec"]["template"]["spec"]
+    [container] = spec["containers"]
+    assert spec["serviceAccountName"] == "demo" and spec["automountServiceAccountToken"] is False
+    assert not spec.get("runtimeClassName")
+    dispatcher = find("kind", "Deployment", "dispatcher")["spec"]["template"]["spec"]["containers"][0]
+    assert DIGEST.match(container["image"]) and container["image"] == dispatcher["image"]
+    assert container["command"] == ["python", "-m", "app.demo.main"]
+    assert_restricted(spec, container, APP_UID)
+    assert "kube-api-token" not in {v["name"] for v in spec["volumes"]}
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env["DEMO_LLM_BACKEND"] == "scripted" and env["DEMO_LLM_MODEL"]
+    # Its two database passwords, from its own Secret, and no other secret.
+    assert sorted(e["name"] for e in container["env"] if "valueFrom" in e) == ["DB_PASSWORD_DEMO_OPS", "DB_PASSWORD_DEMO_PORTAL"]
+    assert find("kind", "Secret", "demo-secrets")["stringData"].keys() == {"DB_PASSWORD_DEMO_PORTAL", "DB_PASSWORD_DEMO_OPS"}
+
+
+def test_the_demo_may_reach_only_the_database_and_default_denies_everything_else():
+    mine = [p for p in network_policies("kind") if p["metadata"]["namespace"] == "ah-demo"]
+    assert sorted(p["metadata"]["name"] for p in mine) == [
+        "default-deny", "edge-21-monitoring-to-metrics-in", "edge-23-demo-to-db-out"]
+    [out] = [p for p in mine if p["metadata"]["name"].endswith("-out")]
+    [rule] = out["spec"]["egress"]
+    assert [x["port"] for x in rule["ports"]] == [5432]
+    assert rule["to"][0]["namespaceSelector"]["matchLabels"] == {"kubernetes.io/metadata.name": "ah-data"}
+    assert name_values(out["spec"]["podSelector"]) == ("demo",)
+    assert "demo" not in external_names("kind")
+
+
+def test_the_demo_on_azure_needs_its_own_identity_and_vault_and_reaches_the_database_subnet_only():
+    sets = ("demo.enabled=true", "azure.clientIds.demo=client-demo", "azure.keyVaults.demo=kv-demo-abc123")
+    docs = rendered("azure", *sets)
+    assert len([o for o in docs if o["kind"] == "Deployment" and o["metadata"]["name"] == "demo"]) == 1
+    [provider] = [o for o in docs if o["kind"] == "SecretProviderClass" and o["metadata"]["name"] == "demo"]
+    read = provider["spec"]["parameters"]["objects"]
+    assert "db-password-demo-portal" in read and "db-password-demo-ops" in read
+    [out] = [p for p in network_policies("azure", *sets)
+             if p["metadata"]["namespace"] == "ah-demo" and p["metadata"]["name"].endswith("-out")]
+    assert out["spec"]["egress"][0]["to"] == [{"ipBlock": {"cidr": AZURE_DB_CIDR}}]
+    # db-migrate writes the demo's passwords into its vault, so it may reach that vault.
+    assert "kv-demo-abc123.vault.azure.net" in external_names("azure", *sets)["db-migrate"][1]

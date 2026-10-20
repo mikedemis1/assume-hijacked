@@ -22,6 +22,12 @@ images:
 console:
   authMode: entra
 
+# The demo UI stays off here. To turn it on deliberately (--set demo.enabled=true) the vault and
+# identity of the `demo` component must exist (permissions/demo.json: id-demo, kv-demo) and
+# azure.clientIds.demo and azure.keyVaults.demo must be set.
+demo:
+  enabled: false
+
 db:
   # The flexible server's private endpoint name (infra/lab output).
   host: ""
