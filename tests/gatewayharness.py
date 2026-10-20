@@ -15,8 +15,6 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 
 import httpx2
-from mcp import Client
-from mcp.client.streamable_http import streamable_http_client
 
 from app.agent.gateway import ToolGateway
 from app.common.ops import Metrics
@@ -138,17 +136,6 @@ def agent_lease(admin, ticket: int, tools=None) -> str:
 def from_agent(app) -> httpx2.ASGITransport:
     """A transport to the gateway app whose requests come from the agent's address."""
     return httpx2.ASGITransport(app=app, client=(AGENT_IP, 50000))
-
-
-@asynccontextmanager
-async def agent_session(app, headers: dict[str, str]):
-    """An MCP client of the gateway app, in process, sending the agent's token and then `headers` on
-    every request."""
-    async with running(app):
-        sent = {**AGENT_HEADERS, **headers}
-        async with httpx2.AsyncClient(transport=from_agent(app), base_url="http://gateway.test", headers=sent) as http:
-            async with Client(streamable_http_client(URL, http_client=http)) as client:
-                yield client
 
 
 class AppGatewayClient(ToolGateway):

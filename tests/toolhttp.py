@@ -53,11 +53,6 @@ def keypair() -> tuple[bytes, bytes]:
     return make_keypair()
 
 
-@pytest.fixture(scope="session")
-def other_keypair() -> tuple[bytes, bytes]:
-    return make_keypair()
-
-
 class ConnectSpy:
     """Stands in for the tool's database connection and counts how often it is asked for one."""
 

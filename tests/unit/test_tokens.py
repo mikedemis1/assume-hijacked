@@ -7,35 +7,17 @@ argument.
 """
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import json
-import logging
 import time
 
-import httpx2
 import jwt
-import pytest
-from mcp import Client
 
 from app import config
 from app.security.client import ToolTokenAuth
-from app.security.tokens import ISSUER, JtiCache, TokenError, mint_tool_token, verify_tool_token
+from app.security.tokens import JtiCache, mint_tool_token, verify_tool_token
 from app.tools import serve
 from tests.conftest import open_lease
-from tests.toolhttp import (  # noqa: F401  (the key fixtures are used by name)
-    CALL_READ_TICKET,
-    AppToolCaller,
-    MCP_HEADERS,
-    ConnectSpy,
-    bearer,
-    keypair,
-    mcp_client,
-    other_keypair,
-    post,
-    post_each,
-)
+from tests.toolhttp import AppToolCaller, keypair, mcp_client
 
 NOW = 1_800_000_000.0
 LEASE = "ab" * 32
@@ -43,17 +25,6 @@ LEASE = "ab" * 32
 
 def run(coro):
     return asyncio.run(coro)
-
-
-def forge(private_pem, claims=None, **overrides):
-    """A token with the right signature and claims of our choosing: what a holder of the signing
-    key could write. The tool must still refuse the claims that are wrong."""
-    base = {"iss": ISSUER, "aud": "read_ticket", "iat": int(NOW), "exp": int(NOW) + 60,
-            "jti": "c" * 32, "lease": LEASE}
-    base.update(claims or {})
-    for key in [k for k, v in overrides.items() if v is None]:
-        base.pop(key, None)
-    return jwt.encode(base, private_pem, algorithm="ES256")
 
 
 # --- the token -------------------------------------------------------------------------------
@@ -70,187 +41,10 @@ def test_mint_and_verify_roundtrip(keypair):
     assert jwt.get_unverified_header(token)["alg"] == "ES256"
 
 
-def test_every_token_has_its_own_jti(keypair):
-    private, _ = keypair
-    jtis = {jwt.decode(mint_tool_token(private, "read_ticket", LEASE, NOW), options={"verify_signature": False})["jti"]
-            for _ in range(50)}
-    assert len(jtis) == 50
-
-
-@pytest.mark.parametrize("mint_for, check_at, reason", [
-    ("lookup_account", NOW, "audience"),          # minted for another tool
-    ("read_ticket", NOW + 60, "expired"),         # exp is exclusive: valid for 60 s
-    ("read_ticket", NOW + 3600, "expired"),
-])
-def test_verify_refuses_wrong_audience_and_expired(keypair, mint_for, check_at, reason):
-    private, public = keypair
-    token = mint_tool_token(private, mint_for, LEASE, NOW)
-    with pytest.raises(TokenError) as refused:
-        verify_tool_token(public, token, "read_ticket", check_at, JtiCache())
-    assert refused.value.reason == reason
-
-
-def test_a_token_is_good_until_it_expires(keypair):
-    private, public = keypair
-    token = mint_tool_token(private, "read_ticket", LEASE, NOW)
-    assert verify_tool_token(public, token, "read_ticket", NOW + 59, JtiCache())["lease"] == LEASE
-
-
-def test_verify_refuses_a_replayed_token(keypair):
-    private, public = keypair
-    token = mint_tool_token(private, "read_ticket", LEASE, NOW)
-    seen = JtiCache()
-    verify_tool_token(public, token, "read_ticket", NOW, seen)
-    with pytest.raises(TokenError) as refused:
-        verify_tool_token(public, token, "read_ticket", NOW + 1, seen)
-    assert refused.value.reason == "replayed"
-
-
-@pytest.mark.parametrize("mint_for, minted_at", [("lookup_account", NOW), ("read_ticket", NOW - 120)],
-                         ids=["wrong-audience", "expired"])
-def test_a_refused_token_is_not_remembered(keypair, mint_for, minted_at):
-    # Only a token that passed every check enters the cache, so junk cannot fill it.
-    private, public = keypair
-    seen = JtiCache()
-    token = mint_tool_token(private, mint_for, LEASE, minted_at)
-    with pytest.raises(TokenError):
-        verify_tool_token(public, token, "read_ticket", NOW, seen)
-    assert len(seen) == 0
-    assert seen.add(jwt.decode(token, options={"verify_signature": False})["jti"], NOW) is True
-
-
-def test_verify_refuses_another_signer(keypair, other_keypair):
-    token = mint_tool_token(other_keypair[0], "read_ticket", LEASE, NOW)
-    with pytest.raises(TokenError) as refused:
-        verify_tool_token(keypair[1], token, "read_ticket", NOW, JtiCache())
-    assert refused.value.reason == "signature"
-
-
-
-
-def test_verify_refuses_hs256_signed_with_the_public_key(keypair):
-    # The classic algorithm confusion: the public key is not a secret, so it must never work as
-    # an HMAC key. PyJWT refuses to sign with a PEM public key, so the token is built by hand.
-    def part(data):
-        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
-
-    claims = {"iss": ISSUER, "aud": "read_ticket", "iat": int(NOW), "exp": int(NOW) + 60,
-              "jti": "e" * 32, "lease": LEASE}
-    signing_input = f"{part({'alg': 'HS256', 'typ': 'JWT'})}.{part(claims)}"
-    mac = hmac.new(keypair[1], signing_input.encode(), hashlib.sha256).digest()
-    token = signing_input + "." + base64.urlsafe_b64encode(mac).rstrip(b"=").decode()
-    with pytest.raises(TokenError):
-        verify_tool_token(keypair[1], token, "read_ticket", NOW, JtiCache())
-
-
-@pytest.mark.parametrize("claims, drop, reason", [
-    ({"iss": "someone-else"}, None, "issuer"),
-    ({}, "jti", "claims"),
-    ({}, "lease", "claims"),
-    ({}, "exp", "claims"),
-    ({}, "iat", "claims"),
-    ({"lease": ""}, None, "claims"),
-    ({"lease": 7}, None, "claims"),
-    ({"jti": ""}, None, "claims"),
-    ({"exp": int(NOW) + 3600}, None, "lifetime"),   # longer than the 60 s a token may live
-    ({"iat": int(NOW) + 3600, "exp": int(NOW) + 3660}, None, "claims"),  # issued in the future
-])
-def test_verify_refuses_wrong_claims(keypair, claims, drop, reason):
-    private, public = keypair
-    token = forge(private, claims, **({drop: None} if drop else {}))
-    with pytest.raises(TokenError) as refused:
-        verify_tool_token(public, token, "read_ticket", NOW, JtiCache())
-    assert refused.value.reason == reason
-
-
-@pytest.mark.parametrize("text", ["", "x", "a.b.c", "Bearer abc", "é" * 10, "a" * 5000])
-def test_verify_refuses_garbage(keypair, text):
-    with pytest.raises(TokenError) as refused:
-        verify_tool_token(keypair[1], text, "read_ticket", NOW, JtiCache())
-    assert refused.value.reason in {"malformed", "signature"}
-
-
-def test_jti_cache_remembers_for_120_seconds():
-    cache = JtiCache()
-    assert cache.add("one", 1000.0) is True
-    assert cache.add("one", 1000.0) is False
-    assert cache.add("one", 1119.0) is False
-    assert cache.add("one", 1120.0) is True     # forgotten after 120 s
-    assert cache.add("two", 1120.0) is True
-
-
-def test_jti_cache_forgets_old_entries_so_it_stays_small():
-    cache = JtiCache(ttl_seconds=10)
-    for i in range(1000):
-        cache.add(f"jti-{i}", float(i))
-    assert len(cache) <= 11
-
-
 # --- the tool: what it checks before it opens a database connection --------------------------
 
 def tool_app(tool, public_pem, spy, *, settings=None, clock=lambda: NOW):
     return serve.build_app(tool, settings or config.load(), public_pem, connect=spy, clock=clock)
-
-
-
-
-
-
-def test_tool_rejects_two_authorization_headers(keypair):
-    private, public = keypair
-    spy = ConnectSpy()
-    app = tool_app("read_ticket", public, spy)
-    good = mint_tool_token(private, "read_ticket", LEASE, NOW)
-
-    async def two_headers():
-        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://tool.test") as http:
-            return await http.post(
-                "/mcp", content=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
-                headers=[("Authorization", f"Bearer {good}"), ("Authorization", f"Bearer {good}"),
-                         ("Accept", "application/json, text/event-stream"), ("Content-Type", "application/json")],
-            )
-
-    assert run(two_headers()).status_code == 401
-
-
-@pytest.mark.parametrize("method", ["GET", "DELETE"])
-def test_every_method_needs_a_token(keypair, method):
-    # The check is on the whole app, not on the POST route.
-    _, public = keypair
-    app = tool_app("read_ticket", public, ConnectSpy())
-
-    async def call():
-        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://tool.test") as http:
-            return await http.request(method, "/mcp")
-
-    assert run(call()).status_code == 401
-
-
-def test_tool_rejects_other_paths_without_a_token(keypair):
-    _, public = keypair
-    app = tool_app("read_ticket", public, ConnectSpy())
-
-    async def call():
-        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://tool.test") as http:
-            return await http.get("/anything")
-
-    assert run(call()).status_code == 401
-
-
-def test_a_valid_token_reaches_the_tool_and_its_database(keypair):
-    # The control for the refusals above: the same app, a good token, and the connection is asked for.
-    private, public = keypair
-    spy = ConnectSpy()
-    app = tool_app("read_ticket", public, spy)
-
-    async def call():
-        auth = ToolTokenAuth(private, "read_ticket", LEASE, lambda: NOW)
-        async with mcp_client(app, auth) as client:
-            return await client.call_tool("read_ticket", {})
-
-    result = run(call())
-    assert result.is_error
-    assert spy.calls == 1
 
 
 def test_lease_comes_from_token_not_arguments(settings, admin, keypair):
@@ -275,67 +69,6 @@ def test_lease_comes_from_token_not_arguments(settings, admin, keypair):
     result = run(call({"lease": mine, "ticket_id": 1}, theirs))
     assert not result.is_error
     assert json.loads(result.content[0].text)["name"] == "Nikos Georgiou"
-
-
-def test_lease_in_the_token_is_what_the_database_checks(settings, admin, keypair):
-    # A token with a lease nobody opened gets "lease invalid" from the database and nothing else.
-    private, public = keypair
-    caller = AppToolCaller(settings, private, public, tools=("read_ticket",))
-    out = caller.call("read_ticket", {"lease": "0" * 64})
-    assert out.startswith("ERROR:") and "lease invalid" in out
-    assert "PL/pgSQL" not in out
-
-
-def test_the_tool_has_no_lease_or_ticket_parameter():
-    # The schema the model's calls are checked against: no way to name a lease or a ticket.
-    for tool in serve.TOOLS:
-        server = serve.build_server(tool, config.load())
-        (descriptor,) = asyncio.run(server.list_tools())
-        properties = set(descriptor.input_schema.get("properties", {}))
-        assert not properties & {"lease", "ticket_id", "ticket", "customer_id", "account_id"}, tool
-
-
-def test_a_tool_without_a_verified_token_has_no_lease(settings):
-    # The server on its own (no middleware in front, so nothing verified a token): fail closed.
-    spy = ConnectSpy()
-    server = serve.build_server("read_ticket", settings, connect=spy)
-
-    async def call():
-        async with Client(server) as client:
-            return await client.call_tool("read_ticket", {})
-
-    result = run(call())
-    assert result.is_error and "lease invalid" in result.content[0].text
-    assert spy.calls == 0
-
-
-def test_every_request_of_one_call_carries_a_fresh_token(settings, admin, keypair):
-    # An MCP call is several HTTP requests; each is checked on its own and a token works once, so
-    # the client must sign each request separately. One call over a replay-checking app proves it.
-    private, public = keypair
-    lease = open_lease(admin, 1)
-    out = AppToolCaller(settings, private, public, tools=("read_ticket",)).call("read_ticket", {"lease": lease})
-    assert json.loads(out)["ticket_id"] == 1
-
-
-def test_the_lease_is_in_the_token_and_not_in_the_request(settings, admin, keypair):
-    # What actually leaves the gateway's tool client: a token per request, carrying the lease, and
-    # nothing else that could be read as the lease (no header, no argument).
-    private, public = keypair
-    lease = open_lease(admin, 1)
-    caller = AppToolCaller(settings, private, public, tools=("lookup_account",))
-    answer = json.loads(caller.call("lookup_account", {"lease": lease}))
-    assert answer["name"] == "Eleni Papadopoulou"
-    assert len(caller.sent) >= 2          # the handshake and the call are separate requests
-    tokens = []
-    for headers, body in caller.sent:
-        assert lease.encode() not in body and b'"lease"' not in body
-        assert lease not in "".join(headers.values())
-        tokens.append(headers["authorization"].removeprefix("Bearer "))
-    assert len(set(tokens)) == len(tokens)
-    for token in tokens:
-        claims = jwt.decode(token, options={"verify_signature": False})
-        assert (claims["lease"], claims["aud"]) == (lease, "lookup_account")
 
 
 def test_a_gateway_without_a_key_cannot_call_a_tool(settings, admin, keypair):

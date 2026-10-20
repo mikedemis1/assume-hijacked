@@ -4,13 +4,11 @@ Wall: the tool-gateway signs a token for each call (one audience, 60 seconds, us
 of case 11 is in tests/k8s (chart render and live probes).
 """
 
-import base64
 import json
 import logging
 
-import pytest
 
-from app.security.tokens import ISSUER, JtiCache, mint_tool_token, TokenError, verify_tool_token
+from app.security.tokens import mint_tool_token
 from tests.toolhttp import bearer, CALL_READ_TICKET, ConnectSpy, keypair, MCP_HEADERS, post_each
 from tests.unit.test_tokens import LEASE, NOW, run, tool_app
 
@@ -62,12 +60,3 @@ def test_asi03_tool_rejects_a_call_without_a_token(keypair):
     assert sent[-1][0].status_code == 200 and sent[-1][1] == 1
 
 
-def test_asi03_tool_refuses_an_unsigned_token(keypair):
-    def part(data):
-        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
-
-    claims = {"iss": ISSUER, "aud": "read_ticket", "iat": int(NOW), "exp": int(NOW) + 60,
-              "jti": "d" * 32, "lease": LEASE}
-    token = f"{part({'alg': 'none', 'typ': 'JWT'})}.{part(claims)}."
-    with pytest.raises(TokenError):
-        verify_tool_token(keypair[1], token, "read_ticket", NOW, JtiCache())

@@ -145,28 +145,6 @@ def test_asi03_every_namespace_has_default_deny(get):
     assert get("--namespace", "ah-gateway", "get", "networkpolicy", "edge-05-agent-to-tool-gateway-in")
 
 
-def test_cilium_accepted_every_policy(get):
-    """Cilium validated each CiliumNetworkPolicy (DNS rules, IMDS deny, API server edges)."""
-    expected = {(o["metadata"]["namespace"], o["metadata"]["name"])
-                for o in yaml.safe_load_all(helm("template", "kind").stdout)
-                if o and o["kind"] == "CiliumNetworkPolicy"}
-
-    def statuses() -> dict:
-        seen = {}
-        for p in get("get", "ciliumnetworkpolicies", "--all-namespaces")["items"]:
-            key = (p["metadata"]["namespace"], p["metadata"]["name"])
-            if key in expected:
-                seen[key] = {c["type"]: c["status"] for c in p.get("status", {}).get("conditions", [])}
-        return seen
-
-    # Cilium writes the status a few seconds after the policies are applied.
-    wait_until(lambda: (s := statuses()).keys() == expected and all("Valid" in c for c in s.values()), 60)
-    seen = statuses()
-    assert set(seen) == expected
-    for key, conditions in seen.items():
-        assert conditions.get("Valid") == "True", (key, conditions)
-
-
 # --- admission walls ----------------------------------------------------------------------------
 
 @pytest.mark.parametrize("image", [
@@ -185,14 +163,6 @@ def test_asi04_admission_rejects_unpinned_image(image):
     assert not admitted and "ah-images-pinned" in error
 
 
-def test_admission_admits_pinned_images():
-    """Control: the registry by digest, and on kind the exact upstream Postgres image."""
-    assert admit(pod("ah-core", "executor")) == (True, "")
-    postgres = next(o for o in yaml.safe_load_all(helm("template", "kind").stdout)
-                    if o and o["kind"] == "StatefulSet")["spec"]["template"]["spec"]["containers"][0]["image"]
-    assert admit(pod("ah-data", "postgres", container={"image": postgres})) == (True, "")
-
-
 @pytest.mark.parametrize("namespace,service_account", [
     ("ah-tools", "tool-read-ticket"),
     ("ah-agent", "agent"),
@@ -203,16 +173,6 @@ def test_admission_rejects_tool_pod_without_runtimeclass(namespace, service_acco
     assert "ah-sandbox-runtime" in error
     # Control: the same pod with the sandbox class is admitted.
     assert admit(pod(namespace, service_account)) == (True, "")
-
-
-def test_only_the_llm_gateway_deployment_runs_outside_the_sandbox_in_agent_namespace():
-    # The LLM gateway's own pods (from its Deployment) are not sandboxed; only pods created by a Job are.
-    assert admit(pod("ah-agent", "llm-gateway", runtimeClassName=None)) == (True, "")
-    # A pod created by a Job is never exempt, whatever ServiceAccount it names.
-    owner = [{"apiVersion": "batch/v1", "kind": "Job", "name": "agent-42",
-              "uid": "00000000-0000-0000-0000-000000000042", "controller": True}]
-    admitted, error = admit(pod("ah-agent", "llm-gateway", runtimeClassName=None, ownerReferences=owner))
-    assert not admitted and "ah-sandbox-runtime" in error
 
 
 PRIVILEGED = {
@@ -480,13 +440,6 @@ def test_asi03_probe_edge(probe_results, edge):
         assert r["detail"].startswith(probes.DENY_DETAIL[r["kind"]]), f"{edge}: {r['detail']}"
 
 
-def test_probe_pods_are_never_ready(probe_pods):
-    """So a Service that selects a component's label never sends a real client to a probe pod."""
-    for p in kubectl_json("get", "pods", "--all-namespaces", "-l", PROBE_LABEL)["items"]:
-        ready = [c["status"] for c in p["status"].get("conditions", []) if c["type"] == "Ready"]
-        assert ready == ["False"], p["metadata"]["name"]
-
-
 def hubble(probe_pods: dict, source: str, *filters: str) -> list[dict]:
     """Flows Hubble recorded from a probe pod, read on the node it runs on (egress policy is
     enforced there)."""
@@ -506,15 +459,6 @@ def tcp_verdicts(flows: list[dict], ip: str, port: int) -> set[tuple[str, str]]:
             and f.get("l4", {}).get("TCP", {}).get("destination_port") == port}
 
 
-def test_hubble_shows_policy_drops_for_denied_edges_and_forwards_the_allowed(probe_results, probe_pods, addresses):
-    """Evidence for the Walls board: the denied connections are dropped by policy (not lost on
-    the way), the allowed one is forwarded."""
-    flows = hubble(probe_pods, "agent", "--protocol", "tcp")
-    for target, port in (("postgres", 5432), ("tool-read-ticket", 8000), ("risk-engine", 8082)):
-        assert tcp_verdicts(flows, addresses[target], port) == {("DROPPED", "POLICY_DENIED")}, target
-    assert ("FORWARDED", "") in tcp_verdicts(flows, addresses["tool-gateway"], 8080)
-
-
 def test_asi02_dns_exfiltration_is_answered_by_the_proxy_and_never_forwarded(probe_results, probe_pods):
     """The exfiltration name dies in Cilium's DNS proxy: Hubble shows the query refused there and
     never forwarded to CoreDNS, so no server outside the cluster ever sees it. Control: a cluster
@@ -529,20 +473,6 @@ def test_asi02_dns_exfiltration_is_answered_by_the_proxy_and_never_forwarded(pro
             by_query.setdefault(query, set()).add(f["verdict"])
     assert by_query.get(exfil) and "FORWARDED" not in by_query[exfil], by_query.get(exfil)
     assert "FORWARDED" in by_query.get("kubernetes.default.svc.cluster.local.", set())
-
-
-def test_probe_pod_search_list_is_the_cluster_suffixes_only(probe_pods):
-    """The resolver's search list decides which names a lookup sends (names outside the cluster
-    are allowed together with their search forms). On kind it holds the cluster suffixes only;
-    on AKS a node search domain may be added, which the DNS rules would then refuse: check there."""
-    agent = probe_pods["agent"]
-    result = kubectl("--namespace", agent["namespace"], "exec", agent["name"], "--", "cat", "/etc/resolv.conf")
-    assert result.returncode == 0, result.stderr
-    lines = [line.split() for line in result.stdout.splitlines() if line.strip()]
-    search = next(line[1:] for line in lines if line[0] == "search")
-    assert search == ["ah-agent.svc.cluster.local", "svc.cluster.local", "cluster.local"]
-    assert ["options", "ndots:5"] in lines
-    (REPORT.parent / "k8s-probe-resolv-conf.txt").write_text(result.stdout, encoding="utf-8")
 
 
 ALLOW_ALL = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",

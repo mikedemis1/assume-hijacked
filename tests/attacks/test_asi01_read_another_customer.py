@@ -8,7 +8,6 @@ import json
 import logging
 
 import psycopg
-import pytest
 
 from app.agent.core import Agent
 from app.agent.llm import ScriptedLLM
@@ -69,25 +68,25 @@ def test_asi03_lookup_ignores_foreign_customer_id(as_role, admin, caplog):  # â‘
     assert "1002" not in caplog.text
 
 
-@pytest.mark.parametrize("table", RLS_TABLES)
-@pytest.mark.parametrize("role", TOOL_ROLES + ["executor"])
-def test_asi03_rls_hides_rows_from_tool_roles(admin, table, role):
+def test_asi03_rls_hides_rows_from_tool_roles(admin):
     open_lease(admin, 1, ["read_ticket"])
     admin.execute("INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur) VALUES ('credit', 1, 1, 5)")
-    assert admin.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"] > 0
-    # A grant added by mistake: the tool role still sees no row, because no policy names it.
-    # The executor is the control: a role the policy names sees the rows.
-    with admin.transaction():
-        admin.execute(f"GRANT SELECT ON {table} TO {role}")
-        admin.execute(f"SET LOCAL ROLE {role}")
-        seen = admin.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]
-        admin.execute("RESET ROLE")
-        raise psycopg.Rollback
-    if role == "executor":
-        assert seen > 0
-    else:
-        assert seen == 0
-        # The grant was rolled back.
-        assert admin.execute(
-            "SELECT has_table_privilege(%s, %s, 'SELECT') AS ok", (role, table)
-        ).fetchone()["ok"] is False
+    for table in RLS_TABLES:
+        assert admin.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"] > 0
+        for role in TOOL_ROLES + ["executor"]:
+            # A grant added by mistake: the tool role still sees no row, because no policy names it.
+            # The executor is the control: a role the policy names sees the rows.
+            with admin.transaction():
+                admin.execute(f"GRANT SELECT ON {table} TO {role}")
+                admin.execute(f"SET LOCAL ROLE {role}")
+                seen = admin.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]
+                admin.execute("RESET ROLE")
+                raise psycopg.Rollback
+            if role == "executor":
+                assert seen > 0, table
+            else:
+                assert seen == 0, (table, role)
+                # The grant was rolled back.
+                assert admin.execute(
+                    "SELECT has_table_privilege(%s, %s, 'SELECT') AS ok", (role, table)
+                ).fetchone()["ok"] is False

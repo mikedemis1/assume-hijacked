@@ -9,7 +9,7 @@ import pytest
 
 from app.risk.rules import assess_call
 from tests.gatewayharness import build, RealRisk
-from tests.unit.test_console import BOB, browser, console, login
+from tests.unit.test_console import BOB, browser, console, console_env, login
 from tests.unit.test_gateway import call_assessment_rows, metric, only_read
 from tests.unit.test_risk_floor import control
 from tests.unit.test_risk_rules import call
