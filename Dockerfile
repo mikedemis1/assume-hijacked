@@ -29,4 +29,3 @@ USER 10001
 EXPOSE 8000
 # No HEALTHCHECK here: this one image runs the tool servers, the gateway, the executor's poll loop
 # (no port) and the one-shot agent, and no single check fits all of them.
-#checkov:skip=CKV_DOCKER_2: one image, three kinds of process (tool servers, executor loop, one-shot agent); no single image-level check fits

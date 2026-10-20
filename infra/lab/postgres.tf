@@ -43,7 +43,6 @@ ephemeral "random_password" "postgres_admin" {
 # The lab is destroyed every night on purpose, so prevent_destroy would only get in the way.
 # tflint-ignore: azurerm_resources_missing_prevent_destroy
 resource "azurerm_postgresql_flexible_server" "this" {
-  #checkov:skip=CKV_AZURE_136: demo data, rebuilt every night; geo-redundant backup would only add cost
   name                = local.postgres_server_name
   resource_group_name = data.azurerm_resource_group.lab.name
   location            = var.location

@@ -1,5 +1,5 @@
 # Pinned tools for the CI jobs. Sourced, not run: `. scripts/ci-tools.sh`, then
-# `install_tools ruff gitleaks terraform helm`.
+# `install_tools ruff gitleaks terraform helm trivy`.
 #
 # A job has one image (python:3.12-slim, the one the app ships on) and that image has none of these
 # tools. Each is downloaded from its publisher's release page, compared with the sha256 below, and
@@ -10,7 +10,8 @@
 # Every release was at least 14 days old when pinned. To update a tool: change VERSION, URL and
 # SHA256 together, from the publisher's checksum file for the new release.
 # terraform and gitleaks are the versions of the images the v1 pipeline ran; terraform 1.15 is
-# inside the "~> 1.15.0" that every infra/*/versions.tf asks for.
+# inside the "~> 1.15.0" that every infra/*/versions.tf asks for. trivy is the version of the image
+# the build job pins (TRIVY_IMAGE in .gitlab-ci.yml); its misconfiguration checks are built in.
 
 RUFF_VERSION=0.16.10
 RUFF_URL=https://github.com/astral-sh/ruff/releases/download/0.16.10/ruff-x86_64-unknown-linux-gnu.tar.gz
@@ -27,6 +28,10 @@ TERRAFORM_SHA256=76edd0b22d2f27d3d2e097cd793209646f719cf60f02ff3af626b07361137da
 HELM_VERSION=4.3.0
 HELM_URL=https://get.helm.sh/helm-v4.3.0-linux-amd64.tar.gz
 HELM_SHA256=86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb
+
+TRIVY_VERSION=0.74.0
+TRIVY_URL=https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz
+TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
 
 # download_checked <url> <sha256> <file>: download, then keep the file only if its sha256 matches.
 download_checked() {
@@ -56,7 +61,7 @@ prepare_tools() {
     git config --global --add safe.directory "${CI_PROJECT_DIR:-$PWD}"
 }
 
-# install_tools <ruff|gitleaks|terraform|helm>...: put each tool in /usr/local/bin (or $CI_TOOLS_BIN).
+# install_tools <ruff|gitleaks|terraform|helm|trivy>...: put each tool in /usr/local/bin (or $CI_TOOLS_BIN).
 install_tools() {
     prepare_tools || return 1
     bin="${CI_TOOLS_BIN:-/usr/local/bin}"
@@ -82,6 +87,11 @@ install_tools() {
                 download_checked "$HELM_URL" "$HELM_SHA256" "$work/helm.tar.gz" &&
                     tar -xzf "$work/helm.tar.gz" -C "$work" --strip-components=1 linux-amd64/helm &&
                     install -m 0755 "$work/helm" "$bin/helm"
+                ;;
+            trivy)
+                download_checked "$TRIVY_URL" "$TRIVY_SHA256" "$work/trivy.tar.gz" &&
+                    tar -xzf "$work/trivy.tar.gz" -C "$work" trivy &&
+                    install -m 0755 "$work/trivy" "$bin/trivy"
                 ;;
             *)
                 echo "ci-tools: unknown tool '$tool'" >&2

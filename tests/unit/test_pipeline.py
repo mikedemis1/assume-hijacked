@@ -144,6 +144,30 @@ def test_terraform_providers_follow_the_committed_lock():
     assert "-lockfile=readonly" in _script("lint")
 
 
+def test_lint_job_scans_chart_terraform_and_dockerfiles_with_the_pinned_trivy():
+    script = _script("lint")
+    assert re.search(r"install_tools\b.*\btrivy\b", script), "the pinned trivy binary is installed"
+    assert "sh scripts/trivy-config.sh" in script
+    # The binary is the version of the image the build job scans with.
+    image = _jobs()["build"]["variables"]["TRIVY_IMAGE"]
+    assert f"aquasec/trivy:{_tool_pins()['TRIVY']['VERSION']}@" in image
+    # What the script scans, and when it fails.
+    scan = _text("scripts/trivy-config.sh")
+    for scanned in ("render-chart.py", "cp -R infra", "Dockerfile", "tests/attacks/Dockerfile"):
+        assert scanned in scan, scanned
+    assert "--severity HIGH,CRITICAL --exit-code 1" in scan
+    assert "--skip-check-update" in scan, "the checks are the ones built into the pinned version"
+
+
+def test_every_trivy_ignore_has_a_reason():
+    lines = _text(".trivyignore").splitlines()
+    ids = [i for i, line in enumerate(lines) if line and not line.startswith("#")]
+    assert ids, "the ignore file is empty: delete it, and the --ignorefile in the build job"
+    for i in ids:
+        assert re.fullmatch(r"[A-Z]+-\d{4}|CVE-\d{4}-\d+", lines[i]), lines[i]
+        assert lines[i - 1].startswith("#"), f"{lines[i]} has no reason above it"
+
+
 # --- pinned tools (scripts/ci-tools.sh) -----------------------------------------------------
 
 def _tool_pins() -> dict[str, dict[str, str]]:
@@ -156,7 +180,7 @@ def _tool_pins() -> dict[str, dict[str, str]]:
 
 def test_every_downloaded_tool_has_a_version_a_url_and_a_sha256():
     pins = _tool_pins()
-    assert set(pins) == {"RUFF", "GITLEAKS", "TERRAFORM", "HELM"}
+    assert set(pins) == {"RUFF", "GITLEAKS", "TERRAFORM", "HELM", "TRIVY"}
     for name, pin in pins.items():
         assert set(pin) == {"VERSION", "URL", "SHA256"}, name
         assert re.fullmatch(r"[0-9a-f]{64}", pin["SHA256"]), name

@@ -35,7 +35,6 @@ resource "azurerm_virtual_network" "vnet" {
 }
 
 resource "azurerm_subnet" "subnet" {
-  #checkov:skip=CKV2_AZURE_31: false positive: azurerm_subnet_network_security_group_association.subnet in nsg.tf attaches an NSG to every subnet, but its for_each is only known at plan time
   for_each = local.subnets
 
   name                 = each.key

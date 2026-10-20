@@ -39,13 +39,6 @@ locals {
 }
 
 resource "azurerm_kubernetes_cluster" "this" {
-  #checkov:skip=CKV_AZURE_115: the API server is public but limited to api_authorized_ip_ranges; a private cluster needs a runner or jump host inside the VNet (no VPN, no Bastion)
-  #checkov:skip=CKV_AZURE_116: Azure Policy for Kubernetes is off on purpose: admission is ValidatingAdmissionPolicy + Pod Security Admission (decision 9)
-  #checkov:skip=CKV_AZURE_117: platform-managed keys; no disk encryption set in the lab
-  #checkov:skip=CKV_AZURE_168: max_pods is left at the default of the Azure CNI overlay; the check only looks for the attribute
-  #checkov:skip=CKV_AZURE_170: Free tier on purpose: a lab needs no uptime SLA and the Standard tier bills per hour
-  #checkov:skip=CKV_AZURE_226: Standard_D4als_v6 has no local disk, so there is nothing for an ephemeral OS disk to use
-  #checkov:skip=CKV_AZURE_227: host encryption needs the EncryptionAtHost feature registered on the subscription (backlog)
   name                = var.cluster_name
   location            = var.location
   resource_group_name = data.azurerm_resource_group.lab.name
@@ -176,8 +169,6 @@ resource "azurerm_kubernetes_cluster" "this" {
 }
 
 resource "azurerm_kubernetes_cluster_node_pool" "sandbox" {
-  #checkov:skip=CKV_AZURE_168: max_pods is left at the default of the Azure CNI overlay; the check only looks for the attribute
-  #checkov:skip=CKV_AZURE_227: host encryption needs the EncryptionAtHost feature registered on the subscription (backlog)
   name                  = "sandbox"
   kubernetes_cluster_id = azurerm_kubernetes_cluster.this.id
   mode                  = "User"

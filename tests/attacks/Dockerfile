@@ -13,5 +13,4 @@ COPY tests/attacks ./attacks
 # The app's non-root user (Pod Security "restricted", the chart's securityContext).
 USER 10001
 # Short-lived probe processes, not a service: nothing to health-check.
-#checkov:skip=CKV_DOCKER_2: one-shot probe and test processes, no long-running service to check
 ENTRYPOINT ["python", "-m", "attacks.run"]

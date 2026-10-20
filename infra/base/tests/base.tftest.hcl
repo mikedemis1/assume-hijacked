@@ -112,12 +112,8 @@ run "registry_is_basic_with_admin_off" {
 }
 
 run "state_storage_is_locked_down" {
+  # TLS version and a private container are checked by Trivy (AZU-0011, AZU-0007) in the lint job.
   command = plan
-
-  assert {
-    condition     = azurerm_storage_account.state.min_tls_version == "TLS1_2"
-    error_message = "TLS 1.2 minimum."
-  }
 
   assert {
     condition     = azurerm_storage_account.state.allow_nested_items_to_be_public == false
@@ -132,11 +128,6 @@ run "state_storage_is_locked_down" {
   assert {
     condition     = azurerm_storage_account.state.default_to_oauth_authentication == true
     error_message = "OAuth must be the default authentication."
-  }
-
-  assert {
-    condition     = azurerm_storage_container.state.container_access_type == "private"
-    error_message = "The state container must be private."
   }
 }
 
