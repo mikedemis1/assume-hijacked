@@ -165,6 +165,13 @@ def test_lint_job_scans_chart_terraform_and_dockerfiles_with_the_pinned_trivy():
     assert "--checks-bundle-repository" in scan
 
 
+def test_build_job_gates_the_image_on_fixed_high_and_critical_with_the_yaml_ignore_file():
+    gate = " ".join(_script("build").replace("\\\n", " ").split())
+    assert ("trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 "
+            "--no-progress --skip-version-check --ignorefile /repo/.trivyignore.yaml") in gate
+    assert "/repo/.trivyignore " not in gate  # the old file name
+
+
 def test_every_trivy_ignore_has_a_path_and_a_reason():
     entries = yaml.safe_load(_text(".trivyignore.yaml"))["misconfigurations"]
     assert entries

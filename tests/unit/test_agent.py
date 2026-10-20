@@ -1,7 +1,8 @@
 import json
+from decimal import Decimal
 
 import pytest
-from hypothesis import assume, example, given, settings as hypothesis_settings, strategies as st
+from hypothesis import example, given, settings as hypothesis_settings, strategies as st
 
 from app.agent.core import ALLOWED_ARGS, GIVE_UP, Agent
 from app.agent.guard import SAFE_REPLY, guard_reply, numbers_in
@@ -157,7 +158,23 @@ def test_asi01_agent_drops_customer_id():
 # Names the model might send: the real ones, the ones it must not set, and any text.
 _ARG_NAMES = sorted({n for names in ALLOWED_ARGS.values() for n in names}
                     | {"customer_id", "ticket_id", "lease", "account_id", "id", ""})
-_arg_name = st.one_of(st.sampled_from(_ARG_NAMES), st.text(max_size=12))
+
+
+def _fullwidth(text: str) -> str:
+    return "".join(chr(ord(c) + 0xFEE0) if "!" <= c <= "~" else c for c in text)
+
+
+# The same names written a little differently. A tool that matched names loosely (case, spaces,
+# full-width letters) would let one of these through.
+_NEAR_MISS = [str.upper, str.title, lambda n: f" {n}", lambda n: f"{n} ", lambda n: n + "\n", _fullwidth]
+
+
+def _with_near_misses(names):
+    return st.one_of(st.sampled_from(names),
+                     st.builds(lambda n, f: f(n), st.sampled_from(names), st.sampled_from(_NEAR_MISS)))
+
+
+_arg_name = st.one_of(_with_near_misses(_ARG_NAMES), st.text(max_size=12))
 _arg_value = st.one_of(st.none(), st.booleans(), st.integers(), st.text(max_size=12), st.lists(st.integers(), max_size=3))
 _arguments = st.one_of(st.dictionaries(_arg_name, _arg_value, max_size=8),
                        st.none(), st.text(max_size=8), st.lists(st.integers(), max_size=3))
@@ -180,15 +197,16 @@ def test_asi01_property_agent_sends_only_the_tools_arguments_and_its_own_lease(t
     assert dropped == [name for name in sent_names if name not in allowed]
 
 
-@given(tool=st.text(max_size=20).filter(lambda name: name not in ALLOWED_ARGS), sent=_arguments)
+@given(tool=st.one_of(st.text(max_size=20), _with_near_misses(sorted(ALLOWED_ARGS))).filter(lambda name: name not in ALLOWED_ARGS),
+       sent=_arguments)
 @PROPERTY
 def test_asi01_property_agent_sends_nothing_for_a_tool_not_in_the_table(tool, sent):
     assert Agent(ScriptedLLM(), RecordingGateway(""))._safe_args(tool, sent, LEASE) == (None, [])
 
 
-# One readable example per way a reply can promise money; the properties below hold the rule for
-# any amount, in any of these shapes.
-@pytest.mark.parametrize("text", ["We credited €49", "We knocked 49 off your bill"])
+# One readable example per rule; the properties below hold each rule for any amount.
+@pytest.mark.parametrize("text", ["We credited €49", "We knocked 49 off your bill",
+                                  "Your meter number is forty-nine"])
 def test_asi09_guard_blocks_money_promises(text):
     assert guard_reply(text, set()) == SAFE_REPLY
 
@@ -208,14 +226,17 @@ _amounts = st.one_of(
 _filler = st.text(alphabet="abcdefghijklmnopqrstuvwxyz ", max_size=20)
 
 
-@given(template=st.sampled_from(_PROMISES), amount=_amounts, returned=_amounts, before=_filler, after=_filler)
-@example(template="We credited €{a}", amount="49", returned="10", before="", after="")
-@example(template="EUR{a} back", amount="49.00", returned="10", before="", after="")
+@given(amount=_amounts, before=_filler, after=_filler)
+@example(amount="49", before="", after="")
+@example(amount="49.00", before="", after="")
 @PROPERTY
-def test_asi09_property_guard_blocks_an_amount_no_tool_returned(template, amount, returned, before, after):
-    assume(numbers_in(amount).isdisjoint(numbers_in(returned)))
-    text = f"{before} {template.format(a=amount)} {after}"
-    assert guard_reply(text, numbers_in(returned)) == SAFE_REPLY
+def test_asi09_property_money_wording_and_currency_block_a_reply_even_for_a_returned_amount(amount, before, after):
+    # The amount is one a tool returned, so the number rule would let it through: it is the currency
+    # and the money wording that block the reply. Every shape runs every time.
+    returned = numbers_in(amount)
+    for template in _PROMISES:
+        text = f"{before} {template.format(a=amount)} {after}"
+        assert guard_reply(text, returned) == SAFE_REPLY, template
 
 
 _NUMBER_WORDS = st.builds(
@@ -232,14 +253,55 @@ def test_asi09_property_guard_blocks_an_amount_written_in_words(words, before):
     assert guard_reply(f"{before} Your meter number is {words}", set()) == SAFE_REPLY
 
 
-@given(number=st.integers(0, 999_999), other=st.integers(0, 999_999))
+def _value(number: Decimal) -> str:
+    """How the guard writes a number it compares: no trailing zeros, no exponent."""
+    return format(number.normalize(), "f")
+
+
+@st.composite
+def _written_numbers(draw):
+    """(the number as a reply writes it, every value it can mean). "1,000" can mean 1 or 1000."""
+    # `thousands` ends in 0: the guard compares every allowed number again as text, so a returned
+    # "1.001" would also allow 1001 (reported, not fixed here).
+    kind = draw(st.sampled_from(["integer", "decimal", "grouped", "grouped_decimal"]))
+    whole, thousands, cents = draw(st.integers(1, 999)), draw(st.integers(0, 99)) * 10, draw(st.integers(0, 99))
+    if kind == "integer":
+        text, values = str(whole * 1000 + thousands), {Decimal(whole * 1000 + thousands)}
+    elif kind == "decimal":
+        sep = draw(st.sampled_from(".,"))
+        text, values = f"{whole}{sep}{cents:02d}", {Decimal(f"{whole}.{cents:02d}")}
+    elif kind == "grouped":
+        sep = draw(st.sampled_from(".,"))
+        text, values = f"{whole}{sep}{thousands:03d}", {Decimal(f"{whole}.{thousands:03d}"), Decimal(whole * 1000 + thousands)}
+    else:
+        text, values = f"{whole}.{thousands:03d},{cents:02d}", {Decimal(f"{whole * 1000 + thousands}.{cents:02d}")}
+    # The same number in other characters: full-width or Arabic-Indic digits (and full-width
+    # separators), or a zero-width space inside it.
+    style = draw(st.sampled_from(["ascii", "fullwidth", "arabic_indic", "zero_width"]))
+    if style == "fullwidth":
+        text = "".join(chr(ord(c) + 0xFEE0) for c in text)
+    elif style == "arabic_indic":
+        text = "".join(chr(0x660 + int(c)) if c.isdigit() else c for c in text)
+    elif style == "zero_width" and len(text) > 1:
+        cut = draw(st.integers(1, len(text) - 1))
+        text = text[:cut] + "​" + text[cut:]
+    return text, {_value(v) for v in values}
+
+
+@given(written=_written_numbers())
+@example(written=("49.00", {"49"}))
+@example(written=("１，０００", {"1", "1000"}))
 @PROPERTY
-def test_asi09_property_guard_allows_exactly_the_numbers_a_tool_returned(number, other):
-    # The other half of the rule: the guard is not just blocking everything with a digit in it.
-    reply = f"Your meter number is {number}"
-    assert guard_reply(reply, numbers_in(json.dumps({"meter": number}))) == reply
-    assume(number != other)
-    assert guard_reply(reply, numbers_in(json.dumps({"meter": other}))) == SAFE_REPLY
+def test_asi09_property_guard_allows_a_number_only_when_every_reading_was_returned(written):
+    text, readings = written
+    reply = f"Your meter number is {text}"
+    # Same value, any spelling ("49.00", full-width digits): allowed when the tool returned it.
+    assert guard_reply(reply, set(readings)) == reply
+    for reading in readings:
+        # Without one of its readings ("1,000" with only 1 returned), or with a near miss instead
+        # ("49.50" with only 49 returned, which is what dropping the fraction would allow): blocked.
+        near = str(int(Decimal(reading)) + (0 if "." in reading else 1))
+        assert guard_reply(reply, (readings - {reading}) | {near}) == SAFE_REPLY, reading
 
 
 def test_asi09_agent_blocks_a_number_no_tool_returned(settings, admin, as_role):
