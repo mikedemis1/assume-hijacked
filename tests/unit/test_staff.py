@@ -1,4 +1,4 @@
-"""Approvals and resuming the agents only for known staff (gap M2; db/sql/06-risk.sql, 09-dev-staff.sql).
+"""Approvals and resuming the agents only for known staff (db/sql/06-risk.sql, 09-dev-staff.sql).
 
 The console role cannot write an approval or the staff list. It can only call approve_request and
 resume_agents, and those refuse an object id that is not on the list, is inactive, or lacks the

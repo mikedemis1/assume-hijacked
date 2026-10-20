@@ -459,7 +459,7 @@ def test_asi10_repeated_denials_pause_every_agent(settings, admin, as_role):
         risk.close()
 
 
-def test_m1_effect_already_requested_reaches_the_agent_as_denied():
+def test_effect_already_requested_reaches_the_agent_as_denied():
     from app.common import toolerrors
     from app.gateway.proxy import ToolReply, reply_category
 

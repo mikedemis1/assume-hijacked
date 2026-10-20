@@ -1,6 +1,6 @@
 {"component": "demo",
  "optional": true,
- "db": {"role": null, "execute": [], "tables": {}},
+ "db": {"role": "demo_portal", "execute": [], "tables": {}},
  "network": {"ingress_from": [], "egress_to": [], "dns": ["cluster"]},
  "k8s": {"service_account": "demo", "rbac": []},
  "azure": {"identity": "id-demo", "roles": [{"role": "Key Vault Secrets User", "scope": "kv-demo"}]},

@@ -62,6 +62,12 @@ locals {
     if !try(m.optional, false) || contains(var.optional_components, m.component)
   }
 
+  # Names in optional_components that are not an optional manifest (a typo would silently enable nothing).
+  unknown_optional = [
+    for c in var.optional_components : c
+    if !contains([for m in local.all_manifests : m.component if try(m.optional, false)], c)
+  ]
+
   # Components that use an Azure identity, keyed by component name.
   identity_manifests = {
     for k, m in local.manifests : m.component => m
@@ -145,6 +151,11 @@ resource "terraform_data" "manifest_checks" {
     precondition {
       condition     = length(local.unplaced) == 0
       error_message = "No namespace is known for: ${join(", ", local.unplaced)}. Add them to service_account_namespaces."
+    }
+
+    precondition {
+      condition     = length(local.unknown_optional) == 0
+      error_message = "optional_components names no optional manifest: ${join(", ", local.unknown_optional)}."
     }
 
     precondition {

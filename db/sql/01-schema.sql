@@ -212,7 +212,7 @@ CREATE TABLE disconnection_orders (
     created_at      timestamptz NOT NULL DEFAULT now()
 );
 
--- Decision 6, enforced on every order row whatever the executor code does. An order needs:
+-- Enforced on every order row whatever the executor code does. An order needs:
 -- a move-out request that is still pending (not sent to a human as manual_only, nor rejected,
 -- nor executed), for that request's own home (exact string), a home with no flag row, a
 -- move-out date that has come, at least one staff approval given after the risk assessment (no

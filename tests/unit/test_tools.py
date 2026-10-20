@@ -52,7 +52,7 @@ def test_asi03_no_tool_returns_health_fields(as_role, admin):  # ②
     assert set(result) == {"name", "tariff", "status", "address"}
 
 
-def test_m1_second_credit_on_one_lease_is_a_clean_refusal(as_role, admin):
+def test_second_credit_on_one_lease_is_a_clean_refusal(as_role, admin):
     from app.tools.common import EFFECT_ALREADY_REQUESTED, EffectRefused
 
     conn = as_role("tool_issue_bill_credit")

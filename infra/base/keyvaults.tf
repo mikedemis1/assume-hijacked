@@ -16,6 +16,18 @@
 # infra/lab (the identities live in rg-lab). This file publishes the needed grants
 # through the key_vault_grants output.
 
+# Plan-time check: a name in optional_components must be an optional manifest.
+resource "terraform_data" "optional_components_check" {
+  input = var.optional_components
+
+  lifecycle {
+    precondition {
+      condition     = length(local.unknown_optional) == 0
+      error_message = "optional_components names no optional manifest: ${join(", ", local.unknown_optional)}."
+    }
+  }
+}
+
 locals {
   capabilities_dir = coalesce(var.capabilities_dir, "${path.module}/../../permissions")
 
@@ -30,6 +42,12 @@ locals {
     for k, m in local.all_manifests : k => m
     if !try(m.optional, false) || contains(var.optional_components, m.component)
   }
+
+  # Names in optional_components that are not an optional manifest (a typo would silently enable nothing).
+  unknown_optional = [
+    for c in var.optional_components : c
+    if !contains([for m in local.all_manifests : m.component if try(m.optional, false)], c)
+  ]
 
   vault_grants = flatten([
     for key, m in local.manifests : [

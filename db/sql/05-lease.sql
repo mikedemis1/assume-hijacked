@@ -428,7 +428,8 @@ GRANT EXECUTE ON FUNCTION finish_reply_facts(text, text) TO dispatcher;
 -- The names are chosen by the model: identifiers of up to 64 characters that can still spell short data.
 CREATE FUNCTION agent_event_names_ok(p_names text[]) RETURNS bool
 LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path = pg_catalog AS $$
-    SELECT coalesce(bool_and(n ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$'), true) FROM unnest(p_names) AS n
+    SELECT coalesce(array_ndims(p_names), 1) = 1
+       AND NOT EXISTS (SELECT 1 FROM unnest(p_names) AS n WHERE n IS NULL OR n !~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$')
 $$;
 REVOKE ALL ON FUNCTION agent_event_names_ok(text[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION agent_event_names_ok(text[]) TO api_owner;
@@ -443,6 +444,8 @@ CREATE TABLE agent_events (
     reported_at timestamptz NOT NULL DEFAULT now(),
     source      text NOT NULL DEFAULT 'agent' CHECK (source = 'agent')
 );
+
+CREATE INDEX agent_events_lease_hash ON agent_events (lease_hash);
 
 CREATE FUNCTION refuse_agent_event_change() RETURNS trigger
 LANGUAGE plpgsql SET search_path = public, pg_temp AS $$

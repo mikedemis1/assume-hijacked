@@ -437,6 +437,11 @@ run "optional_component_has_no_vault_by_default" {
     condition     = toset(keys(azurerm_key_vault.workload)) == toset(["kv-tool-lookup-account"])
     error_message = "A manifest marked optional must yield no vault unless it is enabled."
   }
+
+  assert {
+    condition     = !contains([for g in output.key_vault_grants : g.component], "demo")
+    error_message = "A disabled optional component must have no vault grant."
+  }
 }
 
 run "optional_component_gets_a_vault_when_enabled" {
@@ -451,4 +456,20 @@ run "optional_component_gets_a_vault_when_enabled" {
     condition     = toset(keys(azurerm_key_vault.workload)) == toset(["kv-tool-lookup-account", "kv-demo"])
     error_message = "An enabled optional component gets its vault."
   }
+
+  assert {
+    condition     = contains([for g in output.key_vault_grants : "${g.component}/${g.vault}"], "demo/kv-demo")
+    error_message = "An enabled optional component gets its vault grant."
+  }
+}
+
+run "an_unknown_optional_component_is_refused" {
+  command = plan
+
+  variables {
+    capabilities_dir    = "tests/fixtures/capabilities-optional"
+    optional_components = ["dmeo"]
+  }
+
+  expect_failures = [terraform_data.optional_components_check]
 }

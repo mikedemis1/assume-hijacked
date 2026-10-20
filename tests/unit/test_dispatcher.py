@@ -354,10 +354,10 @@ def test_asi09_dispatcher_runs_the_guard_again(kube_harness, admin, name, text, 
     assert metric(h, "dispatcher_replies_blocked_total", reason=reason) == 1
 
 
-# --- POST /reply: the gap-review phrases, and effect tickets (gap H1) --------------------------------
+# --- POST /reply: the phrases the old lists missed, and effect tickets --------------------------------
 
-# Plain money promises that the old word lists let through (context/gap-review-2026-10-20.md, H1).
-GAP_PHRASES = [
+# Plain money promises that the old word lists let through.
+MISSED_PHRASES = [
     "Good news: you will not be charged next month.",
     "Your next bill is free.",
     "Approved: 10 will be removed from your bill.",   # 10 is the street number, so it is an allowed number
@@ -379,8 +379,8 @@ def record_call(admin, lease, tool, outcome):
     )
 
 
-@pytest.mark.parametrize("text", GAP_PHRASES)
-def test_asi09_dispatcher_blocks_the_gap_review_phrases(kube_harness, admin, text):
+@pytest.mark.parametrize("text", MISSED_PHRASES)
+def test_asi09_dispatcher_blocks_money_promise_phrases_the_old_lists_missed(kube_harness, admin, text):
     h = kube_harness
     ticket, lease = claimed(h)
     answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": text})

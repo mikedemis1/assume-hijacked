@@ -114,16 +114,23 @@ class DispatcherDb:
         `events` is the agent's list of drops, already checked by app/dispatcher/events.py. It is
         written first, while the lease is still live, in a savepoint of its own: should the database
         refuse it, the reply is still stored. If the lease is no longer live when it is closed, the
-        reply is refused and the events are undone with it: the whole attempt is one savepoint. The
+        reply is refused (403) and the events are undone with it: the whole attempt is one savepoint,
+        and the lease is revoked again outside it. If the ticket already has a reply (409, the lease
+        was live), the events are kept: the lease was valid and the report is genuine. The
         last item of the answer says what happened to the events: how many were stored, or None (none
         sent, the lease is not live, or the database refused the list)."""
         def work(conn):
             with conn.transaction() as attempt:
                 written = self._write_events(conn, lease, pod, events) if events else None
                 facts = conn.execute("SELECT * FROM finish_reply_facts(%s, %s)", (lease, pod)).fetchone()
-                if facts is None:
+                if facts is None and written:
                     raise psycopg.Rollback(attempt)
             if facts is None:
+                if written:
+                    # The events were accepted, so the lease was live for this caller; the rollback also
+                    # undid its revocation (when the facts join found no row): close it again. Never
+                    # revoke on any other path: a caller with the wrong pod must not close a lease.
+                    conn.execute("SELECT revoke_lease(%s)", (lease,))
                 return "lease", None, None, None, None
             done = replies.finish(
                 text, facts["account_text"], facts["credit_asked"], facts["moveout_submitted"],

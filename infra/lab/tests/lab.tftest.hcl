@@ -840,6 +840,11 @@ run "optional_component_has_no_identity_by_default" {
     condition     = toset(keys(module.workload_identity)) == toset(["db-migrate", "tool-lookup-account"])
     error_message = "A manifest marked optional must yield no identity or federated credential unless it is enabled."
   }
+
+  assert {
+    condition     = !contains(keys(module.workload_identity["db-migrate"].role_assignments), "kv-demo/Key Vault Secrets Officer")
+    error_message = "db-migrate must not get Officer on the vault of a disabled optional component."
+  }
 }
 
 run "optional_component_gets_its_identity_when_enabled" {
@@ -851,6 +856,34 @@ run "optional_component_gets_its_identity_when_enabled" {
     service_account_namespaces = { "db-migrate" = "ah-core", "demo" = "ah-demo" }
   }
 
+  override_data {
+    target = data.terraform_remote_state.base
+    values = {
+      outputs = {
+        acr_id                     = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-base/providers/Microsoft.ContainerRegistry/registries/acrahtest"
+        acr_login_server           = "acrahtest.azurecr.io"
+        log_analytics_workspace_id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-base/providers/Microsoft.OperationalInsights/workspaces/log-assume-hijacked"
+        key_vaults = {
+          kv-db-migrate = {
+            name = "kv-db-migrate-a1b2c3"
+            id   = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-base/providers/Microsoft.KeyVault/vaults/kv-db-migrate-a1b2c3"
+            uri  = "https://kv-db-migrate-a1b2c3.vault.azure.net/"
+          }
+          kv-tool-lookup-account = {
+            name = "kv-tool-lookup-a-d4e5f6"
+            id   = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-base/providers/Microsoft.KeyVault/vaults/kv-tool-lookup-a-d4e5f6"
+            uri  = "https://kv-tool-lookup-a-d4e5f6.vault.azure.net/"
+          }
+          kv-demo = {
+            name = "kv-demo-aabbcc"
+            id   = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-base/providers/Microsoft.KeyVault/vaults/kv-demo-aabbcc"
+            uri  = "https://kv-demo-aabbcc.vault.azure.net/"
+          }
+        }
+      }
+    }
+  }
+
   assert {
     condition     = toset(keys(module.workload_identity)) == toset(["db-migrate", "tool-lookup-account", "demo"])
     error_message = "An enabled optional component gets its identity."
@@ -860,4 +893,25 @@ run "optional_component_gets_its_identity_when_enabled" {
     condition     = module.workload_identity["demo"].subject == "system:serviceaccount:ah-demo:demo"
     error_message = "The enabled component's federated credential trusts exactly its ServiceAccount."
   }
+
+  assert {
+    condition     = toset(keys(module.workload_identity["demo"].role_assignments)) == toset(["kv-demo/Key Vault Secrets User"])
+    error_message = "The enabled component gets Secrets User on its own vault and nothing else."
+  }
+
+  assert {
+    condition     = contains(keys(module.workload_identity["db-migrate"].role_assignments), "kv-demo/Key Vault Secrets Officer")
+    error_message = "db-migrate gets Officer on the vault of an enabled optional component with a database role."
+  }
+}
+
+run "an_unknown_optional_component_is_refused" {
+  command = plan
+
+  variables {
+    capabilities_dir    = "tests/fixtures/capabilities-optional"
+    optional_components = ["dmeo"]
+  }
+
+  expect_failures = [terraform_data.manifest_checks]
 }

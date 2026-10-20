@@ -256,6 +256,64 @@ def test_a_second_call_for_the_same_lease_is_refused(h, admin):
     assert len(rows(admin)) == 1
 
 
+def test_two_calls_at_once_for_one_lease_cannot_both_record(h, admin):
+    """The lease row is locked, so the second call waits for the first and then sees its events."""
+    import threading
+    import time
+
+    ticket, lease = claimed(h)
+    args = (lease, h.pods[lease], json.dumps([DROPPED]))
+    first, second = h.store._connect(), h.store._connect()
+    outcome = {}
+
+    def late():
+        try:
+            with second.transaction():
+                outcome["n"] = second.execute("SELECT record_agent_events(%s, %s, %s::jsonb) AS n", args).fetchone()["n"]
+        except psycopg.errors.RaiseException as error:
+            outcome["error"] = str(error)
+
+    try:
+        with first.transaction():
+            assert first.execute("SELECT record_agent_events(%s, %s, %s::jsonb) AS n", args).fetchone()["n"] == 1
+            thread = threading.Thread(target=late)
+            thread.start()
+            for _ in range(100):  # wait until the second call is blocked on the lease row
+                waiting = admin.execute(
+                    "SELECT count(*) AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%%record_agent_events%%'"
+                ).fetchone()["n"]
+                if waiting:
+                    break
+                time.sleep(0.05)
+            assert waiting == 1 and not outcome            # blocked, not yet answered
+        thread.join(10)
+    finally:
+        first.close()
+        second.close()
+    assert "already recorded" in outcome.get("error", ""), outcome
+    assert len(rows(admin)) == 1
+
+
+def test_a_lease_stays_revoked_when_the_facts_find_no_row(h, admin):
+    ticket, lease = claimed(h)
+    admin.execute("INSERT INTO customers (id, name, phone) VALUES (999, 'No Account', '000')")
+    admin.execute("UPDATE tickets SET customer_id = 999 WHERE id = %s", (ticket,))
+    assert send(h, lease, [DROPPED]).status_code == 403                 # no facts: the reply is refused
+    assert rows(admin) == [] and stored(admin, ticket) is None          # the events went with it
+    assert admin.execute("SELECT revoked FROM leases WHERE ticket_id = %s", (ticket,)).fetchone()["revoked"]
+
+
+def test_events_are_kept_when_the_ticket_already_has_a_reply(h, admin):
+    ticket, lease = claimed(h)
+    admin.execute("INSERT INTO replies (ticket_id, text, kind) VALUES (%s, 'earlier', 'agent')", (ticket,))
+    assert send(h, lease, [DROPPED]).status_code == 409
+    assert len(rows(admin)) == 1 and stored(admin, ticket) == "earlier"
+
+
+def test_agent_events_are_indexed_by_lease(admin):
+    assert admin.execute("SELECT 1 FROM pg_indexes WHERE tablename = 'agent_events' AND indexdef LIKE '%(lease_hash)'").fetchone()
+
+
 def test_events_are_not_kept_when_the_lease_is_not_live_at_the_close(h, admin, monkeypatch):
     ticket, lease = claimed(h)
     write = type(h.store)._write_events
@@ -274,7 +332,8 @@ def test_the_table_itself_refuses_a_name_that_is_not_an_identifier(admin, h):
     ticket, lease = claimed(h)
     insert = ("INSERT INTO agent_events (ticket_id, lease_hash, kind, tool, arg_names) "
               "VALUES (%s, sha256('x'), 'dropped_argument', 'lookup_account', %s)")
-    for bad in (["customer id"], ["1002"], ["ok", "a'b"], ["a" * 65], [""], ["ok" + chr(10)]):
+    for bad in (["customer id"], ["1002"], ["ok", "a'b"], ["a" * 65], [""], ["ok" + chr(10)],
+                ["ok", None], [[ "a", "b"], ["c", "d"]]):
         with pytest.raises(psycopg.errors.CheckViolation):
             admin.execute(insert, (ticket, bad))
     admin.execute(insert, (ticket, ["customer_id", "_x1"]))

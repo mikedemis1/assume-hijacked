@@ -11,7 +11,7 @@ Nothing in this project has been applied to Azure. No resource exists, nothing b
 
 `infra/modules/workload-identity` is the module the lab uses for the identities. The lab reads `base` through `terraform_remote_state`, so `base` has to be applied first. `base` is applied by hand by the owner and never from CI: the CI identities live in it and none of them can widen its own rights.
 
-Every Key Vault, identity and role assignment is generated from the manifests in `permissions/`. A new part with secrets gets its vault by adding a manifest. A manifest with a top-level `"optional": true` gets no vault, identity or federated credential unless its component is listed in the `optional_components` variable of `infra/base` and `infra/lab` (default: none).
+Every Key Vault, identity and role assignment is generated from the manifests in `permissions/`. A new part with secrets gets its vault by adding a manifest. A manifest with a top-level `"optional": true` gets no vault, identity or federated credential unless its component is listed in the `optional_components` variable of `infra/base` and `infra/lab` (default: none). A name that matches no optional manifest stops the plan. `db-migrate` must not list a Secrets Officer role on the vault of an optional component in its manifest: those roles are derived, and a listed one would stop the plan while the component is not enabled.
 
 Terraform tests (`terraform test`, mock providers) sit next to each stack under `tests/`, with fixtures for awkward manifests. CI runs `terraform fmt -check` and `terraform validate` on every stack.
 
@@ -38,7 +38,7 @@ UPDATE staff SET active = false WHERE oid = '<Entra object id>';
 RESET ROLE;
 ```
 
-The roles must match the app roles assigned in Entra. No automation yet. Whether the admin may act as `staff_owner` (a `GRANT staff_owner TO <admin>` may be needed) belongs to the Azure migration work (gap M4).
+The roles must match the app roles assigned in Entra. No automation yet. Whether the admin may act as `staff_owner` (a `GRANT staff_owner TO <admin>` may be needed) belongs to the Azure migration work.
 
 ## Order
 

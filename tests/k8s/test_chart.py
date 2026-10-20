@@ -532,7 +532,7 @@ def dev_staff_seeded(env: str) -> list[str]:
 
 def test_dev_staff_are_seeded_on_kind_and_never_on_azure():
     """The dev oids are public; on the staff list they would let anyone who can send the console a
-    dev sign-in approve. Only the kind database setup Job turns the seed on (gap M2)."""
+    dev sign-in approve. Only the kind database setup Job turns the seed on."""
     assert dev_staff_seeded("kind") == ["postgres-init"]
     assert dev_staff_seeded("azure") == []
     migrate = [c for name, spec in pod_specs("azure") if name == "db-migrate" for c in containers(spec)]

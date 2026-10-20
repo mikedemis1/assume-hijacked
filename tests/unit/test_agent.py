@@ -253,9 +253,9 @@ def test_asi09_property_guard_blocks_an_amount_written_in_words(words, before):
     assert guard_reply(f"{before} Your meter number is {words}", set()) == SAFE_REPLY
 
 
-# The phrases the old word lists let through (context/gap-review-2026-10-20.md, H1). "10" is the street
+# The phrases the old word lists let through. "10" is the street
 # number of the account, so it is a number the reply may repeat.
-GAP_PHRASES = [
+MISSED_PHRASES = [
     "Good news: you will not be charged next month.",
     "Your next bill is free.",
     "Approved: 10 will be removed from your bill.",
@@ -265,8 +265,8 @@ GAP_PHRASES = [
 ]
 
 
-@pytest.mark.parametrize("text", GAP_PHRASES)
-def test_asi09_guard_blocks_the_gap_review_phrases(text):
+@pytest.mark.parametrize("text", MISSED_PHRASES)
+def test_asi09_guard_blocks_money_promise_phrases_the_old_lists_missed(text):
     assert guard_reply(text, numbers_in("G1 residential active Patision 10, Athens")) == SAFE_REPLY
 
 
