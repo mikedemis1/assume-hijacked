@@ -1,7 +1,7 @@
 """A fingerprint of what a tool tells the model it is: its name, description and input schema.
 
 The tool gateway compares the fingerprint of a tool's live `tools/list` entry with the one written
-in the tool's capability manifest (security/capabilities/tool-*.json). A tool whose description or
+in the tool's capability manifest (permissions/tool-*.json). A tool whose description or
 schema changed since the manifest was reviewed is refused: a changed description is a way to
 smuggle instructions to the model.
 

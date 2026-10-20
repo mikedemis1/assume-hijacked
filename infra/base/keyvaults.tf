@@ -1,7 +1,7 @@
 # One Key Vault per workload that holds secrets.
 #
 # The list of vaults is not written here. It comes from the capability manifests
-# (security/capabilities/*.json): every distinct `azure.roles[].scope` that starts
+# (permissions/*.json): every distinct `azure.roles[].scope` that starts
 # with "kv-" is the LOGICAL name of a vault. A new secret-holding component
 # therefore gets its vault by adding a manifest, not by editing Terraform.
 #
@@ -17,7 +17,7 @@
 # through the key_vault_grants output.
 
 locals {
-  capabilities_dir = coalesce(var.capabilities_dir, "${path.module}/../../security/capabilities")
+  capabilities_dir = coalesce(var.capabilities_dir, "${path.module}/../../permissions")
 
   manifests = {
     for f in fileset(local.capabilities_dir, "*.json") :

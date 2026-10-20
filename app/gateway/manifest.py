@@ -1,5 +1,5 @@
 """What the gateway knows about each tool, read from the reviewed capability manifests
-(security/capabilities/tool-*.json): the arguments the model may set, and the fingerprint of the
+(permissions/tool-*.json): the arguments the model may set, and the fingerprint of the
 description the tool must still have (app/security/descriptors.py).
 
 The gateway reads the files at start and fails if one is missing or wrong, so it never runs
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from app.tools.serve import TOOLS
 
-MANIFESTS = Path(__file__).resolve().parents[2] / "security" / "capabilities"
+MANIFESTS = Path(__file__).resolve().parents[2] / "permissions"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 

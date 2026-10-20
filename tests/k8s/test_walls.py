@@ -1,6 +1,6 @@
 """The network and admission walls on the live kind cluster `ah` (`sh scripts/kind-up.sh`).
 
-The network walls are proved at runtime by the probe matrix (attacks/probes.py, bottom of this
+The network walls are proved at runtime by the probe matrix (tests/attacks/probes.py, bottom of this
 file): probe pods with each component's labels try every forbidden edge and the allowed ones;
 the observed matrix is written to reports/k8s-probe-matrix.json.
 
@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import yaml
 
-from attacks import probes
+from tests.attacks import probes
 from tests.k8s.conftest import kubectl_json, run_kubectl
 from tests.k8s.test_chart import (HELM, NAMESPACES, ROOT, SANDBOX_RUNTIME, agent_job, helm)
 
@@ -326,9 +326,9 @@ def test_admission_rejects_agent_job_off_template(change):
     assert "ah-agent-job-template" in error, error
 
 
-# --- runtime proof of the network walls: the probe matrix (attacks/probes.py) -------------------
+# --- runtime proof of the network walls: the probe matrix (tests/attacks/probes.py) -------------------
 #
-# One probe pod per identity of the matrix, from the attack-suite image (attacks/Dockerfile, in
+# One probe pod per identity of the matrix, from the attack-suite image (tests/attacks/Dockerfile, in
 # the local registry): in its component's namespace, with its app.kubernetes.io/name label, so
 # the policies select it exactly as they select the component. Each listens on its component's
 # ports (a stand-in for a component that is not deployed) and runs the probes whose source it is.

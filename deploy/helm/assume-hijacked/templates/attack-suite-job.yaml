@@ -1,10 +1,10 @@
 {{- /*
-The attack suite in the cluster (attacks/, image from attacks/Dockerfile), run with `helm test`
+The attack suite in the cluster (tests/attacks/, image from tests/attacks/Dockerfile), run with `helm test`
 after a deploy: any open wall fails the test, and so the pipeline.
 
 One probe pod per component, in that component's namespace and with its app.kubernetes.io/name
 label, so every NetworkPolicy and CiliumNetworkPolicy selects it exactly as it selects the
-component. It runs `python -m attacks.run suite <component>`: the probes of attacks/probes.py
+component. It runs `python -m attacks.run suite <component>`: the probes of tests/attacks/probes.py
 whose source is that component, against the real Services. It prints one JSON line per probe
 ({"edge", "expected", "observed", ...}) and exits 1 on a mismatch.
 
@@ -39,7 +39,7 @@ Off by default: attackSuite.enabled and a pinned attackSuite.image from the regi
 {{- end -}}
 {{- $uid := include "ah.appUid" . | int -}}
 {{- $sandboxed := list "ah-agent" "ah-tools" -}}
-{{- /* The chart components a probe runs as (attacks/probes.py COMPONENTS, one tool for all
+{{- /* The chart components a probe runs as (tests/attacks/probes.py COMPONENTS, one tool for all
 five). postgres only on kind, where the database is a pod of this chart. */ -}}
 {{- $sources := list
   (list "agent" "ah-agent") (list "llm-gateway" "ah-agent") (list "dispatcher" "ah-intake")

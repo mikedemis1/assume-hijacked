@@ -48,7 +48,7 @@ locals {
   key_vaults = local.base.key_vaults
 
   # ------------------------------------------------------------ capability manifests
-  capabilities_dir = coalesce(var.capabilities_dir, "${path.module}/../../security/capabilities")
+  capabilities_dir = coalesce(var.capabilities_dir, "${path.module}/../../permissions")
 
   manifests = {
     for f in fileset(local.capabilities_dir, "*.json") :

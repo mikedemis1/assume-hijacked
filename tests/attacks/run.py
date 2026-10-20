@@ -1,4 +1,4 @@
-"""python -m attacks.run <command>: the attack suite's entry point.
+"""python -m attacks.run <command>: the attack suite's entry point (in the repository: python -m tests.attacks.run).
 
   serve PORT[,PORT...]   listen on these TCP ports and accept every connection, until stopped.
                          A stand-in for a component that is not deployed, so a probe aimed at
@@ -22,7 +22,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from attacks import probes, tickets
+from . import probes, tickets
 
 
 def serve(ports: list[int]) -> None:

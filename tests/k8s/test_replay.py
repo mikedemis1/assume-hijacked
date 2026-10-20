@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from attacks.tickets import ATTACK_TICKETS, EFFECT_TOOLS
+from tests.attacks.tickets import ATTACK_TICKETS, EFFECT_TOOLS
 from tests.k8s.conftest import kubectl_json, run_kubectl
 
 pytestmark = pytest.mark.k8s

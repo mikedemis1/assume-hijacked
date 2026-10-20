@@ -1,4 +1,4 @@
-"""The attack suite (attacks/) without a cluster: the probe matrix agrees with the chart's edges,
+"""The attack suite (tests/attacks/) without a cluster: the probe matrix agrees with the chart's edges,
 the probes classify what they see correctly, and the attack ticket replay judges outcomes.
 
 No `k8s` marker: these run in the default `pytest`. The live run is tests/k8s/test_walls.py.
@@ -14,11 +14,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from attacks import probes, run, tickets
-from attacks.probes import ALLOW, DENY, Probe
+from tests.attacks import probes, run, tickets
+from tests.attacks.probes import ALLOW, DENY, Probe
 from tests.k8s.test_chart import HELM, ROOT, rendered
 
-ATTACKS = ROOT / "attacks"
+ATTACKS = ROOT / "tests" / "attacks"
 
 
 # --- the matrix ---------------------------------------------------------------------------------
@@ -337,7 +337,7 @@ def test_probe_command_prints_results_and_fails_on_a_mismatch():
         plan = {"probes": [Probe("agent", "tcp", "tool-gateway", ALLOW, port, "x").to_json(),
                            Probe("agent", "tcp", "tool-gateway", DENY, port, "y").to_json()],
                 "addresses": {"tool-gateway": "127.0.0.1"}}
-        done = subprocess.run([sys.executable, "-m", "attacks.run", "probe"], input=json.dumps(plan),
+        done = subprocess.run([sys.executable, "-m", "tests.attacks.run", "probe"], input=json.dumps(plan),
                               capture_output=True, text=True, cwd=ROOT, timeout=30, check=False)
     assert done.returncode == 1, done.stderr
     results = json.loads(done.stdout)["results"]
@@ -346,7 +346,7 @@ def test_probe_command_prints_results_and_fails_on_a_mismatch():
 
 def test_serve_accepts_connections_on_every_port():
     ports = [free_port(), free_port()]
-    proc = subprocess.Popen([sys.executable, "-m", "attacks.run", "serve", ",".join(map(str, ports))],
+    proc = subprocess.Popen([sys.executable, "-m", "tests.attacks.run", "serve", ",".join(map(str, ports))],
                             cwd=ROOT, stdout=subprocess.PIPE, text=True)
     try:
         assert json.loads(proc.stdout.readline()) == {"listening": ports}
@@ -376,7 +376,7 @@ def test_attacks_use_only_the_standard_library():
                 continue
             for name in names:
                 top = name.split(".")[0]
-                assert top == "attacks" or top in sys.stdlib_module_names, (path.name, name)
+                assert top in sys.stdlib_module_names, (path.name, name)
 
 
 # --- attack tickets -----------------------------------------------------------------------------
@@ -743,4 +743,4 @@ def test_attack_suite_dockerfile_is_pinned_and_non_root():
     app_base = [line for line in (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
                 if line.startswith("FROM python")]
     assert base == app_base  # same pinned Python as the app image
-    assert "\nUSER 10001\n" in text and "COPY attacks ./attacks" in text
+    assert "\nUSER 10001\n" in text and "COPY tests/attacks ./attacks" in text

@@ -7,9 +7,10 @@
 *.md
 context
 wheels
-tests
+tests/*
+# the attack-suite image (tests/attacks/Dockerfile) is built from this one folder
+!tests/attacks
 *.egg-info
 *.pem
-build/keys
 __pycache__
 reports

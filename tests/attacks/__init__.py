@@ -2,5 +2,5 @@
 allow), and the attack tickets replayed against the dispatcher contract.
 
 Runtime code, standard library only (no YAML, no app imports): it runs in its own small image
-(attacks/Dockerfile) as probe pods and as the chart's attack-suite test pods.
+(tests/attacks/Dockerfile) as probe pods and as the chart's attack-suite test pods.
 """

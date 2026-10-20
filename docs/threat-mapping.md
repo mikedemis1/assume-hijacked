@@ -11,7 +11,7 @@ Releases: ATT&CK v20 (Enterprise), ATLAS 2026.09, D3FEND 1.6.0, OWASP LLM Top 10
 
 ## Attacks and tests
 
-Rows 1 to 12 are the rows of "Attacks and what stops them" in [attacks.md](attacks.md). Attack tickets 1 to 11 of the replay (`attacks/tickets.py`, `python -m attacks.run replay`) are the same attacks run by a fully hijacked agent process against the real dispatcher and gateway, one ticket per row, so they map the same way.
+Rows 1 to 12 are the rows of "Attacks and what stops them" in [attacks.md](attacks.md). Attack tickets 1 to 11 of the replay (`tests/attacks/tickets.py`, `python -m attacks.run replay`) are the same attacks run by a fully hijacked agent process against the real dispatcher and gateway, one ticket per row, so they map the same way.
 
 | # | Attack | Main tests | OWASP LLM | OWASP ASI | ATT&CK | ATLAS |
 |---|---|---|---|---|---|---|
@@ -32,7 +32,7 @@ The ticket text is written by the customer and read by the agent from the databa
 
 ## Runtime walls on Kubernetes
 
-The probe matrix (`attacks/probes.py`, live run `tests/k8s/test_walls.py`) and the admission dry runs prove these on the kind cluster; the same chart and policies go to AKS.
+The probe matrix (`tests/attacks/probes.py`, live run `tests/k8s/test_walls.py`) and the admission dry runs prove these on the kind cluster; the same chart and policies go to AKS.
 
 | Attack | Tests | OWASP LLM | OWASP ASI | ATT&CK | ATLAS |
 |---|---|---|---|---|---|

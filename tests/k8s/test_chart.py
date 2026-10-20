@@ -1128,3 +1128,45 @@ def test_kind_keeps_role_passwords_in_kubernetes_secrets():
     assert from_secret == {"PGPASSWORD": {"name": "postgres-secrets", "key": "POSTGRES_PASSWORD"},
                            **{f"DB_PASSWORD_{r.upper()}": {"name": "postgres-secrets",
                                                            "key": f"DB_PASSWORD_{r.upper()}"} for r in DB_ROLES}}
+
+
+# --- the chart against the manifests (permissions/) ----------------------------------------------
+
+MANIFESTS = {p.stem: json.loads(p.read_text(encoding="utf-8"))
+             for p in sorted((ROOT / "permissions").glob("*.json"))}
+# The namespace of each component the manifests name (COMPONENTS lacks the agent and db-migrate).
+MANIFEST_NAMESPACES = {**{n: ns for n, (ns, _) in COMPONENTS.items()},
+                       "agent": "ah-agent", "db-migrate": "ah-core"}
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_every_manifest_has_its_service_account_in_its_namespace(env):
+    """The database has no workload of its own in the chart (a managed server on Azure, the
+    postgres StatefulSet on kind), and db-migrate runs on Azure only; every other manifest names
+    a ServiceAccount the chart creates in that component's namespace."""
+    accounts = {(o["metadata"]["namespace"], o["metadata"]["name"]) for o in objects(env, "ServiceAccount")}
+    for name, manifest in MANIFESTS.items():
+        if name == "db" or (name == "db-migrate" and env == "kind"):
+            continue
+        assert (MANIFEST_NAMESPACES[name], manifest["k8s"]["service_account"]) in accounts, (env, name)
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_only_the_tool_gateway_gets_the_signing_key(env):
+    """The manifests give a Key Vault Secrets User role on the tool gateway's vault to the tool
+    gateway alone; the chart must hand the signing key to exactly those pods, and the agent
+    gets none."""
+    holders = {n for n, m in MANIFESTS.items()
+               if any(r["role"] == "Key Vault Secrets User" and r["scope"] == "kv-tool-gateway"
+                      for r in m["azure"]["roles"])}
+    assert holders == {"tool-gateway"}
+    mounted = {name for name, spec in pod_specs(env)
+               if any(e["name"] == "GATEWAY_SIGNING_KEY_FILE" for c in containers(spec) for e in c.get("env", []))}
+    assert mounted == holders
+    if env == "kind":
+        with_key = {s["metadata"]["name"] for s in objects(env, "Secret") if "signing-key.pem" in s.get("stringData", {})}
+        assert with_key == {f"{n}-secrets" for n in holders}
+    else:
+        with_key = {s["metadata"]["name"] for s in objects(env, "SecretProviderClass")
+                    if "gateway-signing-key" in s["spec"]["parameters"]["objects"]}
+        assert with_key == holders

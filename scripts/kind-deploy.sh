@@ -139,8 +139,8 @@ wheels=$(env_setting LOCAL_WHEELS_DIR)
 # No provenance attestation: it carries the build time, so every build would get a new digest
 # and every run would restart every pod.
 docker build --quiet --provenance=false \
-    --build-context "wheels=${wheels:-build/empty}" \
-    --secret "id=pip_cert,src=${pip_cert:-build/no-pip-cert.empty}" \
+    --build-context "wheels=${wheels:-scripts/build/empty}" \
+    --secret "id=pip_cert,src=${pip_cert:-scripts/build/no-pip-cert.empty}" \
     -t "$PUSH:dev" . >/dev/null
 docker push --quiet "$PUSH:dev" >/dev/null
 digest=$(docker inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$PUSH:dev" \

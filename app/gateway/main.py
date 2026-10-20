@@ -6,7 +6,7 @@
 Environment: GATEWAY_SIGNING_KEY_FILE (EC P-256 private key, PEM: the only copy of the key the
 tools check), RISK_URL (http://risk-engine:8082), TOOL_URL_<TOOL> for each of the five tools,
 DB_PASSWORD_GATEWAY, CALLER_AUTH (k8s, the only mode), CAPABILITIES_DIR (the reviewed manifests; default:
-security/capabilities next to the code).
+the permissions folder next to the code).
 
 It does not start without any of these: a gateway that cannot sign, cannot ask the risk engine or
 has no reviewed description to compare would have to let calls through or refuse all of them.

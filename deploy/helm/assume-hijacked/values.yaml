@@ -84,7 +84,7 @@ dbPasswords:
   rotationJob: false
   rotationJobName: ""
 
-# The attack suite (attacks/, image built from attacks/Dockerfile and pushed to the registry):
+# The attack suite (tests/attacks/, image built from tests/attacks/Dockerfile and pushed to the registry):
 # `helm test` runs one probe pod per component that tries every forbidden edge and the allowed
 # ones (templates/attack-suite-job.yaml). Off by default.
 #   databaseAddress  azure only: the private endpoint IP of PostgreSQL (inside

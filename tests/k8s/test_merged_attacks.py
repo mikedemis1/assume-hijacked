@@ -2,7 +2,7 @@
 
 import pytest
 
-from attacks.tickets import ATTACK_TICKETS, Call, plan
+from tests.attacks.tickets import ATTACK_TICKETS, Call, plan
 from tests.k8s.test_replay import require_scripted_container
 
 

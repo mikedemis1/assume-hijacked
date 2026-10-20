@@ -41,7 +41,6 @@ venv/
 .env.*
 !.env.example
 # Local key files
-build/keys/
 *.pem
 *.key
 

@@ -15,7 +15,7 @@ COPY scripts/install-deps.sh /usr/local/bin/install-deps.sh
 COPY app ./app
 # The reviewed capability manifests: the tool gateway reads the arguments and the description
 # fingerprint of each tool from them (app/gateway/manifest.py).
-COPY security/capabilities ./security/capabilities
+COPY permissions ./permissions
 # Optional build secret "pip_cert": a CA bundle for networks that intercept TLS
 # (antivirus HTTPS scanning, corporate proxy). Empty or absent on a normal machine.
 # The wheels are bind-mounted for this step only, so they never end up in the image.

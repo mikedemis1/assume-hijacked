@@ -1,4 +1,4 @@
-"""The capability manifests (security/capabilities/*.json): what each component may do, written
+"""The capability manifests (permissions/*.json): what each component may do, written
 down so the tests below can compare it with the real database.
 
 These tests check the manifests against the application itself: the fingerprint of every tool
@@ -21,7 +21,7 @@ from app.tools import serve
 from tests.toolhttp import KEYS, bearer, post_each
 
 ROOT = Path(__file__).resolve().parent.parent
-CAPABILITIES = ROOT / "security" / "capabilities"
+CAPABILITIES = ROOT / "permissions"
 TOOL_COMPONENTS = {tool: "tool-" + tool.replace("_", "-") for tool in serve.TOOLS}
 # Keys a manifest may have. The first test below rejects any other, so a typo cannot drop a
 # permission without a word.
@@ -55,6 +55,14 @@ def test_the_database_setup_job_has_a_manifest_that_matches_its_chart_and_grants
     assert granted == wanted
     assert manifest["network"]["ingress_from"] == []
     assert set(manifest["network"]["egress_to"]) == {"db", "internet"}
+
+
+def test_every_component_has_exactly_one_manifest():
+    assert set(manifests()) == {
+        "agent", "console", "db-migrate", "db", "dispatcher", "executor", "llm-gateway", "risk-engine",
+        "tool-gateway", "tool-issue-bill-credit", "tool-lookup-account", "tool-read-ticket",
+        "tool-request-disconnection", "tool-set-temp-protection",
+    }
 
 
 def test_every_tool_and_the_database_has_a_manifest():

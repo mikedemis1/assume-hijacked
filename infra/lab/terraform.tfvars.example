@@ -19,5 +19,5 @@ alert_email = "owner@example.com"
 # 0 parks the Kata pool when no agent or tool needs to run.
 sandbox_node_count = 1
 
-# Default: <repo>/security/capabilities
-# capabilities_dir = "../../security/capabilities"
+# Default: <repo>/permissions
+# capabilities_dir = "../../permissions"

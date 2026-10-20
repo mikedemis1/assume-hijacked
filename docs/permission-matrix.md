@@ -1,6 +1,6 @@
 # Permission matrix
 
-Generated file, do not edit. Built from `security/expected-permissions.json` (itself generated from the capability manifests in `security/capabilities`). Regenerate with:
+Generated file, do not edit. Built from `security/expected-permissions.json` (itself generated from the capability manifests in `permissions`). Regenerate with:
 
     python -m secops.permassess.report --expected security/expected-permissions.json --out docs/permission-matrix.md
 

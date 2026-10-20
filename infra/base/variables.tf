@@ -80,7 +80,7 @@ variable "log_analytics_daily_quota_gb" {
 }
 
 variable "capabilities_dir" {
-  description = "Directory with the capability manifests (one JSON file per component). Null means <repo>/security/capabilities."
+  description = "Directory with the capability manifests (one JSON file per component). Null means <repo>/permissions."
   type        = string
   default     = null
 }
