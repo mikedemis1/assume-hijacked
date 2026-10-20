@@ -86,7 +86,8 @@ UNAUTHORIZED = {"error": "unauthorized"}
 
 CLAIM_OUTCOMES = ("issued", "none")
 REPLY_OUTCOMES = ("stored", "lease", "duplicate", "bad_request", "too_large")
-BLOCK_REASONS = ("script_mix", "currency", "number_word", "money_wording", "unapproved_number")
+BLOCK_REASONS = ("script_mix", "currency", "number_word", "money_wording", "billing_outcome", "unapproved_number")
+TEMPLATE_REASONS = ("effect_ticket",)
 REFUSAL_REASONS = (
     "missing", "malformed", "review_failed", "not_authenticated", "wrong_service_account", "no_pod",
 )
@@ -101,6 +102,8 @@ def init_metrics(metrics: Metrics) -> None:
         metrics.inc("dispatcher_replies_total", {"outcome": outcome}, by=0)
     for reason in BLOCK_REASONS:
         metrics.inc("dispatcher_replies_blocked_total", {"reason": reason}, by=0)
+    for reason in TEMPLATE_REASONS:
+        metrics.inc("dispatcher_replies_templated_total", {"reason": reason}, by=0)
     for reason in REFUSAL_REASONS:
         metrics.inc("dispatcher_callers_refused_total", {"reason": reason}, by=0)
     for outcome in JOB_OUTCOMES:
@@ -149,10 +152,13 @@ class Dispatcher:
     def _reply(self, caller: CallerIdentity, lease: str, text: str) -> str:
         if not LEASE_FORMAT.fullmatch(lease):
             return "lease"
-        outcome, ticket_id, blocked = self._store.finish_reply(lease, caller.pod, text)
+        outcome, ticket_id, blocked, kind = self._store.finish_reply(lease, caller.pod, text)
         if outcome == "lease":
             security_event("reply_refused", reason="lease")
             return "lease"
+        if kind == "template":
+            self._metrics.inc("dispatcher_replies_templated_total", {"reason": "effect_ticket"})
+            security_event("reply_templated", ticket_id=ticket_id, reason="effect_ticket")
         if blocked:
             self._metrics.inc("dispatcher_replies_blocked_total", {"reason": blocked})
             security_event("reply_blocked", ticket_id=ticket_id, reason=blocked, where="dispatcher")

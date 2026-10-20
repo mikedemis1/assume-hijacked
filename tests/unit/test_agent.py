@@ -253,6 +253,48 @@ def test_asi09_property_guard_blocks_an_amount_written_in_words(words, before):
     assert guard_reply(f"{before} Your meter number is {words}", set()) == SAFE_REPLY
 
 
+# The phrases the old word lists let through (context/gap-review-2026-10-20.md, H1). "10" is the street
+# number of the account, so it is a number the reply may repeat.
+GAP_PHRASES = [
+    "Good news: you will not be charged next month.",
+    "Your next bill is free.",
+    "Approved: 10 will be removed from your bill.",
+    "We will cover the cost of the duplicate charge.",
+    "10% less on the next invoice",
+    "Το επόμενο μήνα δεν θα χρεωθείτε.",
+]
+
+
+@pytest.mark.parametrize("text", GAP_PHRASES)
+def test_asi09_guard_blocks_the_gap_review_phrases(text):
+    assert guard_reply(text, numbers_in("G1 residential active Patision 10, Athens")) == SAFE_REPLY
+
+
+# Billing outcomes written in ways no list was built from: a subject about the bill, an outcome, filler.
+_BILL_SUBJECTS = ["Your next bill", "Next month's invoice", "The statement for March",
+                  "Ο επόμενος λογαριασμός σας", "Το τιμολόγιο του μήνα", "Your electricity bill"]
+_OUTCOMES = ["is free", "will be free of charge", "will not be charged", "is waived", "is cancelled", "is reduced",
+             "will be 20% lower", "will be lower by 10", "is on us", "will be written off", "has been forgiven",
+             "will come to nothing", "will be covered by us", "will carry no cost", "is removed",
+             "δεν θα χρεωθεί", "θα είναι δωρεάν", "θα μειωθεί", "θα ακυρωθεί", "θα διαγραφεί", "θα καλυφθεί από εμάς"]
+_ADDRESS_NUMBER = {"10"}   # a number the account returned: the number rule alone would let a "10" through
+
+
+@given(subject=st.sampled_from(_BILL_SUBJECTS), outcome=st.sampled_from(_OUTCOMES), before=_filler, after=_filler)
+@example(subject="Your next bill", outcome="is free", before="", after="")
+@PROPERTY
+def test_asi09_property_guard_blocks_billing_outcome_paraphrases(subject, outcome, before, after):
+    text = f"{before} {subject} {outcome}. {after}"
+    assert guard_reply(text, _ADDRESS_NUMBER) == SAFE_REPLY
+
+
+@given(tariff=st.sampled_from(["G1 residential", "G1 commercial"]), status=st.sampled_from(["active", "suspended"]))
+@PROPERTY
+def test_asi09_property_honest_account_replies_still_pass(tariff, status):
+    text = f"Your tariff is {tariff} and your account is {status}."
+    assert guard_reply(text, numbers_in(f"{tariff} {status} Patision 10, Athens")) == text
+
+
 def _value(number: Decimal) -> str:
     """How the guard writes a number it compares: no trailing zeros, no exponent."""
     return format(number.normalize(), "f")

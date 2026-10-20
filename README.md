@@ -67,8 +67,10 @@ One test runs every attack ticket through the real agent, tool gateway and risk 
 | ASI04 Agentic Supply Chain | Unpinned or swapped image; changed tool description | Admission by digest; gateway fingerprint | `unit/test_gateway.py`, `unit/test_capabilities.py`, `k8s/test_walls.py`, `k8s/test_chart.py` |
 | ASI06 Memory & Context Poisoning | Next ticket sees the previous ticket's data | One Job per ticket, no memory, lease bound to the pod | `k8s/test_replay.py` |
 | ASI08 Cascading Failures | Risk engine down or too slow | The gateway fails closed | `unit/test_gateway.py`, `unit/test_risk_service.py` |
-| ASI09 Human-Agent Trust Exploitation | A reply that promises money | Reply guard in the agent and again in the dispatcher; no approve tool | `attacks/test_attack_table.py`, `unit/test_agent.py`, `unit/test_dispatcher.py`, `unit/test_llmgw.py` |
+| ASI09 Human-Agent Trust Exploitation | A reply that promises money | On a ticket with a credit or move-out request, the dispatcher stores a fixed template, never the model's text; on other tickets a wording filter in the agent and again in the dispatcher; no approve tool | `attacks/test_attack_table.py`, `unit/test_agent.py`, `unit/test_dispatcher.py`, `unit/test_llmgw.py` |
 | ASI10 Rogue Agents | The agent keeps calling denied tools | Three denials pause all agents; a SeniorApprover resumes | `unit/test_gateway.py`, `unit/test_risk_floor.py`, `unit/test_risk_rules.py`, `unit/test_console.py` |
+
+The reply guard is a word filter, and a word filter has gaps: a paraphrase nobody listed can get through. So where a promise would cost money, the model's text is not used at all: if a credit or a move-out was filed or attempted on the ticket, the dispatcher decides that from the database and stores a fixed template with the request numbers. On every other ticket the filter is the only wall, and its known limits are in the docstring of `app/agent/guard.py`.
 
 ASI05 (Unexpected Code Execution) and ASI07 (Insecure Inter-Agent Communication) are not applicable: the agent runs no code and there is one agent. See [docs/attacks.md](docs/attacks.md).
 

@@ -352,3 +352,93 @@ def test_asi09_dispatcher_runs_the_guard_again(kube_harness, admin, name, text, 
     assert (answer.status_code, answer.json()) == (200, {"stored": True})   # it does not say it replaced the text
     assert stored(admin, ticket) == SAFE_REPLY
     assert metric(h, "dispatcher_replies_blocked_total", reason=reason) == 1
+
+
+# --- POST /reply: the gap-review phrases, and effect tickets (gap H1) --------------------------------
+
+# Plain money promises that the old word lists let through (context/gap-review-2026-10-20.md, H1).
+GAP_PHRASES = [
+    "Good news: you will not be charged next month.",
+    "Your next bill is free.",
+    "Approved: 10 will be removed from your bill.",   # 10 is the street number, so it is an allowed number
+    "We will cover the cost of the duplicate charge.",
+    "10% less on the next invoice",
+    "Το επόμενο μήνα δεν θα χρεωθείτε.",
+]
+
+
+def kind_of(admin, ticket):
+    return admin.execute("SELECT kind FROM replies WHERE ticket_id = %s", (ticket,)).fetchone()["kind"]
+
+
+def record_call(admin, lease, tool, outcome):
+    """A row in the gateway's record of calls, as the gateway writes it after a call."""
+    admin.execute(
+        "INSERT INTO tool_calls (lease_hash, tool, arg_names, dropped_args, outcome) VALUES (%s, %s, '{}', '{}', %s)",
+        (hashlib.sha256(lease.encode()).digest(), tool, outcome),
+    )
+
+
+@pytest.mark.parametrize("text", GAP_PHRASES)
+def test_asi09_dispatcher_blocks_the_gap_review_phrases(kube_harness, admin, text):
+    h = kube_harness
+    ticket, lease = claimed(h)
+    answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": text})
+    assert answer.status_code == 200
+    assert stored(admin, ticket) == SAFE_REPLY
+    assert kind_of(admin, ticket) == "safe"
+
+
+def test_asi09_honest_reply_on_a_ticket_without_an_effect_passes(kube_harness, admin):
+    h = kube_harness
+    ticket, lease = claimed(h)
+    text = "Your tariff is G1 residential and your account is active."
+    post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": text})
+    assert stored(admin, ticket) == text
+    assert kind_of(admin, ticket) == "agent"
+    assert metric(h, "dispatcher_replies_templated_total", reason="effect_ticket") == 0
+
+
+# What a hijacked model could write after an effect call: harmless-looking words, a promise, anything.
+MODEL_TEXTS = [
+    "Your refund of 5 euros is approved and the power will be cut on 1 November.",
+    "Thank you for your patience.",
+    "Your tariff is G1 residential and your account is active.",   # passes the guard, still not stored
+]
+EFFECT_CALLS = [
+    ("issue_bill_credit", "ok", True, False),
+    ("issue_bill_credit", "denied", True, False),
+    ("request_disconnection", "ok", False, True),
+    ("request_disconnection", "denied", False, False),   # attempted, nothing filed
+]
+
+
+@pytest.mark.parametrize("model_text", MODEL_TEXTS)
+@pytest.mark.parametrize("tool, outcome, credit_notice, medical", EFFECT_CALLS)
+def test_asi09_effect_ticket_stores_the_template_whatever_the_model_wrote(
+        kube_harness, admin, tool, outcome, credit_notice, medical, model_text):
+    h = kube_harness
+    ticket, lease = claimed(h)
+    record_call(admin, lease, tool, outcome)
+    post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": model_text})
+    reply = stored(admin, ticket)
+    assert reply.startswith(replies.effect_template(()))                            # the fixed text first
+    assert "A member of staff will review it" in reply
+    assert (replies.CREDIT_NOTICE in reply) is credit_notice
+    assert (replies.MEDICAL_QUESTION in reply) is medical
+    for word in ("refund", "euro", "approved", "cut", "November", "tariff", "Thank you for your patience"):
+        assert word not in reply
+    assert kind_of(admin, ticket) == "template"
+    assert metric(h, "dispatcher_replies_templated_total", reason="effect_ticket") == 1
+    assert metric(h, "dispatcher_replies_blocked_total", reason="money_wording") == 0
+
+
+def test_effect_template_has_no_amount_and_no_promise():
+    # The text is fixed, so this is checked once for every shape it can take, with the guard itself:
+    # no digit except the request numbers, no money wording.
+    from app.agent.guard import block_reason
+
+    for ids in ((), (7,), (7, 12)):
+        text = replies.effect_template(ids)
+        assert block_reason(text, {str(i) for i in ids}) is None, ids
+        assert not any(c.isdigit() for c in text.replace("#7", "").replace("#12", "")), ids

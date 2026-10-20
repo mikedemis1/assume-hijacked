@@ -148,16 +148,20 @@ class DispatcherDb:
         def work(conn):
             facts = conn.execute("SELECT * FROM finish_reply_facts(%s, %s)", (lease, pod)).fetchone()
             if facts is None:
-                return "lease", None, None
-            done = replies.finish(text, facts["account_text"], facts["credit_asked"], facts["moveout_submitted"])
+                return "lease", None, None, None
+            done = replies.finish(
+                text, facts["account_text"], facts["credit_asked"], facts["moveout_submitted"],
+                facts["effect_attempted"], tuple(facts["request_ids"]),
+            )
             stored = conn.execute(
-                "INSERT INTO replies (ticket_id, text) VALUES (%s, %s) ON CONFLICT (ticket_id) DO NOTHING RETURNING ticket_id",
-                (facts["ticket_id"], done.text),
+                "INSERT INTO replies (ticket_id, text, kind) VALUES (%s, %s, %s) "
+                "ON CONFLICT (ticket_id) DO NOTHING RETURNING ticket_id",
+                (facts["ticket_id"], done.text, done.kind),
             ).fetchone()
             if stored:
                 conn.execute("UPDATE agent_runs SET status = 'replied' WHERE ticket_id = %s AND status = 'claimed'",
                              (facts["ticket_id"],))
-            return "stored" if stored else "duplicate", facts["ticket_id"], done.blocked
+            return "stored" if stored else "duplicate", facts["ticket_id"], done.blocked, done.kind
         return self._use(work)
 
     # --- Jobs (Kubernetes) ---

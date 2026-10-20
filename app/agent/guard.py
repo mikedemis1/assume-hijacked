@@ -13,7 +13,11 @@ this conversation. Anything else is replaced by SAFE_REPLY (fail closed). A repl
    Category: number_word.
 4. it has money wording (credit, refund, back, off, pay, balance, πίσω, επιστροφ ...), with or without
    a number: "your credit has been approved" is a promise too. Category: money_wording.
-5. it has a number (digits) that is not in `allowed_numbers`. Category: unapproved_number.
+5. it has billing-outcome wording: bill, invoice, charge, cost, fee, free, waive, cancel, remove,
+   reduce, lower, less, cover, percent, "%", "on us", write off, forgive, and the Greek ones (χρέωση,
+   λογαριασμός, τιμολόγιο, δωρεάν, μείωση, ακύρωση, διαγραφή, κάλυψη, ποσοστό ...). A promise about a
+   bill needs no digit ("your next bill is free", "you will not be charged"). Category: billing_outcome.
+6. it has a number (digits) that is not in `allowed_numbers`. Category: unapproved_number.
 
 How text is compared. Before any matching the text is folded: Unicode NFKC (full-width digits and
 ligatures become plain), zero-width and other format characters removed, accents removed, case folded,
@@ -33,8 +37,11 @@ value the tool meant, and adding both would let the reply say a value the tool n
 So a reply is allowed only if every reading of each number in it is a value some tool number
 unambiguously gave, and an honest reply that repeats an ambiguous tool number gets SAFE_REPLY.
 
-Limits. Word lists (number words, currency words, money verbs) can never be complete: a spelling or
-word nobody listed gets through. The robust fix is structured or template replies, not a better list.
+Limits. Word lists (number words, currency words, money verbs, billing words) can never be complete: a
+spelling or word nobody listed gets through. That is why this guard is only a wording filter, and why
+the dispatcher does not store the model's text at all on a ticket where a credit or move-out was
+filed or attempted: it stores a fixed template (app/dispatcher/replies.py). The guard is the wall
+for the other tickets, where it has these known limits.
 The guard also cannot tell what an allowed number means: if a tool returned "10" (Patision 10), a
 reply may still repeat "10" in a misleading way ("reduced by 10") unless it matches a rule above.
 The word lists block some harmless text (central, recently, "σε 5 λεπτά", "call us back", "your
@@ -61,6 +68,16 @@ _GR_SMALL = (
     "δυο τρια τρεισ τεσσερα τεσσερισ τεσσαρα τεσσαρισ πεντε εξι επτα εφτα οκτω οχτω εννια εννεα "
     "ενδεκα δωδεκα"
 ).split()
+# Billing outcomes. Folded text: no accents, lower case, final sigma plain. Matches are substrings on
+# purpose (charg: charge, charged, charging); "less" and "free" are whole words so "unless" and
+# "carefree-looking" ids are not caught by accident.
+BILLING_WORD = re.compile(
+    r"bill|invoice|statement|charg|costs?|fees?|free|gratis|complimentary|waiv|cancel|forgiv|"
+    r"write.?off|written.?off|remov|reduc|lower|less|cover|percent|per.?cent|%|on us|on the house|"
+    r"nothing|zero|nil|"
+    r"λογαριασμ|τιμολογ|χρεω|χρεων|δωρεαν|δωρο|μειω|ακυρω|διαγραφ|καλυψ|καλυφθ|αφαιρ|ποσοστ|μηδεν|"
+    r"συγχωρ|σβηστ|σβην|κοστ|εξοδ|χωρισ χρε"
+)
 NUMBER_WORD = re.compile(
     r"\b(?:" + "|".join(_EN_SMALL + _GR_SMALL) + r")\b"
     # Tens, hundreds and thousands match as prefixes: fortynine, σαρανταεννια, δεκαπεντε.
@@ -147,6 +164,8 @@ def block_reason(text: str, allowed_numbers: set[str]) -> str | None:
         return "number_word"
     if MONEY_WORD.search(folded):
         return "money_wording"
+    if BILLING_WORD.search(folded):
+        return "billing_outcome"
     for token in NUMBER.findall(folded):
         if not _readings(token) <= allowed_numbers:
             return "unapproved_number"

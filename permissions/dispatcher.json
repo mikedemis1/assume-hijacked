@@ -21,7 +21,7 @@
       ],
       "replies": [
         "SELECT (ticket_id)",
-        "INSERT (text, ticket_id)"
+        "INSERT (kind, text, ticket_id)"
       ],
       "tickets": [
         "SELECT (id, status)"

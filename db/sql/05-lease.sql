@@ -330,9 +330,16 @@ CREATE TABLE agent_runs (
 
 -- replies: the answer to a customer, one per ticket. What is stored passed the reply guard in the
 -- dispatcher (outside the agent) and carries the notices the dispatcher added.
+--
+-- kind says where the text came from, so the console and Grafana can see it:
+--   agent     the model's text passed the guard
+--   safe      the guard replaced the model's text with SAFE_REPLY
+--   template  an effect tool (credit, move-out) was called on the ticket, so the dispatcher stored a
+--             fixed template and never the model's text
 CREATE TABLE replies (
     ticket_id  int PRIMARY KEY REFERENCES tickets,
     text       text NOT NULL CHECK (text <> '' AND length(text) <= 10000),
+    kind       text NOT NULL DEFAULT 'agent' CHECK (kind IN ('agent', 'safe', 'template')),
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -343,7 +350,7 @@ GRANT SELECT (id, status) ON tickets TO dispatcher;
 GRANT SELECT (id, ticket_id, job_name, status, created_at), INSERT (ticket_id, job_name, status),
     UPDATE (lease_hash, status) ON agent_runs TO dispatcher;
 GRANT USAGE ON SEQUENCE agent_runs_id_seq TO dispatcher;
-GRANT SELECT (ticket_id), INSERT (ticket_id, text) ON replies TO dispatcher;
+GRANT SELECT (ticket_id), INSERT (ticket_id, text, kind) ON replies TO dispatcher;
 
 -- What the dispatcher needs to finish a reply and cannot be told by the agent, because a hijacked
 -- agent would tell it nothing: for a live lease, the text a tool may have shown the model about the
@@ -377,7 +384,8 @@ GRANT EXECUTE ON FUNCTION reply_facts(text) TO dispatcher;
 -- gateway's audit write follows the tool's commit over a separate connection. Only requests filed
 -- after this lease opened count: an earlier run's request on the same ticket is not this run's.
 CREATE FUNCTION finish_reply_facts(p_lease text, p_pod text)
-RETURNS TABLE(ticket_id int, account_text text, credit_asked bool, moveout_submitted bool)
+RETURNS TABLE(ticket_id int, account_text text, credit_asked bool, moveout_submitted bool,
+              effect_attempted bool, request_ids int[])
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
     v_ticket int;
@@ -397,7 +405,14 @@ BEGIN
         (EXISTS (SELECT 1 FROM public.tool_calls c WHERE c.lease_hash = v_hash AND c.tool = 'issue_bill_credit')
          OR EXISTS (SELECT 1 FROM public.action_requests r WHERE r.ticket_id = v_ticket AND r.kind = 'credit' AND r.created_at >= v_opened)),
         (EXISTS (SELECT 1 FROM public.tool_calls c WHERE c.lease_hash = v_hash AND c.tool = 'request_disconnection' AND c.outcome = 'ok')
-         OR EXISTS (SELECT 1 FROM public.action_requests r WHERE r.ticket_id = v_ticket AND r.kind = 'move_out' AND r.created_at >= v_opened))
+         OR EXISTS (SELECT 1 FROM public.action_requests r WHERE r.ticket_id = v_ticket AND r.kind = 'move_out' AND r.created_at >= v_opened)),
+        -- Any effect tool called on the lease (whatever it answered), or any request filed: the
+        -- dispatcher stores a template then, never the model's text.
+        (EXISTS (SELECT 1 FROM public.tool_calls c WHERE c.lease_hash = v_hash
+                 AND c.tool IN ('issue_bill_credit', 'request_disconnection'))
+         OR EXISTS (SELECT 1 FROM public.action_requests r WHERE r.ticket_id = v_ticket AND r.created_at >= v_opened)),
+        ARRAY(SELECT r.id FROM public.action_requests r
+              WHERE r.ticket_id = v_ticket AND r.created_at >= v_opened ORDER BY r.id)
       FROM public.tickets t JOIN public.accounts a ON a.customer_id = t.customer_id
       JOIN public.supply_points s ON s.id = a.supply_point_id WHERE t.id = v_ticket;
 END $$;

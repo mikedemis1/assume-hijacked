@@ -9,7 +9,11 @@ the text it is given, and adds the two notices itself.
        the ticket owner's account (tariff, status, address): what lookup_account can have shown the
        model. They come from the database (reply_facts), not from the agent. A reply the guard
        blocks is replaced by SAFE_REPLY, a text that claims nothing.
-    2. CREDIT_NOTICE is added when issue_bill_credit was called on the lease, whether the call worked
+    2. On a ticket where a credit or move-out request was filed or attempted, the model's text is not
+       stored at all: a fixed template is (effect_template). The facts come from the database, never
+       from the agent. A word filter can be talked round by a paraphrase nobody listed, so the one
+       place where a promise costs money gets no free text.
+    3. CREDIT_NOTICE is added when issue_bill_credit was called on the lease, whether the call worked
        or not; MEDICAL_QUESTION when a move-out request went in. The facts are read from the
        gateway's record of calls (tool_calls), so an agent that "forgets" them changes nothing. Both
        go on after the guard, because the credit notice names a credit, which the guard would block.
@@ -43,6 +47,23 @@ CREDIT_NOTICE = (
     "Καμία πίστωση δεν επιβεβαιώνεται πριν ελεγχθεί."
 )
 
+# Stored instead of the model's text when an effect tool was called on the lease. Fixed text: no amount,
+# no date, no promise. The only variable part is the numbers of the requests the database holds.
+EFFECT_RECEIVED = (
+    "We have received your {what}. A member of staff will review it and you will hear from us.\n"
+    "Λάβαμε {what_gr}. Μέλος του προσωπικού θα το εξετάσει και θα ενημερωθείτε."
+)
+
+
+def effect_template(request_ids: tuple[int, ...]) -> str:
+    """The fixed reply for an effect ticket. `request_ids` are the ids of the requests filed on the
+    ticket (action_requests), or none when the effect was attempted and nothing was filed."""
+    if not request_ids:
+        return EFFECT_RECEIVED.format(what="message", what_gr="το μήνυμά σας")
+    numbers = ", ".join(f"#{i}" for i in request_ids)
+    return EFFECT_RECEIVED.format(what=f"request ({numbers})", what_gr=f"το αίτημά σας ({numbers})")
+
+
 # The longest reply that is taken, in characters. The longest text the agent sends is far shorter.
 MAX_TEXT_CHARS = 4000
 
@@ -51,14 +72,18 @@ MAX_TEXT_CHARS = 4000
 class Finished:
     text: str  # what is stored and sent to the customer
     blocked: str | None  # the guard's category when the agent's own text was replaced
+    kind: str  # stored in replies.kind: "agent" (the model's text passed), "safe" (guard replaced it), "template"
 
 
-def finish(text: str, account_text: str, credit_asked: bool, moveout_submitted: bool) -> Finished:
-    allowed = numbers_in(account_text)
-    reason = block_reason(text, allowed)
-    parts = [SAFE_REPLY if reason else text]
+def finish(text: str, account_text: str, credit_asked: bool, moveout_submitted: bool,
+           effect_attempted: bool = False, request_ids: tuple[int, ...] = ()) -> Finished:
+    if effect_attempted or credit_asked or moveout_submitted or request_ids:
+        parts, reason, kind = [effect_template(request_ids)], None, "template"
+    else:
+        reason = block_reason(text, numbers_in(account_text))
+        parts, kind = [SAFE_REPLY if reason else text], "safe" if reason else "agent"
     if credit_asked:
         parts.append(CREDIT_NOTICE)
     if moveout_submitted:
         parts.append(MEDICAL_QUESTION)
-    return Finished("\n\n".join(parts), reason)
+    return Finished("\n\n".join(parts), reason, kind)
