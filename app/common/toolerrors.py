@@ -6,7 +6,8 @@ hold health data or the lease), never a stack trace, never which wall said no.
 
     lease             the lease is unknown, expired, revoked or does not list this tool
     denied            a wall refused the call (the risk engine, a pause, the wrong pod, a tool
-                      whose description changed). The agent is not told which.
+                      whose description changed, a lease whose one effect request is already
+                      filed). The agent is not told which.
     invalid_argument  the tool did not accept the arguments
     unavailable       the tool, or something the call needs, could not be reached
     tool_error        the tool failed for any other reason

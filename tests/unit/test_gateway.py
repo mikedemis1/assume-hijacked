@@ -457,3 +457,11 @@ def test_asi10_repeated_denials_pause_every_agent(settings, admin, as_role):
         assert len(call_assessment_rows(admin)) == asked                                 # the engine was not asked
     finally:
         risk.close()
+
+
+def test_m1_effect_already_requested_reaches_the_agent_as_denied():
+    from app.common import toolerrors
+    from app.gateway.proxy import ToolReply, reply_category
+
+    reply = ToolReply(True, "Error executing tool issue_bill_credit: effect already requested", None)
+    assert reply_category(reply) == toolerrors.DENIED

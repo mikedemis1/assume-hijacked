@@ -111,3 +111,69 @@ def test_asi03_rls_hides_rows_from_tool_roles(admin):
                 assert admin.execute(
                     "SELECT has_table_privilege(%s, %s, 'SELECT') AS ok", (role, table)
                 ).fetchone()["ok"] is False
+
+
+# --- one effect request per lease, in the database (gap M1) ---------------------------------------
+# A hijacked tool pod holds a valid lease for 15 minutes and could call its api_* function again
+# and again. action_requests.lease_hash (set only by those functions) has a partial unique index,
+# so the second request on a lease fails, whichever of the two effect tools asks.
+
+EFFECT_TOOLS = ["issue_bill_credit", "request_disconnection"]
+ONE_EFFECT_REFUSAL = "effect already requested"
+
+
+def _requests(admin):
+    return admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"]
+
+
+@pytest.mark.parametrize("first", EFFECT_TOOLS)
+@pytest.mark.parametrize("second", EFFECT_TOOLS)
+def test_m1_second_effect_request_on_one_lease_is_refused(admin, as_role, first, second):
+    lease = open_lease(admin, 1, EFFECT_TOOLS)
+    call_api(as_role(f"tool_{first}"), first, lease)
+    with pytest.raises(psycopg.errors.RaiseException) as refused:
+        call_api(as_role(f"tool_{second}"), second, lease)
+    # A fixed text: no constraint name, no table, no lease.
+    assert refused.value.diag.message_primary == ONE_EFFECT_REFUSAL
+    assert lease not in str(refused.value)
+    assert _requests(admin) == 1
+
+
+def test_m1_different_leases_each_file_one_request(admin, as_role):
+    # Control: the index is per lease. Two runs on one ticket (the second after the first ended)
+    # each file one request.
+    for tool in EFFECT_TOOLS:
+        call_api(as_role(f"tool_{tool}"), tool, open_lease(admin, 1, EFFECT_TOOLS))
+    assert _requests(admin) == 2
+
+
+def test_m1_the_request_stores_the_hash_of_its_lease(admin, as_role):
+    lease = open_lease(admin, 1, EFFECT_TOOLS)
+    call_api(as_role("tool_issue_bill_credit"), "issue_bill_credit", lease)
+    stored = admin.execute("SELECT lease_hash FROM action_requests").fetchone()["lease_hash"]
+    assert bytes(stored) == hashlib.sha256(lease.encode()).digest()
+
+
+def test_m1_no_role_can_set_the_lease_hash_except_the_api_functions_owner(admin):
+    roles = [r["rolname"] for r in admin.execute(
+        "SELECT rolname FROM pg_roles WHERE rolname !~ '^pg_' AND NOT rolsuper").fetchall()]
+    assert "tool_issue_bill_credit" in roles
+    can = {
+        r: [p for p in ("INSERT", "UPDATE") if admin.execute(
+            "SELECT has_column_privilege(%s, 'action_requests', 'lease_hash', %s) AS ok", (r, p)
+        ).fetchone()["ok"]]
+        for r in roles
+    }
+    assert {r: p for r, p in can.items() if p} == {"api_owner": ["INSERT"]}
+
+
+@pytest.mark.parametrize("tool", TOOLS)
+def test_m1_a_tool_role_cannot_write_the_hash_directly(admin, as_role, tool):
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        as_role(f"tool_{tool}").execute(
+            "INSERT INTO action_requests (kind, ticket_id, account_id, move_out_date, lease_hash) "
+            "VALUES ('move_out', 1, 1, now()::date + 3, sha256('x'::bytea))"
+        )
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        as_role(f"tool_{tool}").execute("UPDATE action_requests SET lease_hash = NULL")
+    assert _requests(admin) == 0

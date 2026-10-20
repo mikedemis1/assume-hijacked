@@ -50,3 +50,18 @@ def test_asi03_no_tool_returns_health_fields(as_role, admin):  # ②
     result = lookup_account(as_role("tool_lookup_account"), open_lease(admin, 3))
     assert result["name"] == "Maria Ioannou"
     assert set(result) == {"name", "tariff", "status", "address"}
+
+
+def test_m1_second_credit_on_one_lease_is_a_clean_refusal(as_role, admin):
+    from app.tools.common import EFFECT_ALREADY_REQUESTED, EffectRefused
+
+    conn = as_role("tool_issue_bill_credit")
+    lease = open_lease(admin, 1)
+    issue_bill_credit(conn, lease, 49, "duplicate_charge", 2)
+    with pytest.raises(EffectRefused) as refused:
+        issue_bill_credit(conn, lease, 49, "duplicate_charge", 2)
+    # Fixed text: no index name, no function name, no lease.
+    assert str(refused.value) == EFFECT_ALREADY_REQUESTED
+    assert refused.value.__cause__ is None
+    assert lease not in str(refused.value)
+    assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 1

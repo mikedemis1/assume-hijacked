@@ -24,7 +24,7 @@
             "SELECT (customer_id, id, status, supply_point_id, tariff)"
           ],
           "action_requests": [
-            "INSERT (account_id, amount_eur, evidence_ref, kind, move_out_date, reason, ticket_id)",
+            "INSERT (account_id, amount_eur, evidence_ref, kind, lease_hash, move_out_date, reason, ticket_id)",
             "SELECT (created_at, id, kind, ticket_id)"
           ],
           "action_requests_id_seq": [

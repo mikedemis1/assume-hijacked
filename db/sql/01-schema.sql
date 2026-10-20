@@ -64,8 +64,17 @@ CREATE TABLE action_requests (
     status          text NOT NULL DEFAULT 'pending',
     decision_reason text,
     created_at      timestamptz NOT NULL DEFAULT now(),
-    decided_at      timestamptz
+    decided_at      timestamptz,
+    -- sha256 of the lease the request was filed on. Set only inside api_request_credit and
+    -- api_request_moveout (05-lease.sql); no role can write it (only api_owner has INSERT on it).
+    -- NULL for a request filed any other way (tests, seed data).
+    lease_hash      bytea
 );
+
+-- One effect request per lease, whichever tool files it (gap M1). A hijacked tool pod holding a
+-- valid lease cannot file a second credit or move-out request on it: the second insert fails.
+CREATE UNIQUE INDEX action_requests_one_effect_per_lease ON action_requests (lease_hash)
+    WHERE lease_hash IS NOT NULL;
 
 -- Each request tool files only its own kind of request, and always for the account of
 -- the customer who opened the ticket: the ticket decides, not the tool or the LLM.

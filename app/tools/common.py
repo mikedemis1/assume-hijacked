@@ -17,12 +17,22 @@ from mcp.server.mcpserver.exceptions import ToolError
 # does not list the calling tool.
 LEASE_INVALID = "lease invalid"
 
+# The exact text api_request_credit / api_request_moveout raise when the lease already filed an
+# effect request (db/sql/01-schema.sql, one effect per lease). The tool turns it into a fixed
+# ToolError; the gateway shows the agent only the category "denied".
+EFFECT_ALREADY_REQUESTED = "effect already requested"
+
 
 class LeaseError(ToolError):
     """The lease is unknown, expired, revoked or does not list this tool.
 
     A ToolError, so the MCP server passes the text "lease invalid" back to the caller; any other
     exception reaches it only as "Error executing tool <name>", with no detail."""
+
+
+class EffectRefused(ToolError):
+    """The lease has already filed its one effect request. Fixed text, no database detail, no
+    lease: the agent only ever sees the category `denied` (app/common/toolerrors.py)."""
 
 
 # What a tool says when it does not accept the arguments. Fixed text: the library otherwise shows
@@ -47,11 +57,14 @@ def checked_arguments() -> Iterator[None]:
 
 
 def call_api(conn: psycopg.Connection, query: str, params: tuple) -> psycopg.Cursor:
-    """Run an api_* call. A refused lease becomes LeaseError("lease invalid") with no database
-    detail (function names, lines), so the agent learns only that the lease was refused."""
+    """Run an api_* call. A refused lease becomes LeaseError("lease invalid") and a second effect
+    request on a lease becomes EffectRefused, both with no database detail (function names,
+    index names, lines), so the agent learns only that the call was refused."""
     try:
         return conn.execute(query, params)
     except psycopg.errors.RaiseException as err:
         if err.diag.message_primary == LEASE_INVALID:
             raise LeaseError(LEASE_INVALID) from None
+        if err.diag.message_primary == EFFECT_ALREADY_REQUESTED:
+            raise EffectRefused(EFFECT_ALREADY_REQUESTED) from None
         raise

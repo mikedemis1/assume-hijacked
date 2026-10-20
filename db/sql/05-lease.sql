@@ -166,9 +166,13 @@ BEGIN
     SELECT a.id INTO STRICT v_account
     FROM public.tickets t JOIN public.accounts a ON a.customer_id = t.customer_id
     WHERE t.id = v_ticket;
-    INSERT INTO public.action_requests (kind, ticket_id, account_id, move_out_date)
-    VALUES ('move_out', v_ticket, v_account, p_date)
-    RETURNING id INTO v_id;
+    BEGIN
+        INSERT INTO public.action_requests (kind, ticket_id, account_id, move_out_date, lease_hash)
+        VALUES ('move_out', v_ticket, v_account, p_date, sha256(convert_to(p_lease, 'UTF8')))
+        RETURNING id INTO v_id;
+    EXCEPTION WHEN unique_violation THEN
+        RAISE EXCEPTION 'effect already requested';  -- fixed text: no index name, no lease
+    END;
     RETURN v_id;
 END $$;
 
@@ -195,9 +199,14 @@ BEGIN
     SELECT a.id INTO STRICT v_account
     FROM public.tickets t JOIN public.accounts a ON a.customer_id = t.customer_id
     WHERE t.id = v_ticket;
-    INSERT INTO public.action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref)
-    VALUES ('credit', v_ticket, v_account, p_amount, p_reason, p_evidence)
-    RETURNING id INTO v_id;
+    BEGIN
+        INSERT INTO public.action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref, lease_hash)
+        VALUES ('credit', v_ticket, v_account, p_amount, p_reason, p_evidence,
+                sha256(convert_to(p_lease, 'UTF8')))
+        RETURNING id INTO v_id;
+    EXCEPTION WHEN unique_violation THEN
+        RAISE EXCEPTION 'effect already requested';  -- fixed text: no index name, no lease
+    END;
     RETURN v_id;
 END $$;
 
@@ -230,7 +239,7 @@ GRANT SELECT (id, customer_id, body) ON tickets TO api_owner;
 GRANT SELECT (id, name) ON customers TO api_owner;
 GRANT SELECT (id, customer_id, supply_point_id, tariff, status) ON accounts TO api_owner;
 GRANT SELECT (id, address) ON supply_points TO api_owner;
-GRANT INSERT (kind, ticket_id, account_id, amount_eur, reason, evidence_ref, move_out_date)
+GRANT INSERT (kind, ticket_id, account_id, amount_eur, reason, evidence_ref, move_out_date, lease_hash)
     ON action_requests TO api_owner;
 GRANT SELECT (id) ON action_requests TO api_owner;  -- for RETURNING id
 GRANT USAGE ON SEQUENCE action_requests_id_seq TO api_owner;

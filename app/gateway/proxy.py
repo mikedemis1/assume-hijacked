@@ -72,7 +72,7 @@ NAMES_LIMIT = 20
 # What a tool says when its database function refuses the lease, and when it refuses the arguments
 # (app/tools/common.py). The MCP library puts "Error executing tool <name>" in front of both.
 _TOOL_ERROR = re.compile(
-    r"Error executing tool \w+: (?:(?P<lease>lease invalid)|(?P<arg>invalid argument|\d+ validation errors? for ))"
+    r"Error executing tool \w+: (?:(?P<lease>lease invalid)|(?P<effect>effect already requested)|(?P<arg>invalid argument|\d+ validation errors? for ))"
 )
 
 
@@ -229,6 +229,8 @@ def reply_category(reply: ToolReply) -> str:
     found = _TOOL_ERROR.match(reply.text)
     if found and found.group("lease"):
         return toolerrors.LEASE
+    if found and found.group("effect"):
+        return toolerrors.DENIED  # the lease's one effect request is used up: a wall said no
     if found and found.group("arg"):
         return toolerrors.INVALID_ARGUMENT
     return toolerrors.TOOL_ERROR
