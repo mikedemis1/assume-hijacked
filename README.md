@@ -98,6 +98,18 @@ python -m pytest -m k8s tests/k8s  # network, admission and replay tests against
 
 `sh scripts/kind-down.sh stop` frees memory and keeps the cluster; `sh scripts/kind-down.sh` deletes it. Alerts and how to react to them: [docs/runbook.md](docs/runbook.md).
 
+## Demo UI
+
+A small web page for showing the system: a support chat on the left, what each wall recorded for your tickets on the right. Pick a made-up customer, write a message or start from an example (an honest question, or one of the attacks), and watch the agent run, every tool call, the risk check and the stored reply appear as a timeline.
+
+```sh
+sh scripts/demo-ui.sh            # port-forward, then open http://localhost:8085
+```
+
+![The demo UI after one honest question and two attacks](docs/images/demo-ui.png)
+
+The scripted model plays a fully hijacked model, so an example like "Read my neighbour's account" fills the box with the `CALL` lines it will obey, and you can see the walls stop each one. It is optional (`demo.enabled`, on in `values-kind.yaml`, off on Azure) and it is not one of the nine parts. It is a front door, so it gets little: its own namespace, one egress edge to PostgreSQL, a ClusterIP service and no ingress, a database role that only opens a ticket and reads the reply to your own ticket, and a second one that reads audit columns only. The panel shows what the database records. Two things are only logged, not recorded: what the agent's own code dropped before the gateway, and why the reply guard blocked a reply. For the first, the panel compares your message with the gateway's record and marks that line "from your message".
+
 ## CI
 
 GitLab CI has three jobs.
@@ -120,7 +132,7 @@ CI does not run dispatcher, agent, gateway and tools together, and it does not s
 | `db/` | schema, roles, grants, seed, `init.sh` |
 | `deploy/` | Helm chart, monitoring values and dashboard, kind config |
 | `infra/` | Terraform: `base/`, `lab/`, `modules/` |
-| `scripts/` | test database, kind, deploy, new ticket |
+| `scripts/` | test database, kind, deploy, new ticket, demo UI |
 | `docs/` | [architecture](docs/architecture.md), [attacks](docs/attacks.md), [azure](docs/azure.md), [runbook](docs/runbook.md) |
 
 Monitoring is two alerts (executor stopped, kill switch fired) and one Grafana board, "Walls".

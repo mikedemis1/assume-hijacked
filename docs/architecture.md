@@ -79,6 +79,8 @@ Every namespace is default-deny (Cilium). The chart renders one allow rule per e
 
 Only the llm-gateway may reach a name outside the cluster (the model API). The console reaches Entra, and on Azure the `db-migrate` job reaches Entra and Key Vault. Nobody reaches 169.254.169.254, and DNS names outside the cluster are refused. `test_network_edges_are_exactly_the_matrix` compares the rendered policies with the chart's edge list.
 
+The optional demo UI (`demo.enabled`, kind only by default) adds one more edge, demo to PostgreSQL on 5432, and is reached with `kubectl port-forward` only. It is not one of the nine parts and it is treated as untrusted like any other door; see the Demo UI section of the README.
+
 Admission policies (`ValidatingAdmissionPolicy`): images only by digest from the allowed registry, no privileged or host-access pods, the sandbox RuntimeClass for the agent and the tools, and an agent Job only from the dispatcher's fixed template. The chart never starts an agent; the dispatcher may create Jobs only in `ah-agent`.
 
 ## Identities
