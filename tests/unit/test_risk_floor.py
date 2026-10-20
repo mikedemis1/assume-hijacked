@@ -5,14 +5,14 @@ A credit or a disconnection order is written only when its request has a risk as
 assessment's tier allows the effect at all (required_approvals has a row for it), and enough
 distinct staff approved it. The database checks this
 on the row itself, so a hijacked executor or console cannot skip the humans: the executor can
-write rows, but not assessments; the console can write approvals, but cannot make one person count
-twice.
+write rows, but not assessments; the console can write approvals (through approve_request, for known staff only: tests/unit/
+test_staff.py), but cannot make one person count twice.
 """
 
 import psycopg
 import pytest
 
-from tests.conftest import approve_as, assess
+from tests.conftest import BOB_DEV, approve_as, assess
 from tests.unit.test_executor_credits import add_credit, credits_count, insert_credit
 from tests.unit.test_executor_moveouts import add_moveout, insert_order, orders
 
@@ -54,11 +54,11 @@ def written(admin):
 
 
 def approve_all(staff, rid, approvals):
-    """Each (approver, role) in turn. A duplicate is refused by the primary key; the floor must
-    not count it either way, so the refusal is ignored here and the floor test checks the result."""
-    for who, role in approvals:
+    """Each approver in turn. A duplicate is refused by the primary key; the floor must not count
+    it either way, so the refusal is ignored here and the floor test checks the result."""
+    for who in approvals:
         try:
-            approve_as(staff, rid, who, role)
+            approve_as(staff, rid, who)
         except psycopg.errors.UniqueViolation:
             pass
 
@@ -82,13 +82,11 @@ def test_order_refused_without_assessment(admin, as_role, ex):
 
 
 FLOOR_CASES = {
-    # case: (tier, approvals, allowed)
-    "T2, one person": ("T2", [(ANNA, "Approver")], False),
-    "T2, the same person twice": ("T2", [(ANNA, "Approver"), (ANNA, "Approver")], False),
-    "T2, the same person as Approver and as SeniorApprover": (
-        "T2", [(ANNA, "Approver"), (ANNA, "SeniorApprover")], False),
-    "T2, the same person in alternative UUID spelling": ("T2", [(ANNA, "Approver"), ("EEAB6C5EF5BC5D16AF4B813D9B88BE01", "Approver")], False),
-    "T2, two people": ("T2", [(ANNA, "Approver"), (PETROS, "Approver")], True),
+    # case: (tier, approvers, allowed)
+    "T2, one person": ("T2", [ANNA], False),
+    "T2, the same person twice": ("T2", [ANNA, ANNA], False),
+    "T2, the same person in alternative UUID spelling": ("T2", [ANNA, "EEAB6C5EF5BC5D16AF4B813D9B88BE01"], False),
+    "T2, two people": ("T2", [ANNA, PETROS], True),
     "T0, no approval (credit only; an order always needs one)": ("T0", [], None),
 }
 
@@ -124,13 +122,13 @@ def test_assessment_tier_is_on_the_closed_list(admin):
 
 def test_asi02_human_only_order_refused_even_with_two_approvals(admin, as_role, ex):
     rid, write = _order(admin, "HUMAN_ONLY")
-    approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
+    approve_all(as_role("approver"), rid, [ANNA, PETROS])
     with pytest.raises(psycopg.errors.RaiseException, match="HUMAN_ONLY"):
         write(ex)
     assert orders(admin) == 0
     # Control: the same approvals on a T2 request (the strictest tier that allows an order).
     rid, write = _order(admin, "T2")
-    approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
+    approve_all(as_role("approver"), rid, [ANNA, PETROS])
     write(ex)
     assert orders(admin) == 1
 
@@ -206,10 +204,10 @@ def control(admin):
 def test_asi10_risk_engine_pauses_and_approver_resumes(admin, as_role):
     as_role("risk_engine").execute("SELECT pause_agents('repeated_denials')")
     assert control(admin) == [{"paused": True, "reason": "repeated_denials"}]
-    as_role("approver").execute("SELECT resume_agents()")
+    as_role("approver").execute("SELECT resume_agents(%s::uuid)", (BOB_DEV,))
     assert control(admin) == [{"paused": False, "reason": ""}]
     events = admin.execute("SELECT kind, actor, detail FROM events ORDER BY id").fetchall()
     assert events == [
         {"kind": "agents_paused", "actor": "risk_engine", "detail": "repeated_denials"},
-        {"kind": "agents_resumed", "actor": "approver", "detail": ""},
+        {"kind": "agents_resumed", "actor": "approver", "detail": BOB_DEV},
     ]

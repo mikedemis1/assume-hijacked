@@ -1,6 +1,6 @@
 {
   "component": "console",
-  "description": "Staff approvals, resuming the agents after the kill switch, and operational status. Browser sessions validate Entra object ids and app roles.",
+  "description": "Staff approvals, resuming the agents after the kill switch, and operational status. Browser sessions validate Entra object ids and app roles; the database accepts an approval or a resume only for an active member of its staff list.",
   "db": {
     "role": "approver",
     "login": true,
@@ -14,9 +14,6 @@
       "action_requests": [
         "SELECT",
         "UPDATE (decided_at, decision_reason, status)"
-      ],
-      "approvals": [
-        "INSERT (approver, approver_role, request_id)"
       ],
       "events": [
         "INSERT (detail, kind)",
@@ -36,8 +33,9 @@
       ]
     },
     "execute": [
+      "approve_request(int, uuid)",
       "required_approvals(text)",
-      "resume_agents()"
+      "resume_agents(uuid)"
     ]
   },
   "network": {

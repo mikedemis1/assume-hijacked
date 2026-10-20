@@ -19,12 +19,15 @@ CREATE ROLE dispatcher                 LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_di
 --   lease_owner  open_lease, revoke_lease, lease_scope (05-lease.sql)
 --   risk_owner   the risk objects: pause_agents, resume_agents (SECURITY DEFINER), and
 --                required_approvals, check_approval_floor (06-risk.sql)
+--   staff_owner  the staff allow-list (06-risk.sql) and approve_request, the only way an approval
+--                is written. Only the database superuser or the migration changes the list.
 --   flags_writer owned set_temp_protection(int) until api_set_temp_protection replaced it; kept
 --                because the RLS policy (08-rls.sql) and later tasks name it. It has no grants.
 CREATE ROLE flags_writer               NOLOGIN;
 CREATE ROLE api_owner                  NOLOGIN;
 CREATE ROLE lease_owner                NOLOGIN;
 CREATE ROLE risk_owner                 NOLOGIN;
+CREATE ROLE staff_owner                NOLOGIN;
 
 -- Every executor session, whatever the code does: a lock it cannot get within 5 s fails that
 -- request (executor_error, the batch goes on) instead of hanging the only component that

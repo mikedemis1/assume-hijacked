@@ -8,7 +8,7 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO
     tool_read_ticket, tool_lookup_account, tool_request_disconnection,
     tool_issue_bill_credit, tool_set_temp_protection, executor, approver,
-    gateway, risk_engine, dispatcher, api_owner, lease_owner, risk_owner;
+    gateway, risk_engine, dispatcher, api_owner, lease_owner, risk_owner, staff_owner;
 
 -- Tools: no table, column or sequence grant at all. Each tool role may only EXECUTE its one
 -- api_* function, which answers for the ticket of a live lease (05-lease.sql).
@@ -30,9 +30,9 @@ GRANT USAGE ON SEQUENCE credits_id_seq, disconnection_orders_id_seq TO executor;
 
 -- Staff approval page.
 GRANT SELECT ON action_requests TO approver;
--- No created_at: the database sets it, so an approval cannot be back-dated or post-dated.
--- approver_role comes from the console, which reads it from the staff member's token.
-GRANT INSERT (request_id, approver, approver_role) ON approvals TO approver;
+-- Approvals are not inserted by the console role: it calls approve_request (06-risk.sql), which
+-- checks the approver against the staff list and writes the row with the listed role and the
+-- database clock.
 
 -- Advisory locks (gap I9). By default PUBLIC may call these, so any tool role could hold a
 -- home's lock and freeze the executor. Only the executor (its own lock and the order trigger)

@@ -32,4 +32,9 @@ for database in "$POSTGRES_DB" supplier_test; do
     for f in 01-schema.sql 03-grants.sql 05-lease.sql 06-risk.sql 07-flags.sql 08-rls.sql 04-seed.sql; do
         run "$database" "$SQL_DIR/$f"
     done
+    # The local staff list (the console's dev sign-in users). The Azure migration sets
+    # SEED_DEV_STAFF=no: there an admin fills the list (docs/azure.md, "Staff").
+    if [ "${SEED_DEV_STAFF:-yes}" != no ]; then
+        run "$database" "$SQL_DIR/09-dev-staff.sql"
+    fi
 done

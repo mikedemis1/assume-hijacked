@@ -25,6 +25,20 @@ These are open on purpose. None of them blocks the kind work.
 - **Console sign-in.** The console accepts an HTTP callback only when `APP_ENV=local`, and plain-HTTP port-forwarding breaks the Secure cookie. Signing in on AKS needs either an app change or TLS on the port-forward, and an Entra redirect URI to match. The Entra app registration can be in Terraform or made by hand.
 - **Alerts on Azure.** The two Prometheus alerts used on kind (executor heartbeat stale, kill switch fired) are in `deploy/monitoring/`. The lab's log alert rules are an earlier pair; they are aligned with the Prometheus ones at the Azure step.
 
+## Staff
+
+The database accepts an approval or a resume only for an object id on its `staff` table. Locally `db/sql/09-dev-staff.sql` fills it with the three dev sign-in users. On Azure the migration job sets `SEED_DEV_STAFF=no`, so the list starts empty and an admin fills it once per person, as the database admin (not the console). The table belongs to the no-login role `staff_owner`; the admin needs to be allowed to act as that role (`GRANT staff_owner TO <admin>` if not).
+
+```sql
+SET ROLE staff_owner;
+INSERT INTO staff (oid, display_name, roles)
+VALUES ('<Entra object id>', '<display name>', '{Approver}');   -- or '{SeniorApprover}'
+RESET ROLE;
+-- Leaving: UPDATE staff SET active = false WHERE oid = '<Entra object id>';
+```
+
+The roles must match the app roles assigned in Entra. No automation yet.
+
 ## Order
 
 1. Owner upgrades from the free trial to pay-as-you-go and raises the vCPU quota (the trial has 4).

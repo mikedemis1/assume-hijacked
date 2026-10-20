@@ -11,7 +11,7 @@ import psycopg
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from tests.conftest import assess
+from tests.conftest import approve_as, assess
 
 ANNA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -109,14 +109,31 @@ def test_entra_token_wrong_audience_or_issuer_rejected(provider, changes):
     assert identity.oid == BOB and identity.role == "SeniorApprover"
 
 
+def test_asi03_signed_in_user_missing_from_the_staff_list_cannot_approve_or_resume(console_env, monkeypatch, settings, admin):
+    # The console's own check passes (a SeniorApprover token), but the database list does not know the id.
+    stranger = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    monkeypatch.setenv("CONSOLE_DEV_USERS", json.dumps({stranger: ["SeniorApprover"]}))
+    from app.console.main import build_app
+    app = build_app(settings=settings)
+    rid = request_credit(admin)
+    admin.execute("UPDATE agent_control SET paused=true WHERE id=1")
+    async def check(client):
+        csrf, _ = await login(client, stranger)
+        assert (await client.post(f"/approve/{rid}", data={"csrf":csrf})).status_code == 409
+        assert (await client.post("/agents/resume", data={"csrf":csrf})).status_code == 409
+    asyncio.run(browser(app, check))
+    assert admin.execute("SELECT count(*) AS n FROM approvals").fetchone()["n"] == 0
+    assert admin.execute("SELECT paused FROM agent_control").fetchone()["paused"]
+
+
 def test_asi03_one_person_cannot_count_twice(admin,as_role):
     rid=request_credit(admin,"T2")
     staff=as_role("approver")
-    staff.execute("INSERT INTO approvals(request_id,approver) VALUES (%s,%s)",(rid,ANNA))
+    approve_as(staff,rid,ANNA)
     with pytest.raises(psycopg.errors.UniqueViolation):
-        staff.execute("INSERT INTO approvals(request_id,approver) VALUES (%s,%s)",(rid,ANNA.upper().replace("-","")))
+        approve_as(staff,rid,ANNA.upper().replace("-",""))
     with pytest.raises(psycopg.errors.InvalidTextRepresentation):
-        staff.execute("INSERT INTO approvals(request_id,approver) VALUES (%s,%s)",(rid,"\u00a0"+ANNA))
+        approve_as(staff,rid,"\u00a0"+ANNA)
 
 
 def test_asi10_resume_needs_a_senior_approver(console, admin):

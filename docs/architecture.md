@@ -85,7 +85,7 @@ Admission policies (`ValidatingAdmissionPolicy`): images only by digest from the
 - **Per call.** The tool-gateway signs an ES256 token for each tool call (audience is that tool, short expiry, replay refused). The signing key is on the tool-gateway only.
 - **Database.** One login role per part and per tool. Passwords come from Kubernetes Secrets on kind and from Key Vault on Azure. A tool role has no table grants, only `EXECUTE` on one function.
 - **Model key.** Only the llm-gateway.
-- **Staff.** On Azure the console signs staff in with Entra ID (authorization code flow with PKCE; app roles `Approver` and `SeniorApprover`; the approver is recorded by the token's `oid`). On kind, `AUTH_MODE=dev` lists identities in the chart values and the console accepts the `X-Dev-User` header; it refuses to start in dev mode on Azure. A real Entra sign-in has not been run.
+- **Staff.** On Azure the console signs staff in with Entra ID (authorization code flow with PKCE; app roles `Approver` and `SeniorApprover`; the approver is recorded by the token's `oid`). The database keeps a staff allow-list (`staff`: oid, name, roles, active) that the console role cannot read or write; `approve_request` and `resume_agents` refuse an oid that is not on it, so a compromised console cannot invent approvers. On kind, `AUTH_MODE=dev` lists identities in the chart values and the console accepts the `X-Dev-User` header; it refuses to start in dev mode on Azure. A real Entra sign-in has not been run.
 - **Azure.** Terraform builds one user-assigned identity and one Key Vault per part from `permissions/`. Nothing is applied yet.
 
 ## Permissions
@@ -105,7 +105,7 @@ One JSON file per part in `permissions/` declares its database role and grants, 
 | tool-request-disconnection | ah-tools | `tool_request_disconnection` | runs: api_request_moveout | tool-gateway | db |
 | tool-set-temp-protection | ah-tools | `tool_set_temp_protection` | runs: api_set_temp_protection | tool-gateway | db |
 | executor | ah-core | `executor` | tables: accounts (select), action_requests (select/update), approvals (select), charges (select), credits (select/insert), disconnection_orders (select/insert), events (select/insert), flags (select), risk_assessments (select), supply_points (select); runs: beat, check_approval_floor, required_approvals, advisory locks | - | db |
-| console | ah-staff | `approver` | tables: action_requests (select/update), approvals (insert), events (insert/select), risk_assessments (select), heartbeats (select), agent_control (select); runs: required_approvals, resume_agents | staff browser | db, Entra |
+| console | ah-staff | `approver` | tables: action_requests (select/update), events (insert/select), risk_assessments (select), heartbeats (select), agent_control (select); runs: approve_request, required_approvals, resume_agents | staff browser | db, Entra |
 | db-migrate | ah-core (azure only) | `none` | nothing | - | db, Entra, Key Vault |
 | db | ah-data (kind only) | `none` | nothing | - | internet |
 

@@ -74,8 +74,21 @@ def pytest_configure():
 from app import config  # noqa: E402  (after .env is loaded)
 
 SEED_SQL = (ROOT / "db" / "sql" / "04-seed.sql").read_text(encoding="utf-8")
+# The local staff list (db/init/init.sh applies it where SEED_DEV_STAFF is not "no"): the three
+# identities the console's dev sign-in offers. The tests add two more of their own below.
+DEV_STAFF_SQL = (ROOT / "db" / "sql" / "09-dev-staff.sql").read_text(encoding="utf-8")
+ANNA_DEV, BOB_DEV, CAROL_DEV = (
+    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",  # Approver
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",  # SeniorApprover
+    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",  # SeniorApprover
+)
+# Two more known Approvers, the oids the executor and floor tests approve with.
+TEST_STAFF = (
+    ("eeab6c5e-f5bc-5d16-af4b-813d9b88be01", "Test Anna"),
+    ("bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3", "Test Petros"),
+)
 ALL_TABLES = (
-    "events, disconnection_orders, credits, approvals, risk_assessments, "
+    "events, disconnection_orders, credits, approvals, staff, risk_assessments, "
     "call_assessments, tool_calls, replies, agent_runs, agent_control, heartbeats, action_requests, "
     "leases, flags, charges, tickets, "
     "accounts, supply_points, customers"
@@ -141,12 +154,10 @@ def assess(admin, request_id: int, tier: str, score: int = 0, reasons: tuple[str
     )
 
 
-def approve_as(conn, request_id: int, approver: str, role: str = "Approver") -> None:
-    """A staff approval with its role, as the console will write it."""
-    conn.execute(
-        "INSERT INTO approvals (request_id, approver, approver_role) VALUES (%s, %s, %s)",
-        (request_id, approver, role),
-    )
+def approve_as(conn, request_id: int, approver: str) -> None:
+    """A staff approval, as the console writes it: through approve_request, which takes the role
+    from the staff list. `approver` must be on the list (TEST_STAFF or the dev staff)."""
+    conn.execute("SELECT approve_request(%s, %s::uuid)", (request_id, approver))
 
 
 def reset_db(conn) -> None:
@@ -156,6 +167,9 @@ def reset_db(conn) -> None:
         conn.execute("SET LOCAL session_replication_role = replica")
         conn.execute(f"TRUNCATE {ALL_TABLES} RESTART IDENTITY CASCADE")
     conn.execute(SEED_SQL)
+    conn.execute(DEV_STAFF_SQL)
+    for oid, name in TEST_STAFF:
+        conn.execute("INSERT INTO staff (oid, display_name, roles) VALUES (%s, %s, '{Approver}')", (oid, name))
 
 
 @pytest.fixture(autouse=True)

@@ -19,9 +19,12 @@
 -- writes assessments, one per request, and nobody can change or delete one afterwards: a hijacked
 -- executor or console cannot lower a tier after the fact.
 --
--- What the database cannot check (decision 8, v1): that the person behind an approval holds the
--- role the console wrote. Staff do not log in to PostgreSQL; the console validates their Entra
--- token and records the object id and app role.
+-- Who counts as staff: the staff table below, the allow-list of Entra object ids. Staff do not log
+-- in to PostgreSQL; the console validates their Entra token and passes the object id to
+-- approve_request and resume_agents, which refuse an id that is not on the list, is inactive, or
+-- lacks the role. The console role cannot write an approval or the list. What the database still
+-- cannot check is that the console passed the id of the person who really signed in: a console
+-- that is compromised can approve as any listed person, but cannot invent one.
 
 CREATE TABLE risk_assessments (
     id             serial PRIMARY KEY,
@@ -61,6 +64,17 @@ CREATE TRIGGER risk_assessments_append_only BEFORE UPDATE OR DELETE ON risk_asse
 CREATE TRIGGER call_assessments_append_only BEFORE UPDATE OR DELETE ON call_assessments
     FOR EACH STATEMENT EXECUTE FUNCTION refuse_assessment_change();
 
+-- The staff allow-list (gap M2). The console role has no privilege on it; only the database
+-- superuser or the migration changes it (docs/azure.md, "Staff"). oid is the Entra object id;
+-- roles are the app roles, a closed set; active=false takes a person off without deleting the row.
+CREATE TABLE staff (
+    oid          uuid PRIMARY KEY,
+    display_name text NOT NULL,
+    roles        text[] NOT NULL CHECK (cardinality(roles) > 0 AND roles <@ ARRAY['Approver', 'SeniorApprover']),
+    active       bool NOT NULL DEFAULT true
+);
+REVOKE ALL ON staff FROM PUBLIC;
+
 -- The stop switch for every agent run. The gateway and the risk engine read it on each tool
 -- call. The one row is seeded unpaused (04-seed.sql); there is never a second.
 CREATE TABLE agent_control (
@@ -71,7 +85,8 @@ CREATE TABLE agent_control (
 );
 
 -- The risk engine pauses (repeated denials on one lease, decision 5). Only a person resumes:
--- the console calls resume_agents after it has checked the SeniorApprover role. Both functions
+-- the console calls resume_agents(oid) after it has checked the SeniorApprover role, and the
+-- function checks it again against the staff list. Both functions
 -- check session_user, the role that logged in, as well as the grant, so an EXECUTE grant added
 -- by mistake to another role is still refused. Each change is written to events with that role
 -- as actor. reason is a rule name from app/risk/rules.py, never ticket text.
@@ -93,17 +108,54 @@ BEGIN
     END IF;
 END $$;
 
-CREATE FUNCTION resume_agents() RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+-- The event detail is the object id of the SeniorApprover who resumed.
+CREATE FUNCTION resume_agents(p_oid uuid) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     IF session_user <> 'approver' THEN
         RAISE EXCEPTION '% may not resume the agents', session_user;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.staff s
+                   WHERE s.oid = p_oid AND s.active AND 'SeniorApprover' = ANY (s.roles)) THEN
+        RAISE EXCEPTION 'only an active SeniorApprover on the staff list may resume the agents';
+    END IF;
     UPDATE public.agent_control SET paused = false, reason = '', changed_at = now()
     WHERE id = 1 AND paused;
     IF FOUND THEN
-        INSERT INTO public.events (kind, actor, detail) VALUES ('agents_resumed', session_user, '');
+        INSERT INTO public.events (kind, actor, detail) VALUES ('agents_resumed', session_user, p_oid::text);
     END IF;
+END $$;
+
+-- The only way an approval is written. The console calls it with the object id from the signed-in
+-- person's token. It refuses an id that is not on the staff list or is inactive, and records the
+-- highest role the list gives that person, never one the caller names. The request must still be
+-- pending. Whether the tier allows an approval at all, and how many distinct people it needs, stay
+-- with the console's check and check_approval_floor. The same person approving twice is refused
+-- by the primary key (request_id, approver).
+CREATE FUNCTION approve_request(p_request int, p_oid uuid) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+    v_roles  text[];
+    v_role   text;
+    v_status text;
+BEGIN
+    IF session_user <> 'approver' THEN
+        RAISE EXCEPTION '% may not approve requests', session_user;
+    END IF;
+    SELECT s.roles INTO v_roles FROM public.staff s WHERE s.oid = p_oid AND s.active;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'approver is not on the staff list, or is inactive';
+    END IF;
+    v_role := CASE WHEN 'SeniorApprover' = ANY (v_roles) THEN 'SeniorApprover'
+                   WHEN 'Approver' = ANY (v_roles) THEN 'Approver' END;
+    IF v_role IS NULL THEN
+        RAISE EXCEPTION 'approver has no approving role';
+    END IF;
+    SELECT r.status INTO v_status FROM public.action_requests r WHERE r.id = p_request;
+    IF v_status IS DISTINCT FROM 'pending' THEN
+        RAISE EXCEPTION 'request % is not pending', p_request;
+    END IF;
+    INSERT INTO public.approvals (request_id, approver, approver_role) VALUES (p_request, p_oid, v_role);
 END $$;
 
 -- How many distinct approvals a tier needs. No row means no number of approvals allows the
@@ -170,13 +222,24 @@ GRANT INSERT (kind, actor, detail) ON events TO risk_owner;
 GRANT USAGE ON SEQUENCE events_id_seq TO risk_owner;
 
 ALTER FUNCTION pause_agents(text) OWNER TO risk_owner;
-ALTER FUNCTION resume_agents() OWNER TO risk_owner;
+ALTER FUNCTION resume_agents(uuid) OWNER TO risk_owner;
 ALTER FUNCTION required_approvals(text) OWNER TO risk_owner;
 ALTER FUNCTION check_approval_floor(int, timestamptz) OWNER TO risk_owner;
-REVOKE ALL ON FUNCTION pause_agents(text), resume_agents(), required_approvals(text),
+REVOKE ALL ON FUNCTION pause_agents(text), resume_agents(uuid), required_approvals(text),
     check_approval_floor(int, timestamptz), refuse_assessment_change() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION pause_agents(text) TO risk_engine;
-GRANT EXECUTE ON FUNCTION resume_agents() TO approver;
+GRANT EXECUTE ON FUNCTION resume_agents(uuid) TO approver;
+
+-- The staff list belongs to staff_owner, which nobody logs in as. resume_agents (risk_owner) reads
+-- three columns of it; approve_request (staff_owner) reads it as owner and writes only approvals.
+-- No login role holds any privilege on the list.
+ALTER TABLE staff OWNER TO staff_owner;
+GRANT SELECT (oid, roles, active) ON staff TO risk_owner;
+GRANT SELECT (id, status) ON action_requests TO staff_owner;
+GRANT INSERT (request_id, approver, approver_role) ON approvals TO staff_owner;
+ALTER FUNCTION approve_request(int, uuid) OWNER TO staff_owner;
+REVOKE ALL ON FUNCTION approve_request(int, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION approve_request(int, uuid) TO approver;
 GRANT EXECUTE ON FUNCTION required_approvals(text) TO executor, approver, risk_engine;
 -- The executor runs the credit and order triggers, which call the floor.
 GRANT EXECUTE ON FUNCTION check_approval_floor(int, timestamptz) TO executor;

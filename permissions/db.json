@@ -169,6 +169,9 @@
           ],
           "tool_calls": [
             "SELECT (lease_hash, outcome, reason)"
+          ],
+          "staff": [
+            "SELECT (active, oid, roles)"
           ]
         },
         "execute": [],
@@ -179,8 +182,33 @@
           "FUNCTION home_protection(integer) SECURITY DEFINER",
           "FUNCTION pause_agents(text) SECURITY DEFINER",
           "FUNCTION required_approvals(text)",
-          "FUNCTION resume_agents() SECURITY DEFINER",
+          "FUNCTION resume_agents(uuid) SECURITY DEFINER",
           "FUNCTION risk_lease_facts(bytea, text) SECURITY DEFINER"
+        ],
+        "default_privileges": [
+          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
+        ]
+      },
+      {
+        "role": "staff_owner",
+        "login": false,
+        "schemas": {
+          "public": [
+            "USAGE"
+          ]
+        },
+        "tables": {
+          "action_requests": [
+            "SELECT (id, status)"
+          ],
+          "approvals": [
+            "INSERT (approver, approver_role, request_id)"
+          ]
+        },
+        "execute": [],
+        "owns": [
+          "TABLE staff",
+          "FUNCTION approve_request(integer, uuid) SECURITY DEFINER"
         ],
         "default_privileges": [
           "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
@@ -223,7 +251,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -246,7 +275,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -269,7 +299,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -292,7 +323,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -315,7 +347,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -338,7 +371,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -361,7 +395,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -384,7 +419,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -407,7 +443,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -430,7 +467,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -453,7 +491,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -476,7 +515,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -499,7 +539,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"
@@ -522,7 +563,8 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner"
+              "risk_owner",
+              "staff_owner"
             ],
             "using": "true",
             "check": "true"

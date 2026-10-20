@@ -39,7 +39,7 @@ def read_queue(settings):
 def mutate(settings, path, request_id, fields, person):
     with connect(settings) as conn, conn.transaction():
         if path == "/agents/resume":
-            conn.execute("SELECT resume_agents()")
+            conn.execute("SELECT resume_agents(%s::uuid)",(person.oid,))
         else:
             row = conn.execute("SELECT r.status,k.tier FROM action_requests r LEFT JOIN risk_assessments k ON k.request_id=r.id WHERE r.id=%s FOR UPDATE OF r",(request_id,)).fetchone()
             if not row or row["status"] != "pending":
@@ -47,7 +47,8 @@ def mutate(settings, path, request_id, fields, person):
             if path.startswith("/approve/"):
                 if row["tier"] not in {"T0","T1","T2"}:
                     raise ValueError("request cannot be approved")
-                conn.execute("INSERT INTO approvals(request_id,approver,approver_role) VALUES (%s,%s,%s)",(request_id,person.oid,person.role))
+                # The database checks the oid against the staff list and sets the role from it.
+                conn.execute("SELECT approve_request(%s,%s::uuid)",(request_id,person.oid))
             else:
                 conn.execute("UPDATE action_requests SET status='refused',decision_reason='staff_rejected',decided_at=now() WHERE id=%s",(request_id,))
 

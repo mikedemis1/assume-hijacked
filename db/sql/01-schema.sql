@@ -114,9 +114,9 @@ CREATE TRIGGER action_requests_check BEFORE INSERT ON action_requests
     FOR EACH ROW EXECUTE FUNCTION check_action_request();
 
 -- approver is the Entra object id the console validated (decision 8), or a dev user id locally.
--- approver_role is the app role the console read from the same token. The database cannot check
--- that claim (v1: staff do not log in to PostgreSQL); what it does enforce is that one person
--- counts once, whatever the role or spelling (check_approval_floor, 06-risk.sql).
+-- Rows are written only by approve_request (06-risk.sql), which refuses an id that is not on the
+-- staff list and takes approver_role from that list. The database enforces that one person
+-- counts once, whatever the spelling (check_approval_floor, 06-risk.sql).
 CREATE TABLE approvals (
     request_id    int NOT NULL REFERENCES action_requests,
     approver      uuid NOT NULL,

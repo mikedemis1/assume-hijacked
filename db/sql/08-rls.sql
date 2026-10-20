@@ -34,7 +34,7 @@ BEGIN
         EXECUTE format(
             'CREATE POLICY trusted_all ON %I FOR ALL TO executor, approver, risk_engine, dispatcher, '
             'gateway, api_owner, lease_owner, flags_writer, '
-            'risk_owner '
+            'risk_owner, staff_owner '
             'USING (true) WITH CHECK (true)', t);
     END LOOP;
 END $$;
