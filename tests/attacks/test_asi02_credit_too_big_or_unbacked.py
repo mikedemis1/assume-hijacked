@@ -18,7 +18,7 @@ from tests.unit.test_executor_credits import (
     statuses,
     UNSUPPORTED_CREDITS,
 )
-from tests.unit.test_risk_floor import _credit, ANNA, ex
+from tests.unit.test_risk_floor import _credit, ANNA, ex  # noqa: F401
 from tests.unit.test_risk_rules import credit, judge
 
 
@@ -34,7 +34,7 @@ def test_asi02_big_credit_goes_to_staff(admin, as_role, settings, now):
     assert statuses(admin) == ["needs_staff"]
 
 
-def test_asi02_credit_waits_for_its_approvals(admin, as_role, ex):
+def test_asi02_credit_waits_for_its_approvals(admin, as_role, ex):  # noqa: F811
     rid, write = _credit(admin, "T1")
     with pytest.raises(psycopg.errors.RaiseException, match="needs 1 distinct approval"):
         write(ex)

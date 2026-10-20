@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs once, when the database volume is empty.
 # Roles are cluster-wide, so they are created once. The schema, grants, leases, risk tables,
-# register objects, row-level security and seed are applied to both databases: supplier (the stack) and
+# row-level security and seed are applied to both databases: supplier (the stack) and
 # supplier_test (the pytest suite only).
 # CI (scripts/ci-db-setup.sh) runs this same file against a service container: SQL_DIR points at the
 # checkout and psql takes the server from PGHOST/PGPASSWORD.

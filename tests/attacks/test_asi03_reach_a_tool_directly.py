@@ -9,11 +9,11 @@ import logging
 
 
 from app.security.tokens import mint_tool_token
-from tests.toolhttp import bearer, CALL_READ_TICKET, ConnectSpy, keypair, MCP_HEADERS, post_each
+from tests.toolhttp import bearer, CALL_READ_TICKET, ConnectSpy, keypair, MCP_HEADERS, post_each  # noqa: F401
 from tests.unit.test_tokens import LEASE, NOW, run, tool_app
 
 
-def test_asi03_tool_rejects_wrong_audience_expired_and_replayed_tokens(keypair, caplog):
+def test_asi03_tool_rejects_wrong_audience_expired_and_replayed_tokens(keypair, caplog):  # noqa: F811
     private, public = keypair
     spy = ConnectSpy()
     app = tool_app("read_ticket", public, spy)
@@ -36,7 +36,7 @@ def test_asi03_tool_rejects_wrong_audience_expired_and_replayed_tokens(keypair, 
     assert reasons == ["audience", "expired", "replayed"]
 
 
-def test_asi03_tool_rejects_a_call_without_a_token(keypair):
+def test_asi03_tool_rejects_a_call_without_a_token(keypair):  # noqa: F811
     private, public = keypair
     spy = ConnectSpy()
     app = tool_app("read_ticket", public, spy)

@@ -1,6 +1,6 @@
 {{- /*
 Executor (ah-core): the only component that carries out effects. No listening port but ops.
-It writes notice and order rows to the database and calls nothing outside the cluster.
+It writes credit and order rows to the database and calls nothing outside the cluster.
 */ -}}
 {{ include "ah.workload" (dict
     "root" .

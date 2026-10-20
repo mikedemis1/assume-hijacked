@@ -9,12 +9,12 @@ import pytest
 from app.executor.approvals import approve, approver_count
 from tests.unit.test_console import request_credit
 from tests.unit.test_executor_moveouts import add_moveout, ANNA, PETROS
-from tests.unit.test_risk_floor import approve_all, EFFECTS, ex, FLOOR_CASES, written
+from tests.unit.test_risk_floor import approve_all, EFFECTS, ex, FLOOR_CASES, written  # noqa: F401
 
 
 @pytest.mark.parametrize("kind", EFFECTS)
 @pytest.mark.parametrize("case", FLOOR_CASES)
-def test_asi03_floor_counts_distinct_approvers_and_roles(admin, as_role, ex, kind, case):
+def test_asi03_floor_counts_distinct_approvers_and_roles(admin, as_role, ex, kind, case):  # noqa: F811
     tier, approvals, allowed = FLOOR_CASES[case]
     if allowed is None:  # T0 with no approval: a credit goes through, an order does not
         allowed = kind == "credit"
@@ -30,7 +30,7 @@ def test_asi03_floor_counts_distinct_approvers_and_roles(admin, as_role, ex, kin
 
 
 def test_asi03_same_approver_twice_is_rejected(admin, as_role):  # ⑥
-    staff, ex = as_role("approver"), as_role("executor")
+    staff, ex = as_role("approver"), as_role("executor")  # noqa: F811
     rid = add_moveout(admin)
     assert approve(staff, rid, ANNA) is True
     assert approve(staff, rid, ANNA) is False

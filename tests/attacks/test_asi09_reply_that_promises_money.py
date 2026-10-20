@@ -10,7 +10,7 @@ from app.llmgw import backends
 from tests.conftest import TOOLS
 from tests.dispatcherharness import post
 from tests.unit.test_agent import ACCOUNT_JSON, add_ticket, BYPASSES, make_agent
-from tests.unit.test_dispatcher import claimed, HIJACKED, kube_harness, metric, stored
+from tests.unit.test_dispatcher import claimed, HIJACKED, kube_harness, metric, stored  # noqa: F401
 
 
 @pytest.mark.parametrize(
@@ -33,7 +33,7 @@ def test_asi09_agent_blocks_a_number_no_tool_returned(settings, admin, as_role):
 
 
 @pytest.mark.parametrize("name, text, reason", HIJACKED, ids=[h[0] for h in HIJACKED])
-def test_asi09_dispatcher_runs_the_guard_again(kube_harness, admin, name, text, reason):
+def test_asi09_dispatcher_runs_the_guard_again(kube_harness, admin, name, text, reason):  # noqa: F811
     # The agent is taken over and sends what the model wrote without its own guard having run.
     h = kube_harness
     ticket, lease = claimed(h)

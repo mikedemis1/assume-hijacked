@@ -1,7 +1,7 @@
 """Bill credits (decision 4): evidence from the data, then three limits. The LLM never judges.
 
 Only requests the risk engine assessed are taken. The tier decides the path:
-T0 the automatic path below; T1/T2/HOLD wait for their staff approvals, then the evidence and the
+T0 the automatic path below; T1/T2 wait for their staff approvals, then the evidence and the
 global cap (the automatic limits are what the approval is for); HUMAN_ONLY manual_only; REJECT
 rejected. check_credit and check_approval_floor (db/sql) refuse anything else whatever this code does.
 """

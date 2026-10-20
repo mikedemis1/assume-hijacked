@@ -8,7 +8,7 @@ import pytest
 
 from app.risk.rules import Assessment
 from tests.unit.test_executor_moveouts import insert_order, orders, ready_for_order
-from tests.unit.test_risk_floor import _order, ANNA, approve_all, ex, PETROS
+from tests.unit.test_risk_floor import _order, ANNA, approve_all, ex, PETROS  # noqa: F401
 from tests.unit.test_risk_rules import judge, moveout
 
 
@@ -19,7 +19,7 @@ def test_asi01_protected_home_goes_to_humans(protection):
     )
 
 
-def test_asi02_human_only_order_refused_even_with_two_approvals(admin, as_role, ex):
+def test_asi02_human_only_order_refused_even_with_two_approvals(admin, as_role, ex):  # noqa: F811
     rid, write = _order(admin, "HUMAN_ONLY")
     approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
     with pytest.raises(psycopg.errors.RaiseException, match="HUMAN_ONLY"):

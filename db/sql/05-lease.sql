@@ -309,8 +309,7 @@ GRANT USAGE ON SEQUENCE tool_calls_id_seq TO gateway;
 -- agent_runs: one row per ticket, ever (UNIQUE ticket_id: one run per ticket, so two claims, or a
 -- claim and a Job, can never start the same ticket twice).
 --
---   started   the run exists. In Kubernetes the dispatcher has created the agent's Job (job_name);
---             in Compose the agent is claiming right now.
+--   started   the run exists. The dispatcher has created the agent's Job (job_name).
 --   claimed   the agent asked for work and was given the lease (lease_hash is sha256 of it).
 --   replied   the reply is stored and the lease is revoked.
 --   failed    the Job could not be created. Nobody retries it: a person looks at the ticket.
