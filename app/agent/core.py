@@ -29,14 +29,16 @@ ALLOWED_ARGS = {
     "set_temp_protection": set(),
 }
 
-# Tool and argument names come from the model, so they can carry any text. Log one only when it
-# looks like an identifier; anything else (a sentence, health data, a forged log line) is "<invalid>".
-SAFE_NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
+# Tool and argument names come from the model, so they can carry any text. One identifier rule serves
+# both the log and the report to the dispatcher (which checks the same shape again). A log shows a name
+# only when it looks like an identifier; anything else (a sentence, health data, a forged log line) is
+# "<invalid>". Even an identifier is chosen by the model, up to 64 characters, so it can spell short data.
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 NAMES_LIMIT = 20
 
 
 def _name(value) -> str:
-    return value if isinstance(value, str) and SAFE_NAME.fullmatch(value) else "<invalid>"
+    return value if isinstance(value, str) and IDENTIFIER.fullmatch(value) else "<invalid>"
 
 
 def _names(names) -> list[str]:
@@ -44,16 +46,16 @@ def _names(names) -> list[str]:
 
 
 # What the agent reports to the dispatcher about its own drops (the dispatcher checks it again,
-# app/dispatcher/events.py, and the limits are the same). Names only, never a value. A name that is
-# not an identifier is sent as PLACEHOLDER so the list stays valid and the drop is still counted.
-REPORT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+# app/dispatcher/events.py, and the limits are the same). Names, never a value; the names are chosen by
+# the model, so they are identifiers of up to 64 characters that can still spell short data. A name that
+# is not an identifier is sent as PLACEHOLDER so the list stays valid and the drop is still counted.
 PLACEHOLDER = "invalid_name"
 REPORT_EVENTS_LIMIT = 32
 REPORT_NAMES_LIMIT = 16
 
 
 def _report_name(value) -> str:
-    return value if isinstance(value, str) and REPORT_NAME.fullmatch(value) else PLACEHOLDER
+    return value if isinstance(value, str) and IDENTIFIER.fullmatch(value) else PLACEHOLDER
 
 
 def event_list(drops) -> list[dict]:

@@ -24,10 +24,11 @@ POST /reply
               characters. Nothing else in the body is read. In Kubernetes also the Authorization
               header as above.
               The events are what the agent dropped or refused before the gateway (app/dispatcher/
-              events.py): names only, at most 32 events of 16 names, identifiers only. They are
+              events.py): names, not values: at most 32 events of 16 names, identifiers only. The model
+              chooses the names (up to 64 characters), so they can still spell short data. They are
               stored in agent_events for the ticket of the lease, never for one named in the body. A
               list that breaks any rule is rejected whole (reply stored all the same, a security
-              event, dispatcher_agent_events_rejected_total). Reported by the agent: a best-effort
+              event, dispatcher_agent_events_rejected_total with reason shape, limit or db). Reported by the agent: a best-effort
               audit, the gateway's own records stay the authority.
     200       {"stored": true}    the reply guard was run again here, the notices added, the reply
                                   stored, the run marked replied and the lease revoked. The answer does
@@ -120,7 +121,8 @@ def init_metrics(metrics: Metrics) -> None:
     metrics.inc("dispatcher_errors_total", {"stage": "database"}, by=0)
     for kind in agent_events.KINDS:
         metrics.inc("dispatcher_agent_events_total", {"kind": kind}, by=0)
-    metrics.inc("dispatcher_agent_events_rejected_total", by=0)
+    for reason in agent_events.REASONS:
+        metrics.inc("dispatcher_agent_events_rejected_total", {"reason": reason}, by=0)
 
 
 @dataclass(frozen=True)
@@ -165,14 +167,15 @@ class Dispatcher:
     def _reply(self, caller: CallerIdentity, lease: str, text: str, events: object) -> str:
         if not LEASE_FORMAT.fullmatch(lease):
             return "lease"
-        listed = None if events is NO_EVENTS else agent_events.checked(events)
+        listed, why = (None, None) if events is NO_EVENTS else agent_events.check(events)
         outcome, ticket_id, blocked, kind, written = self._store.finish_reply(lease, caller.pod, text, listed or None)
         if outcome == "lease":
             security_event("reply_refused", reason="lease")
             return "lease"
         if events is not NO_EVENTS and (listed is None or (listed and written is None)):
-            self._metrics.inc("dispatcher_agent_events_rejected_total")
-            security_event("agent_events_rejected", ticket_id=ticket_id)
+            reason = why if listed is None else "db"
+            self._metrics.inc("dispatcher_agent_events_rejected_total", {"reason": reason})
+            security_event("agent_events_rejected", ticket_id=ticket_id, reason=reason)
         elif written:
             for event in listed:
                 self._metrics.inc("dispatcher_agent_events_total", {"kind": event["kind"]})

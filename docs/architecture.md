@@ -57,7 +57,7 @@ flowchart LR
 
 The tools are five processes on purpose. A hijacked tool then holds one database role and one function, and the per-call token names the tool it is for.
 
-The agent also reports, with its reply, which arguments it dropped and which unknown tools it refused: names only, never a value. The dispatcher validates the list (identifier names, at most 32 events of 16 names, anything else rejects the whole list), and writes it to the append-only `agent_events` table for the ticket of the lease it resolved itself. This is reported by the agent and best effort: a compromised agent pod could lie or leave events out, and the gateway's own records (`tool_calls`) remain the authority.
+The agent also reports, with its reply, which arguments it dropped and which unknown tools it refused: the names of the tool and its arguments, never a value. The model chooses those names, so they are identifiers of up to 64 characters and can still spell short data. The dispatcher validates the list (identifier names, at most 32 events of 16 names, anything else rejects the whole list), and writes it to the append-only `agent_events` table for the ticket of the lease it resolved itself. This is reported by the agent and best effort: a compromised agent pod could lie or leave events out, and the gateway's own records (`tool_calls`) remain the authority.
 
 The five: `read_ticket` returns the text of the lease's ticket. `lookup_account` returns the lease's customer only. `issue_bill_credit` files a credit request. `request_disconnection` files a move-out request. `set_temp_protection` marks a home protected and only adds.
 

@@ -19,6 +19,7 @@ import pytest
 from app.agent.core import Agent
 from app.agent.dispatcher_client import DispatcherClient
 from app.agent.llm import ScriptedLLM
+from app.dispatcher import events as agent_events
 from tests.dispatcherharness import Harness, post, pod_of
 from tests.unit.test_agent import RecordingGateway
 from tests.unit.test_dispatcher import claimed, metric, stored
@@ -33,12 +34,11 @@ def h(settings, as_role):
     return Harness(settings, as_role)
 
 
-def rejected(h):
-    """The value of the counter without labels."""
-    for line in h.metrics.render().splitlines():
-        if line.startswith("dispatcher_agent_events_rejected_total "):
-            return float(line.rsplit(" ", 1)[1])
-    raise AssertionError("no series dispatcher_agent_events_rejected_total")
+def rejected(h, reason=None):
+    """The rejected counter: all reasons added up, or one reason."""
+    if reason is not None:
+        return metric(h, "dispatcher_agent_events_rejected_total", reason=reason)
+    return sum(metric(h, "dispatcher_agent_events_rejected_total", reason=r) for r in agent_events.REASONS)
 
 
 def send(h, lease, events, text="Thank you.", extra=None):
@@ -148,13 +148,42 @@ def test_an_invalid_list_is_rejected_whole_and_the_reply_is_still_stored(h, admi
     assert metric(h, "dispatcher_agent_events_total", kind="unknown_tool") == 0
 
 
+LIMIT_EVENTS = {
+    "too many names": BAD_EVENTS["too many names"],
+    "too many events": BAD_EVENTS["too many events"],
+}
+
+
+@pytest.mark.parametrize("events", LIMIT_EVENTS.values(), ids=LIMIT_EVENTS.keys())
+def test_a_list_over_a_limit_is_counted_with_the_reason_limit(h, events):
+    ticket, lease = claimed(h)
+    send(h, lease, events)
+    assert (rejected(h, "limit"), rejected(h, "shape"), rejected(h, "db")) == (1, 0, 0)
+
+
+@pytest.mark.parametrize("events", [BAD_EVENTS["tool is a sentence"], BAD_EVENTS["an extra key (a value)"], None])
+def test_a_malformed_list_is_counted_with_the_reason_shape(h, events):
+    ticket, lease = claimed(h)
+    send(h, lease, events)
+    assert (rejected(h, "shape"), rejected(h, "limit"), rejected(h, "db")) == (1, 0, 0)
+
+
+def test_a_list_the_database_refuses_is_counted_with_the_reason_db(h, admin, monkeypatch):
+    ticket, lease = claimed(h)
+    # The Python wall lets it through; the database function is the second wall.
+    monkeypatch.setattr(agent_events, "check", lambda value: (value, None))
+    assert send(h, lease, [{**DROPPED, "tool": "x y"}]).status_code == 200
+    assert (rejected(h, "db"), rejected(h, "shape"), rejected(h, "limit")) == (1, 0, 0)
+    assert rows(admin) == [] and stored(admin, ticket) == "Thank you."
+
+
 def test_a_rejected_list_is_a_security_event_without_its_content(h, caplog):
     ticket, lease = claimed(h)
     with caplog.at_level(logging.INFO, logger="assume_hijacked.security"):
         send(h, lease, [{**DROPPED, "tool": "SECRET-MARKER 1002"}])
     logged = [json.loads(r.getMessage()) for r in caplog.records if r.name == "assume_hijacked.security"]
     rejected = [e for e in logged if e["kind"] == "agent_events_rejected"]
-    assert len(rejected) == 1 and rejected[0]["ticket_id"] == ticket
+    assert len(rejected) == 1 and rejected[0]["ticket_id"] == ticket and rejected[0]["reason"] == "shape"
     assert "SECRET-MARKER" not in json.dumps(logged)
 
 
@@ -210,6 +239,47 @@ def test_the_dispatcher_role_writes_events_only_through_the_function(h, admin, a
         with pytest.raises(psycopg.errors.RaiseException):
             conn.execute("SELECT record_agent_events(%s, %s, %s::jsonb)", (lease, h.pods[lease], json.dumps(bad)))
     assert rows(admin) == []
+
+
+def test_a_second_call_for_the_same_lease_is_refused(h, admin):
+    ticket, lease = claimed(h)
+    dispatcher = h.store._connect()
+    try:
+        with dispatcher.transaction():
+            args = (lease, h.pods[lease], json.dumps([DROPPED]))
+            assert dispatcher.execute("SELECT record_agent_events(%s, %s, %s::jsonb) AS n", args).fetchone()["n"] == 1
+            with pytest.raises(psycopg.errors.RaiseException, match="already recorded"):
+                with dispatcher.transaction():
+                    dispatcher.execute("SELECT record_agent_events(%s, %s, %s::jsonb)", args)
+    finally:
+        dispatcher.close()
+    assert len(rows(admin)) == 1
+
+
+def test_events_are_not_kept_when_the_lease_is_not_live_at_the_close(h, admin, monkeypatch):
+    ticket, lease = claimed(h)
+    write = type(h.store)._write_events
+
+    def write_then_lose_the_lease(conn, lease_, pod, events):
+        written = write(conn, lease_, pod, events)
+        conn.execute("SELECT finish_reply_facts(%s, %s)", (lease_, pod))  # the lease is closed from elsewhere
+        return written
+
+    monkeypatch.setattr(type(h.store), "_write_events", staticmethod(write_then_lose_the_lease))
+    assert send(h, lease, [DROPPED]).status_code == 403                  # the reply is refused ...
+    assert rows(admin) == [] and stored(admin, ticket) is None          # ... and so are its events
+
+
+def test_the_table_itself_refuses_a_name_that_is_not_an_identifier(admin, h):
+    ticket, lease = claimed(h)
+    insert = ("INSERT INTO agent_events (ticket_id, lease_hash, kind, tool, arg_names) "
+              "VALUES (%s, sha256('x'), 'dropped_argument', 'lookup_account', %s)")
+    for bad in (["customer id"], ["1002"], ["ok", "a'b"], ["a" * 65], [""], ["ok" + chr(10)]):
+        with pytest.raises(psycopg.errors.CheckViolation):
+            admin.execute(insert, (ticket, bad))
+    admin.execute(insert, (ticket, ["customer_id", "_x1"]))
+    admin.execute(insert, (ticket, []))
+    assert len(rows(admin)) == 2
 
 
 def test_no_login_role_can_update_or_delete_agent_events(h, admin):
@@ -332,3 +402,49 @@ def test_the_agent_still_has_no_database_credentials():
     source = "\n".join(p.read_text(encoding="utf-8") for p in Path(agent_package.__file__).parent.glob("*.py"))
     for word in ("DB_PASSWORD", "psycopg", "app.db", "agent_events"):
         assert word not in source, word
+
+
+# --- the Python wall, without a database ------------------------------------------------------------
+
+
+def test_checked_returns_a_rebuilt_copy_of_a_good_list():
+    original = [{"kind": "dropped_argument", "tool": "lookup_account", "args": ["customer_id"]}]
+    clean = agent_events.checked(original)
+    assert clean == original and clean is not original and clean[0] is not original[0]
+
+
+@pytest.mark.parametrize("name", ["customer id", "1002", "a'b", "a\nb", "customer_id\n", "", "a" * 65, "x=1", "ä"])
+def test_checked_refuses_a_tool_or_argument_name_that_is_not_an_identifier(name):
+    assert agent_events.checked([{"kind": "unknown_tool", "tool": name, "args": []}]) is None
+    assert agent_events.checked([{"kind": "dropped_argument", "tool": "lookup_account", "args": ["ok", name]}]) is None
+
+
+@pytest.mark.parametrize("name", [5, None, ["a"], b"a"])
+def test_checked_refuses_a_name_that_is_not_text(name):
+    assert agent_events.checked([{"kind": "unknown_tool", "tool": name, "args": []}]) is None
+    assert agent_events.checked([{"kind": "dropped_argument", "tool": "lookup_account", "args": [name]}]) is None
+
+
+def test_checked_accepts_the_longest_identifier_and_the_largest_list():
+    event = {"kind": "dropped_argument", "tool": "_" + "a" * 63, "args": ["Z" * 64] * 16}
+    assert agent_events.checked([event] * 32) == [event] * 32
+    assert agent_events.checked([]) == []
+
+
+def test_checked_and_check_say_why_a_list_is_refused():
+    good = {"kind": "dropped_argument", "tool": "lookup_account", "args": []}
+    assert agent_events.check([good] * 33) == (None, "limit")
+    assert agent_events.check([{**good, "args": ["a"] * 17}]) == (None, "limit")
+    assert agent_events.check([{**good, "tool": "x y"}]) == (None, "shape")
+    assert agent_events.check({"kind": "x"}) == (None, "shape")
+    assert agent_events.check([{**good, "kind": "other"}]) == (None, "shape")
+    assert agent_events.check([{**good, "extra": 1}]) == (None, "shape")
+    assert agent_events.check([good]) == ([good], None)
+
+
+def test_the_log_and_the_report_use_one_identifier_rule():
+    from app.agent import core
+    for name in ("lookup_account", "_x1", "A" * 64):
+        assert core._name(name) == name and core._report_name(name) == name
+    for name in ("1abc", "a b", "a" * 65, "", None, 7):
+        assert core._name(name) == "<invalid>" and core._report_name(name) == core.PLACEHOLDER

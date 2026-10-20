@@ -64,8 +64,9 @@ class DispatcherClient:
         return Claim(ticket, lease)
 
     def reply(self, lease: str, text: str, events: list[dict] | None = None) -> None:
-        """Send the reply, and with it the events (names of what the agent dropped, see
-        app/agent/core.py event_list), if there are any. Returns when the dispatcher has stored the
+        """Send the reply, and with it the events (the names of what the agent dropped, see
+        app/agent/core.py event_list; the model chooses them, so they are identifiers of up to 64
+        characters that can still spell short data), if there are any. Returns when the dispatcher has stored the
         reply; raises DispatcherError otherwise."""
         body: dict = {"text": text}
         if events:

@@ -422,14 +422,24 @@ GRANT EXECUTE ON FUNCTION finish_reply_facts(text, text) TO dispatcher;
 -- best-effort audit; the gateway's own records (tool_calls) stay the authority.
 --
 -- Append only: nobody holds a table grant (the dispatcher reaches the table only through the
--- function), and the trigger refuses UPDATE and DELETE even from the superuser.
+-- function), and the trigger refuses UPDATE and DELETE even from the superuser. TRUNCATE is not
+-- caught: only the table owner may do it, and the test suite resets with it.
+--
+-- The names are chosen by the model: identifiers of up to 64 characters that can still spell short data.
+CREATE FUNCTION agent_event_names_ok(p_names text[]) RETURNS bool
+LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path = pg_catalog AS $$
+    SELECT coalesce(bool_and(n ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$'), true) FROM unnest(p_names) AS n
+$$;
+REVOKE ALL ON FUNCTION agent_event_names_ok(text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION agent_event_names_ok(text[]) TO api_owner;
+
 CREATE TABLE agent_events (
     id          bigserial PRIMARY KEY,
     ticket_id   int NOT NULL REFERENCES tickets,
     lease_hash  bytea NOT NULL,
     kind        text NOT NULL CHECK (kind IN ('dropped_argument', 'unknown_tool')),
     tool        text NOT NULL CHECK (tool ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$'),
-    arg_names   text[] NOT NULL CHECK (cardinality(arg_names) <= 16),
+    arg_names   text[] NOT NULL CHECK (cardinality(arg_names) <= 16 AND agent_event_names_ok(arg_names)),
     reported_at timestamptz NOT NULL DEFAULT now(),
     source      text NOT NULL DEFAULT 'agent' CHECK (source = 'agent')
 );
@@ -449,7 +459,10 @@ REVOKE ALL ON FUNCTION refuse_agent_event_change() FROM PUBLIC;
 -- most 16 names. Anything else raises 'agent events invalid' and nothing is written. The ticket is
 -- the live lease's, bound to p_pod, as in finish_reply_facts; for any other lease the function
 -- returns NULL and writes nothing. Returns how many events were written. Call it before
--- finish_reply_facts, which revokes the lease.
+-- finish_reply_facts, which revokes the lease, in the same transaction as it: if the lease is no
+-- longer live at that point the caller undoes the events with the refused reply.
+-- Once per lease: a second call for a lease that already has events raises 'agent events already
+-- recorded'. The lease row is locked while the function runs, so two calls cannot both pass.
 CREATE FUNCTION record_agent_events(p_lease text, p_pod text, p_events jsonb) RETURNS int
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
 DECLARE
@@ -484,8 +497,12 @@ BEGIN
     END LOOP;
     SELECT l.ticket_id INTO v_ticket FROM public.leases l
     WHERE l.token_hash = v_hash AND NOT l.revoked AND l.expires_at > clock_timestamp()
-      AND l.bound_pod IS NOT DISTINCT FROM p_pod;
+      AND l.bound_pod IS NOT DISTINCT FROM p_pod
+    FOR UPDATE;
     IF v_ticket IS NULL THEN RETURN NULL; END IF;
+    IF EXISTS (SELECT 1 FROM public.agent_events WHERE lease_hash = v_hash) THEN
+        RAISE EXCEPTION 'agent events already recorded';
+    END IF;
     INSERT INTO public.agent_events (ticket_id, lease_hash, kind, tool, arg_names)
     SELECT v_ticket, v_hash, e ->> 'kind', e ->> 'tool',
            ARRAY(SELECT n #>> '{}' FROM jsonb_array_elements(e -> 'args') AS n)
@@ -493,7 +510,7 @@ BEGIN
     RETURN jsonb_array_length(p_events);
 END $$;
 
-GRANT INSERT (ticket_id, lease_hash, kind, tool, arg_names) ON agent_events TO api_owner;
+GRANT INSERT (ticket_id, lease_hash, kind, tool, arg_names), SELECT (lease_hash) ON agent_events TO api_owner;
 GRANT USAGE ON SEQUENCE agent_events_id_seq TO api_owner;
 ALTER FUNCTION record_agent_events(text, text, jsonb) OWNER TO api_owner;
 REVOKE ALL ON FUNCTION record_agent_events(text, text, jsonb) FROM PUBLIC;
