@@ -14,7 +14,7 @@ CREATE TABLE customers (
     phone text NOT NULL
 );
 
--- Supply point = αριθμός παροχής. Protection belongs to the home, not the account (decision 6).
+-- Supply point = αριθμός παροχής. Protection belongs to the home, not the account.
 CREATE TABLE supply_points (
     id      text PRIMARY KEY,
     address text NOT NULL
@@ -71,7 +71,7 @@ CREATE TABLE action_requests (
     lease_hash      bytea
 );
 
--- One effect request per lease, whichever tool files it (gap M1). A hijacked tool pod holding a
+-- One effect request per lease, whichever tool files it. A hijacked tool pod holding a
 -- valid lease cannot file a second credit or move-out request on it: the second insert fails.
 CREATE UNIQUE INDEX action_requests_one_effect_per_lease ON action_requests (lease_hash)
     WHERE lease_hash IS NOT NULL;
@@ -113,7 +113,7 @@ END $$;
 CREATE TRIGGER action_requests_check BEFORE INSERT ON action_requests
     FOR EACH ROW EXECUTE FUNCTION check_action_request();
 
--- approver is the Entra object id the console validated (decision 8), or a dev user id locally.
+-- approver is the Entra object id the console validated, or a dev user id locally.
 -- Rows are written only by approve_request (06-risk.sql), which refuses an id that is not on the
 -- staff list and takes approver_role from that list. The database enforces that one person
 -- counts once, whatever the spelling (check_approval_floor, 06-risk.sql).
@@ -139,7 +139,7 @@ CREATE TABLE credits (
 -- A credit pays exactly what its credit request asked for, to that request's account, against
 -- that request's evidence. The executor decides whether to pay; this stops a bug from paying
 -- another amount or account, or paying one charge twice under an evidence_ref nobody used yet.
--- The charges must also back it, the same evidence rule the executor applies (decision 4): the
+-- The charges must also back it, the same evidence rule the executor applies: the
 -- evidence is a charge on that account, an earlier charge has the same account, period and
 -- amount (so this one is the duplicate), and the credit is no more than the charge.
 -- Last, the approval floor (check_approval_floor, 06-risk.sql): the request needs a risk assessment

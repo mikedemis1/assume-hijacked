@@ -64,7 +64,7 @@ CREATE TRIGGER risk_assessments_append_only BEFORE UPDATE OR DELETE ON risk_asse
 CREATE TRIGGER call_assessments_append_only BEFORE UPDATE OR DELETE ON call_assessments
     FOR EACH STATEMENT EXECUTE FUNCTION refuse_assessment_change();
 
--- The staff allow-list (gap M2). The console role has no privilege on it; only the database
+-- The staff allow-list. The console role has no privilege on it; only the database
 -- superuser or the migration changes it (docs/azure.md, "Staff"). oid is the Entra object id;
 -- roles are the app roles, a closed set; active=false takes a person off without deleting the row.
 CREATE TABLE staff (
@@ -84,7 +84,7 @@ CREATE TABLE agent_control (
     changed_at timestamptz NOT NULL DEFAULT now()
 );
 
--- The risk engine pauses (repeated denials on one lease, decision 5). Only a person resumes:
+-- The risk engine pauses (repeated denials on one lease). Only a person resumes:
 -- the console calls resume_agents(oid) after it has checked the SeniorApprover role, and the
 -- function checks it again against the staff list. Both functions
 -- check session_user, the role that logged in, as well as the grant, so an EXECUTE grant added

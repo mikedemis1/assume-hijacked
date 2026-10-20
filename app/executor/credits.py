@@ -1,4 +1,4 @@
-"""Bill credits (decision 4): evidence from the data, then three limits. The LLM never judges.
+"""Bill credits: evidence from the data, then three limits. The LLM never judges.
 
 Only requests the risk engine assessed are taken. The tier decides the path:
 T0 the automatic path below; T1/T2 wait for their staff approvals, then the evidence and the

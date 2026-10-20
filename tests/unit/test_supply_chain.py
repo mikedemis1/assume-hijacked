@@ -1,4 +1,4 @@
-"""Supply chain checks (gap I11): builds are repeatable and every download is checked.
+"""Supply chain checks: builds are repeatable and every download is checked.
 
 These read files only. They fail if a package in the lock loses its hash, a dependency is
 no longer pinned exactly, or a base image goes back to a floating tag.

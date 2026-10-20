@@ -1,9 +1,9 @@
 # AKS: Free tier, Azure CNI overlay with the Cilium data plane and Advanced Container
-# Networking Services (Cilium FQDN/DNS policies, decision 4), Entra-only access with Azure
+# Networking Services (Cilium FQDN/DNS policies), Entra-only access with Azure
 # RBAC, workload identity, two node pools:
 #
 #   system   2+ x Standard_D4als_v6, Azure Linux, tainted CriticalAddonsOnly=true:NoSchedule
-#            (only_critical_addons_enabled). There is no user pool (decision 6), so the app
+#            (only_critical_addons_enabled). There is no user pool, so the app
 #            components that are not sandboxed tolerate the taint and run here.
 #   sandbox  0-3 x Standard_D4als_v6, Azure Linux, workload runtime KataVmIsolation. AKS
 #            provides the RuntimeClass `kata-vm-isolation`; agent Jobs and tools use it.
@@ -82,7 +82,7 @@ resource "azurerm_kubernetes_cluster" "this" {
     secret_rotation_interval = "2m"
   }
 
-  # Admission is ValidatingAdmissionPolicy + Pod Security Admission (decision 9), not
+  # Admission is ValidatingAdmissionPolicy + Pod Security Admission, not
   # Azure Policy for Kubernetes.
   azure_policy_enabled         = false
   image_cleaner_enabled        = true

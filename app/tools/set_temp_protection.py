@@ -1,4 +1,4 @@
-"""Customer says someone at home needs powered medical equipment: protect at once (decision 3)."""
+"""Customer says someone at home needs powered medical equipment: protect at once."""
 
 from __future__ import annotations
 

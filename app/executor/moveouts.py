@@ -1,4 +1,4 @@
-"""Move-outs (decision 6): a protected home is never disconnected automatically.
+"""Move-outs: a protected home is never disconnected automatically.
 
 Only requests the risk engine assessed are taken. HUMAN_ONLY ends at manual_only and REJECT at
 rejected. A home with a flag ends at manual_only too. T1 and T2 requests for an unprotected home

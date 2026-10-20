@@ -136,7 +136,7 @@ BEGIN
     RETURN QUERY SELECT t.id, t.body FROM public.tickets t WHERE t.id = v_ticket;
 END $$;
 
--- The ticket owner's account: name, tariff, status, address. Never phone or flags (decision 2).
+-- The ticket owner's account: name, tariff, status, address. Never phone or flags.
 CREATE FUNCTION api_lookup_account(p_lease text)
 RETURNS TABLE(name text, tariff text, status text, address text)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
@@ -210,7 +210,7 @@ BEGIN
     RETURN v_id;
 END $$;
 
--- The only way into flags from a tool (decision 3): adds YES for the ticket owner's home, never
+-- The only way into flags from a tool: adds YES for the ticket owner's home, never
 -- removes or downgrades. The advisory lock is the one check_disconnection_order takes, so a flag
 -- being added and an order being written for the same home cannot interleave. The event's actor
 -- is session_user, the tool role (current_user here is api_owner).

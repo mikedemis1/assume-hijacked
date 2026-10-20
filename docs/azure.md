@@ -27,7 +27,7 @@ These are open on purpose. None of them blocks the kind work.
 
 ## Staff
 
-The database accepts an approval or a resume only for an object id on its `staff` table. The dev staff (`db/sql/09-dev-staff.sql`, public oids) are seeded only where `SEED_DEV_STAFF=yes` (local test database, CI, the kind postgres-init Job); the Azure migration never sets it, and a chart test checks that. On Azure an admin fills the list once per person, as the database admin (not the console), in the `supplier` database. The table belongs to the no-login role `staff_owner`.
+The database accepts an approval or a resume only for an object id on its `staff` table. The dev staff (`db/sql/09-dev-staff.sql`, public oids) are seeded only where `SEED_DEV_STAFF=yes` (local test database, CI, the kind postgres-init Job); the Azure migration sets it to `no`, and a chart test checks that. On Azure an admin fills the list once per person, as the database admin (not the console), in the `supplier` database. The table belongs to the no-login role `staff_owner`.
 
 ```sql
 SET ROLE staff_owner;

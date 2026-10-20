@@ -107,7 +107,7 @@ One JSON file per part in `permissions/` declares its database role and grants, 
 | tool-request-disconnection | ah-tools | `tool_request_disconnection` | runs: api_request_moveout | tool-gateway | db |
 | tool-set-temp-protection | ah-tools | `tool_set_temp_protection` | runs: api_set_temp_protection | tool-gateway | db |
 | executor | ah-core | `executor` | tables: accounts (select), action_requests (select/update), approvals (select), charges (select), credits (select/insert), disconnection_orders (select/insert), events (select/insert), flags (select), risk_assessments (select), supply_points (select); runs: beat, check_approval_floor, required_approvals, advisory locks | - | db |
-| console | ah-staff | `approver` | tables: action_requests (select/update), events (insert/select), risk_assessments (select), heartbeats (select), agent_control (select); runs: approve_request, required_approvals, resume_agents | staff browser | db, Entra |
+| console | ah-staff | `approver` | tables: action_requests (select/update), events (select), risk_assessments (select), heartbeats (select), agent_control (select); runs: approve_request, required_approvals, resume_agents | staff browser | db, Entra |
 | db-migrate | ah-core (azure only) | `none` | nothing | - | db, Entra, Key Vault |
 | db | ah-data (kind only) | `none` | nothing | - | internet |
 

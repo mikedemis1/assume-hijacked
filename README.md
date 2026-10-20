@@ -129,7 +129,7 @@ Monitoring is two alerts (executor stopped, kill switch fired) and one Grafana b
 
 Verified means it ran and the output was read.
 
-- **Test suite.** The default `pytest` run is green: 330 passed, 170 deselected (the deselected ones need a kind cluster). It runs against a real PostgreSQL, so the database walls are tested as the database enforces them.
+- **Test suite.** The default `pytest` run is green: 539 passed, 170 deselected (the deselected ones need a kind cluster). It runs against a real PostgreSQL, so the database walls are tested as the database enforces them.
 - **Images.** The application image and the attack-suite image both build.
 - **kind run.** Pending; the deployed stack and the kind tests have not been run on v2 yet.
 

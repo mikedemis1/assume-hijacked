@@ -1,4 +1,4 @@
-"""Credit request. Only records it; the executor checks evidence and limits (decision 4)."""
+"""Credit request. Only records it; the executor checks evidence and limits."""
 
 from __future__ import annotations
 

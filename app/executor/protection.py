@@ -1,4 +1,4 @@
-"""Is this home protected? A flag row means YES, no row means NO (decision 3)."""
+"""Is this home protected? A flag row means YES, no row means NO."""
 
 from __future__ import annotations
 

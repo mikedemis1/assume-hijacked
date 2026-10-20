@@ -1,4 +1,4 @@
-"""The ticket owner's account. Never returns health data (decision 2)."""
+"""The ticket owner's account. Never returns health data."""
 
 from __future__ import annotations
 

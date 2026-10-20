@@ -61,7 +61,7 @@ def test_tool_cannot_insert_request_status(as_role):
 ADVISORY_LOCK_FUNCTIONS = r"^pg_(try_)?advisory_(xact_)?lock(_shared)?$"
 
 
-def test_only_the_executor_can_take_advisory_locks(admin, as_role):  # gap I9
+def test_only_the_executor_can_take_advisory_locks(admin, as_role):
     # Every overload the server has, read from the catalog, so none is missed.
     functions = admin.execute(
         "SELECT proname, pronargs FROM pg_proc WHERE proname ~ %s ORDER BY proname, pronargs",
@@ -88,7 +88,7 @@ def test_only_the_executor_can_take_advisory_locks(admin, as_role):  # gap I9
     assert allowed == []
 
 
-def test_a_tool_role_cannot_open_more_connections_than_its_limit(admin, settings):  # gap I9
+def test_a_tool_role_cannot_open_more_connections_than_its_limit(admin, settings):
     from app import db
 
     role = "tool_read_ticket"
@@ -108,7 +108,7 @@ def test_a_tool_role_cannot_open_more_connections_than_its_limit(admin, settings
             conn.close()
 
 
-def test_executor_sessions_time_out_on_locks_and_statements(as_role):  # gap I9
+def test_executor_sessions_time_out_on_locks_and_statements(as_role):
     conn = as_role("executor")
     assert conn.execute("SHOW lock_timeout").fetchone()["lock_timeout"] == "5s"
     assert conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "30s"

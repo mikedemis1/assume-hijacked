@@ -20,7 +20,7 @@ GIVE_UP = "We could not complete your request automatically. A colleague will co
 MAX_REPLY_CHARS = 4000
 
 # Arguments the LLM may set. The lease (which names the ticket) is always set by this code, and a
-# ticket_id or lease from the model is dropped (decision 1).
+# ticket_id or lease from the model is dropped.
 ALLOWED_ARGS = {
     "read_ticket": set(),
     "lookup_account": set(),

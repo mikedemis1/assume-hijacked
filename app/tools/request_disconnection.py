@@ -1,4 +1,4 @@
-"""Move-out request. Only records it; the executor decides (decision 6)."""
+"""Move-out request. Only records it; the executor decides."""
 
 from __future__ import annotations
 

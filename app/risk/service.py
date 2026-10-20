@@ -253,7 +253,7 @@ def effect_facts(conn: psycopg.Connection, req: dict, settings: Settings, now: d
         protection = conn.execute("SELECT home_protection(%s) AS p", (req["id"],)).fetchone()["p"]
     evidence = False
     if req["kind"] == "credit" and req["amount_eur"] is not None:
-        # The same evidence rule as the executor and check_credit (decision 4): a charge on this
+        # The same evidence rule as the executor and check_credit: a charge on this
         # request's account, a later twin of an earlier charge, and no less than the credit.
         evidence = conn.execute(
             "SELECT EXISTS (SELECT 1 FROM charges c WHERE c.id = %s AND c.account_id = %s "

@@ -25,7 +25,7 @@ variable "location" {
 
   validation {
     condition     = var.location == "northeurope"
-    error_message = "This build runs in North Europe only (decision 1)."
+    error_message = "This build runs in North Europe only."
   }
 }
 

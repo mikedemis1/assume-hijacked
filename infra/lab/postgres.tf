@@ -1,8 +1,8 @@
 # PostgreSQL flexible server: B1ms, version 17, no public access, reachable only through a
-# private endpoint in snet-pe (decision 2). Password and Entra authentication are both on:
+# private endpoint in snet-pe. Password and Entra authentication are both on:
 #   - Entra: humans and the db-migrate Job. The Entra administrator is the db-migrate
 #     workload identity, so the schema migration needs no password at all.
-#   - Password: one per workload role (decision 3), read by each pod from its own Key Vault.
+#   - Password: one per workload role, read by each pod from its own Key Vault.
 #
 # Secrets and the Terraform state
 # -------------------------------

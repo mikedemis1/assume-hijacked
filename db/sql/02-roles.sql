@@ -1,6 +1,6 @@
 -- Cluster-level: run once, before the per-database files. Roles are shared by supplier and
 -- supplier_test; their privileges inside each database are in 03-grants.sql.
--- CONNECTION LIMIT (gap I9): one role cannot use up the server's connections. A tool opens one
+-- CONNECTION LIMIT: one role cannot use up the server's connections. A tool opens one
 -- connection per call. The executor keeps one open; 3 leaves room for the test suite, which
 -- runs next to the stack's executor on the same server.
 CREATE ROLE tool_read_ticket           LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_tool_read_ticket';
@@ -22,7 +22,7 @@ CREATE ROLE dispatcher                 LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_di
 --   staff_owner  the staff allow-list (06-risk.sql) and approve_request, the only way an approval
 --                is written. Only the database superuser or the migration changes the list.
 --   flags_writer owned set_temp_protection(int) until api_set_temp_protection replaced it; kept
---                because the RLS policy (08-rls.sql) and later tasks name it. It has no grants.
+--                because the RLS policy (08-rls.sql) names it. It has no grants.
 CREATE ROLE flags_writer               NOLOGIN;
 CREATE ROLE api_owner                  NOLOGIN;
 CREATE ROLE lease_owner                NOLOGIN;
@@ -38,7 +38,7 @@ ALTER ROLE executor SET statement_timeout = '30s';
 -- api_set_temp_protection takes a home's advisory lock until its transaction ends. A tool session
 -- left idle inside a transaction would keep the executor off that home, so it is ended after
 -- 10 s. This only covers an honest tool that hangs: a role can change this setting in its own
--- session, so a hijacked tool can still hold the lock (docs/attacks.md, Not protected yet).
+-- session, so a hijacked tool can still hold the lock.
 ALTER ROLE tool_read_ticket           SET idle_in_transaction_session_timeout = '10s';
 ALTER ROLE tool_lookup_account        SET idle_in_transaction_session_timeout = '10s';
 ALTER ROLE tool_request_disconnection SET idle_in_transaction_session_timeout = '10s';

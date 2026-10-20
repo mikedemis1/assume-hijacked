@@ -86,7 +86,7 @@ def insert_order(conn, request_id, supply_point_id):
     )
 
 
-def test_a_held_home_lock_fails_that_request_and_the_batch_goes_on(admin, as_role, settings, now):  # gap I9
+def test_a_held_home_lock_fails_that_request_and_the_batch_goes_on(admin, as_role, settings, now):
     staff = as_role("approver")
     first = ready_for_order(admin, staff)  # SP-1001
     second = ready_for_order(admin, staff, account_id=2, ticket_id=2)  # SP-1002

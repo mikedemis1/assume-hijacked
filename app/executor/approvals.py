@@ -10,7 +10,7 @@ APPROVAL_TIERS = frozenset({"T1", "T2"})
 
 def approve(conn: psycopg.Connection, request_id: int, approver: str) -> bool:
     """Staff approval, through approve_request: the approver must be on the staff list. The same
-    person cannot approve the same request twice (decision 5)."""
+    person cannot approve the same request twice."""
     try:
         conn.execute("SELECT approve_request(%s, %s::uuid)", (request_id, approver))
     except psycopg.errors.UniqueViolation:

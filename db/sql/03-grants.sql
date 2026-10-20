@@ -36,7 +36,7 @@ GRANT SELECT ON action_requests TO approver;
 -- checks the approver against the staff list and writes the row with the listed role and the
 -- database clock.
 
--- Advisory locks (gap I9). By default PUBLIC may call these, so any tool role could hold a
+-- Advisory locks. By default PUBLIC may call these, so any tool role could hold a
 -- home's lock and freeze the executor. Only the executor (its own lock and the order trigger)
 -- and api_owner (api_set_temp_protection) take them. Function privileges live in each database,
 -- which is why this is here and not in 02-roles.sql. Unlock functions stay public: a session

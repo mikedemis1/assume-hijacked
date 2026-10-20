@@ -98,7 +98,7 @@ def test_agent_stops_after_max_steps(settings, admin, as_role):
     assert make_agent(settings, as_role).handle_ticket(104) == GIVE_UP
 
 
-# --- security events (gap I6) ---
+# --- security events ---
 
 
 class TranscriptSpy(ScriptedLLM):
