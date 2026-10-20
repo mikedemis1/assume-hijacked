@@ -58,57 +58,31 @@ tests:
                 executor_last_poll_timestamp_seconds is older than 60 seconds or missing.
                 Approved requests are not being carried out.
 
-  - name: risk engine scraped fine gives no alert, scrape failing fires
+  # The switch is off for 5 minutes (0), then the risk engine pauses the agents (1). The alert
+  # waits the 30 s of `for` and fires from 5 min 30 s; it stays while the value is 1.
+  - name: kill switch fires when the paused gauge goes from 0 to 1
     interval: 15s
     input_series:
-      - series: 'up{job="risk-engine", namespace="ah-core"}'
-        values: '1x20 0x40'
+      - series: 'risk_agents_paused{job="risk-engine", namespace="ah-core"}'
+        values: '0x20 1x40'
     alert_rule_test:
-      - {eval_time: 4m, alertname: RiskEngineDown, exp_alerts: []}
-      # The scrape fails from 5 min on, the alert waits one minute and fires from 6 min.
-      - {eval_time: 5m30s, alertname: RiskEngineDown, exp_alerts: []}
+      - {eval_time: 4m, alertname: KillSwitchFired, exp_alerts: []}
+      - {eval_time: 5m15s, alertname: KillSwitchFired, exp_alerts: []}
       - eval_time: 8m
-        alertname: RiskEngineDown
+        alertname: KillSwitchFired
         exp_alerts:
           - exp_labels: {severity: critical}
             exp_annotations:
-              summary: The risk engine is not answering its metrics scrape
+              summary: All agents are paused (kill switch)
               description: >-
-                No risk-engine pod has been scraped successfully for a minute. The tool gateway
-                denies every call while the risk engine is unreachable (fail closed).
+                risk_agents_paused is 1. The risk engine paused every agent after repeated
+                denials on one lease. The tool gateway refuses every call until a SeniorApprover
+                resumes in the console.
 
-  - name: risk engine pod gone fires, another component being up does not hide it
+  - name: kill switch stays quiet while the agents run
     interval: 15s
     input_series:
-      - series: 'up{job="risk-engine", namespace="ah-core"}'
-        values: '1x8 stale _x60'
-      - series: 'up{job="executor", namespace="ah-core"}'
-        values: '1x70'
+      - series: 'risk_agents_paused{job="risk-engine", namespace="ah-core"}'
+        values: '0x60'
     alert_rule_test:
-      - eval_time: 5m
-        alertname: RiskEngineDown
-        exp_alerts:
-          - exp_labels: {severity: critical}
-            exp_annotations:
-              summary: The risk engine is not answering its metrics scrape
-              description: >-
-                No risk-engine pod has been scraped successfully for a minute. The tool gateway
-                denies every call while the risk engine is unreachable (fail closed).
-
-  - name: denials burst fires, a quiet gateway does not
-    interval: 15s
-    input_series:
-      - series: 'gateway_denials_total{reason="tool_not_in_lease", job="tool-gateway"}'
-        values: '0+3x40'
-      - series: 'gateway_denials_total{reason="lease", job="tool-gateway"}'
-        values: '0+0x40'
-    alert_rule_test:
-      - eval_time: 8m
-        alertname: GatewayDenialsBurst
-        exp_alerts:
-          - exp_labels: {severity: warning, reason: tool_not_in_lease}
-            exp_annotations:
-              summary: The tool gateway denied more than 10 calls in 5 minutes
-              description: >-
-                Look at the reason label: lease, tool_not_in_lease, paused, call_budget and the
-                others each name the wall that refused.
+      - {eval_time: 10m, alertname: KillSwitchFired, exp_alerts: []}

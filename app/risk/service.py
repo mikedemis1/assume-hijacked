@@ -278,6 +278,23 @@ def effect_facts(conn: psycopg.Connection, req: dict, settings: Settings, now: d
     )
 
 
+def export_state(conn: psycopg.Connection, metrics: Metrics | None) -> None:
+    """Two gauges for the board and the kill switch alert: risk_agents_paused (1 while the stop
+    switch is on; no switch row counts as paused, like the gateway) and risk_requests_waiting
+    (effect requests still pending, that is waiting for approvers). A failure is counted, not
+    raised: the loop must go on assessing."""
+    if metrics is None:
+        return
+    try:
+        switch = conn.execute("SELECT paused FROM agent_control WHERE id = 1").fetchone()
+        waiting = conn.execute("SELECT count(*) AS n FROM action_requests WHERE status = 'pending'").fetchone()
+    except Exception as exc:
+        _error(metrics, "state", exc)
+        return
+    metrics.set("risk_agents_paused", 1 if switch is None or switch["paused"] else 0)
+    metrics.set("risk_requests_waiting", waiting["n"])
+
+
 def assess_pending(
     conn: psycopg.Connection, settings: Settings, now: datetime, metrics: Metrics | None = None
 ) -> int:

@@ -9,9 +9,9 @@ checked without a cluster:
     docker; skipped without it),
   - the dashboard JSON, the Mailpit manifest and the scripts, read as files.
 
-`test_heartbeat_alert_fires_when_executor_stopped` needs the installed stack
-(`sh scripts/kind-monitoring.sh`) next to the installed application chart. It is skipped unless
-AH_MONITORING_INSTALLED=1 and runs with `pytest -m k8s tests/k8s/test_monitoring.py`.
+The rule files (two alerts: ExecutorHeartbeatStale, KillSwitchFired) and the walls board are also
+read as plain files below, without promtool or a cluster. promtool itself runs in CI and on kind:
+`promtool test rules` over assume-hijacked.test.yaml.
 """
 
 import hashlib
@@ -169,3 +169,40 @@ def test_stack_pods_meet_pod_security_restricted():
     assert not problems, problems
 
 
+# --- rules and board, read as files -----------------------------------------------------------
+
+RULES = MONITORING / "rules" / "assume-hijacked.yaml"
+RULE_TESTS = MONITORING / "rules" / "assume-hijacked.test.yaml"
+APP = ROOT / "app"
+METRIC = re.compile(r"\b(?:executor|risk|gateway)_[a-z_]+")
+
+
+def alert_rules() -> list[dict]:
+    spec = yaml.safe_load(RULES.read_text(encoding="utf-8"))["spec"]
+    return [r for g in spec["groups"] for r in g["rules"]]
+
+
+def test_there_are_exactly_two_alerts_and_each_has_a_promtool_test():
+    alerts = {r["alert"] for r in alert_rules()}
+    assert alerts == {"ExecutorHeartbeatStale", "KillSwitchFired"}
+    tested = {t["alertname"] for case in yaml.safe_load(RULE_TESTS.read_text(encoding="utf-8"))["tests"]
+              for t in case["alert_rule_test"]}
+    assert alerts <= tested
+
+
+def test_the_walls_board_has_the_panels_the_design_names():
+    titles = [p["title"] for p in dashboard()["panels"]]
+    for needed in ("Kill switch", "Approvals waiting", "Risk tiers", "Tool calls by outcome", "Packets dropped"):
+        assert any(needed in t for t in titles), needed
+    ids = [p["id"] for p in dashboard()["panels"]]
+    assert len(ids) == len(set(ids))
+
+
+def test_every_metric_of_the_rules_and_the_board_is_exported_by_the_app():
+    exprs = [r["expr"] for r in alert_rules()]
+    exprs += [t["expr"] for p in dashboard()["panels"] for t in p["targets"]]
+    names = {m for e in exprs for m in METRIC.findall(e)}
+    assert {"risk_agents_paused", "executor_last_poll_timestamp_seconds"} <= names
+    source = "\n".join(f.read_text(encoding="utf-8") for f in APP.rglob("*.py"))
+    missing = sorted(n for n in names if f'"{n}"' not in source)
+    assert not missing, missing

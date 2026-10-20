@@ -26,6 +26,7 @@ def poll(conn, settings, now: datetime, metrics: Metrics, heartbeat: Heartbeat) 
     """One trip round the loop. Both beats come after the work, so a hung database call turns
     /healthz into 503 and leaves the database heartbeat to age."""
     service.assess_pending(conn, settings, now, metrics)
+    service.export_state(conn, metrics)
     conn.execute("SELECT beat('risk-engine')")
     metrics.set("risk_last_assess_timestamp_seconds", now.timestamp())
     heartbeat.beat()
