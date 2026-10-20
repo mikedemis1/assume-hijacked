@@ -67,33 +67,6 @@ run "budget_without_recipient_is_refused" {
 
 # ---------------------------------------------------------------- policy
 
-run "policy_allows_only_north_europe" {
-  command = plan
-
-  assert {
-    condition     = jsondecode(azurerm_subscription_policy_assignment.allowed_locations.parameters).listOfAllowedLocations.value == ["northeurope"]
-    error_message = "Allowed locations must be exactly northeurope."
-  }
-
-  assert {
-    condition     = jsondecode(azurerm_subscription_policy_assignment.allowed_rg_locations.parameters).listOfAllowedLocations.value == ["northeurope"]
-    error_message = "Resource groups must be limited to northeurope as well."
-  }
-}
-
-run "policy_denies_firewall_standard_and_premium" {
-  command = plan
-
-  assert {
-    condition = (
-      jsondecode(azurerm_policy_definition.deny_firewall_skus.policy_rule).then.effect == "deny"
-      && contains(jsondecode(azurerm_policy_definition.deny_firewall_skus.policy_rule).if.allOf[1].in, "Standard")
-      && contains(jsondecode(azurerm_policy_definition.deny_firewall_skus.policy_rule).if.allOf[1].in, "Premium")
-    )
-    error_message = "The firewall rule must deny Standard and Premium."
-  }
-}
-
 run "policy_denies_vm_sizes_outside_allowlist" {
   command = plan
 
@@ -108,7 +81,7 @@ run "policy_denies_vm_sizes_outside_allowlist" {
   }
 }
 
-run "policy_denies_postgres_public_access_and_requires_key_vault_firewall" {
+run "policy_denies_postgres_public_access" {
   command = plan
 
   assert {
@@ -116,16 +89,9 @@ run "policy_denies_postgres_public_access_and_requires_key_vault_firewall" {
     error_message = "PostgreSQL public access must be denied."
   }
 
-  # The built-in is "Key Vault should have firewall enabled or public network access
-  # disabled": a vault with a firewall (our pattern) or with public access off passes.
   assert {
-    condition     = jsondecode(azurerm_subscription_policy_assignment.keyvault_firewall_or_no_public_access.parameters).effect.value == "Deny"
-    error_message = "A Key Vault with neither firewall nor disabled public access must be denied."
-  }
-
-  assert {
-    condition     = endswith(azurerm_subscription_policy_assignment.keyvault_firewall_or_no_public_access.policy_definition_id, "55615ac9-af46-4a59-874e-391cc3dfb490")
-    error_message = "Wrong built-in definition for the Key Vault rule."
+    condition     = endswith(azurerm_subscription_policy_assignment.postgres_no_public_access.policy_definition_id, "5e1de0e3-42cb-4ebc-a86d-61d0c619ca48")
+    error_message = "Wrong built-in definition for the PostgreSQL rule."
   }
 }
 
@@ -208,7 +174,7 @@ run "vaults_use_rbac_and_deny_by_default" {
   command = plan
 
   variables {
-    spoke_subnet_ids = ["/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-spoke/subnets/snet-aks"]
+    spoke_subnet_ids = ["/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.Network/virtualNetworks/vnet-assume-hijacked/subnets/snet-aks-system"]
   }
 
   assert {
@@ -377,51 +343,43 @@ run "ci_roles_are_least_privilege" {
   }
 }
 
-run "rg_net_and_rg_lab_exist_as_empty_shells" {
+run "rg_lab_exists_as_an_empty_shell" {
   command = plan
 
   assert {
-    condition     = azurerm_resource_group.lab.name == "rg-lab" && azurerm_resource_group.net.name == "rg-net"
-    error_message = "Base must create rg-lab and rg-net so ci-apply's grants survive a lab destroy."
-  }
-
-  assert {
-    condition     = azurerm_resource_group.lab.location == "northeurope" && azurerm_resource_group.net.location == "northeurope"
-    error_message = "Both groups belong in North Europe."
+    condition     = azurerm_resource_group.lab.name == "rg-lab" && azurerm_resource_group.lab.location == "northeurope"
+    error_message = "Base must create rg-lab in North Europe so ci-apply's grants survive a lab destroy."
   }
 }
 
-run "ci_apply_gets_contributor_on_lab_and_net_unconditionally" {
+run "ci_apply_gets_contributor_on_lab_unconditionally" {
   command = plan
 
   assert {
-    condition     = toset(keys(azurerm_role_assignment.ci_apply_contributor)) == toset(["lab", "net"])
-    error_message = "Contributor on rg-lab and rg-net."
+    condition     = toset(keys(azurerm_role_assignment.ci_apply_contributor)) == toset(["lab"])
+    error_message = "Contributor on rg-lab only."
   }
 
   assert {
-    condition = (
-      azurerm_role_assignment.ci_apply_contributor["lab"].scope == "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab"
-      && azurerm_role_assignment.ci_apply_contributor["net"].scope == "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net"
-    )
-    error_message = "Contributor scopes must be exactly the two resource groups."
+    condition     = azurerm_role_assignment.ci_apply_contributor["lab"].scope == "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab"
+    error_message = "The Contributor scope must be exactly rg-lab."
   }
 
   assert {
     condition     = alltrue([for k, r in azurerm_role_assignment.ci_apply_contributor : r.role_definition_name == "Contributor"])
-    error_message = "The role on rg-lab and rg-net must be Contributor."
+    error_message = "The role on rg-lab must be Contributor."
   }
 }
 
-# Every RBAC-administrator grant of ci-apply (rg-lab, rg-net, the registry, each vault)
+# Every RBAC-administrator grant of ci-apply (rg-lab, the registry, each vault)
 # must carry the same version 2.0 condition. Deleting it would hand out unlimited
 # role-assignment rights, so each grant is checked, not just one group of them.
 run "every_ci_apply_rbac_admin_grant_is_conditioned_to_the_short_role_list" {
   command = plan
 
   assert {
-    condition     = toset(concat(keys(azurerm_role_assignment.ci_apply_rbac_admin_lab), keys(azurerm_role_assignment.ci_apply_rbac_admin_base))) == toset(["lab", "net", "acr", "kv-tool-gateway", "kv-tool-lookup-account"])
-    error_message = "RBAC administrator is expected on rg-lab, rg-net, the registry and each vault."
+    condition     = toset(concat(keys(azurerm_role_assignment.ci_apply_rbac_admin_lab), keys(azurerm_role_assignment.ci_apply_rbac_admin_base))) == toset(["lab", "acr", "kv-tool-gateway", "kv-tool-lookup-account"])
+    error_message = "RBAC administrator is expected on rg-lab, the registry and each vault."
   }
 
   assert {

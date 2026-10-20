@@ -40,7 +40,7 @@ output "unassigned_azure_roles" {
 }
 
 output "postgres_host" {
-  description = "Helm db.host: the server name. It resolves to the private endpoint inside the VNets."
+  description = "Helm db.host: the server name. It resolves to the private endpoint inside the VNet."
   value       = azurerm_postgresql_flexible_server.this.fqdn
 }
 
@@ -54,14 +54,19 @@ output "postgres_entra_admin" {
   value       = azurerm_postgresql_flexible_server_active_directory_administrator.db_migrate.principal_name
 }
 
-output "firewall_private_ip" {
-  description = "Next hop of the AKS default route (null when the firewall is off)."
-  value       = var.enable_firewall ? azurerm_firewall.hub[0].ip_configuration[0].private_ip_address : null
+output "vnet_id" {
+  description = "The lab VNet (AKS, private endpoints)."
+  value       = azurerm_virtual_network.vnet.id
 }
 
-output "firewall_public_ip" {
-  description = "Egress IP of the cluster when the firewall is on (null when off)."
-  value       = var.enable_firewall ? azurerm_public_ip.firewall_data[0].ip_address : null
+output "subnet_ids" {
+  description = "Subnet IDs by name (snet-aks-system, snet-aks-sandbox, snet-pe)."
+  value       = { for name, s in azurerm_subnet.subnet : name => s.id }
+}
+
+output "aks_subnet_ids" {
+  description = "The two AKS subnets as a list: the value for infra/base `spoke_subnet_ids` (Key Vault firewall)."
+  value       = [for n in local.aks_subnet_names : azurerm_subnet.subnet[n].id]
 }
 
 output "kubelet_identity_client_id" {

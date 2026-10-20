@@ -4,10 +4,10 @@
 subscription_id = "00000000-0000-0000-0000-000000000000"
 tenant_id       = "00000000-0000-0000-0000-000000000000"
 
-# infra/base output state_storage_account_name. The lab reads the base and net states there.
+# infra/base output state_storage_account_name. The lab reads the base state there.
 state_storage_account_name = "stahstateexample01"
 
-# Who may reach the Kubernetes API. The firewall's public IP is added automatically.
+# Who may reach the Kubernetes API.
 api_authorized_ip_ranges = ["203.0.113.10/32"]
 
 # Entra group(s) with cluster-admin (local accounts are disabled).
@@ -15,9 +15,6 @@ api_authorized_ip_ranges = ["203.0.113.10/32"]
 
 # Log Analytics alerts go here.
 alert_email = "owner@example.com"
-
-# The firewall bills by the hour. false: AKS egress through its load balancer, no firewall.
-enable_firewall = true
 
 # 0 parks the Kata pool when no agent or tool needs to run.
 sandbox_node_count = 1

@@ -1,7 +1,7 @@
 # Plan-only tests with mocked providers: nothing here reaches Azure or Entra.
 # Run from infra/lab:  terraform init -backend=false && terraform test
 #
-# The base and net states are replaced with override_data, in the shape of their real outputs.
+# The base state is replaced with override_data, in the shape of its real outputs.
 # Computed values the assertions compare are fixed with override_resource (plan phase).
 
 mock_provider "azurerm" {}
@@ -30,7 +30,7 @@ variables {
   capabilities_dir           = "tests/fixtures/capabilities"
 }
 
-# ---------------------------------------------------------------- inputs from base and net
+# ---------------------------------------------------------------- inputs from base
 
 override_data {
   target = data.azurerm_resource_group.lab
@@ -69,35 +69,48 @@ override_data {
   }
 }
 
-override_data {
-  target = data.terraform_remote_state.net
+# ---------------------------------------------------------------- fixed computed values
+
+# Network resources: fixed ids so the assertions can compare them.
+override_resource {
+  target          = azurerm_virtual_network.vnet
+  override_during = plan
   values = {
-    outputs = {
-      resource_group_name = "rg-net"
-      aks_pod_cidr        = "10.244.0.0/16"
-      hub_subnet_ids = {
-        AzureFirewallSubnet           = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-hub/subnets/AzureFirewallSubnet"
-        AzureFirewallManagementSubnet = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-hub/subnets/AzureFirewallManagementSubnet"
-      }
-      spoke_subnet_ids = {
-        snet-aks-system  = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-spoke/subnets/snet-aks-system"
-        snet-aks-sandbox = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-spoke/subnets/snet-aks-sandbox"
-        snet-pe          = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/vnet-spoke/subnets/snet-pe"
-      }
-      spoke_subnet_address_prefixes = {
-        snet-aks-system  = "10.20.0.0/24"
-        snet-aks-sandbox = "10.20.1.0/24"
-        snet-pe          = "10.20.2.0/26"
-      }
-      private_dns_zone_ids = {
-        postgres = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/privateDnsZones/privatelink.postgres.database.azure.com"
-        vault    = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net"
-      }
-    }
+    id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.Network/virtualNetworks/vnet-assume-hijacked"
   }
 }
 
-# ---------------------------------------------------------------- fixed computed values
+override_resource {
+  target          = azurerm_subnet.subnet["snet-aks-system"]
+  override_during = plan
+  values = {
+    id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.Network/virtualNetworks/vnet-assume-hijacked/subnets/snet-aks-system"
+  }
+}
+
+override_resource {
+  target          = azurerm_subnet.subnet["snet-aks-sandbox"]
+  override_during = plan
+  values = {
+    id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.Network/virtualNetworks/vnet-assume-hijacked/subnets/snet-aks-sandbox"
+  }
+}
+
+override_resource {
+  target          = azurerm_subnet.subnet["snet-pe"]
+  override_during = plan
+  values = {
+    id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.Network/virtualNetworks/vnet-assume-hijacked/subnets/snet-pe"
+  }
+}
+
+override_resource {
+  target          = azurerm_private_dns_zone.postgres
+  override_during = plan
+  values = {
+    id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.Network/privateDnsZones/privatelink.postgres.database.azure.com"
+  }
+}
 
 override_resource {
   target          = azurerm_kubernetes_cluster.this
@@ -112,35 +125,6 @@ override_resource {
         user_assigned_identity_id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab-aks-nodes/providers/Microsoft.ManagedIdentity/userAssignedIdentities/omsagent"
       }]
     }
-  }
-}
-
-override_resource {
-  target          = azurerm_public_ip.firewall_data
-  override_during = plan
-  values = {
-    id         = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.Network/publicIPAddresses/pip-afw-data"
-    ip_address = "198.51.100.7"
-  }
-}
-
-override_resource {
-  target          = azurerm_firewall.hub
-  override_during = plan
-  values = {
-    id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-net/providers/Microsoft.Network/azureFirewalls/afw-hub"
-    # A nested block's computed values are given per block, as one object.
-    ip_configuration = {
-      private_ip_address = "10.10.0.4"
-    }
-  }
-}
-
-override_resource {
-  target          = azurerm_route_table.aks
-  override_during = plan
-  values = {
-    id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.Network/routeTables/rt-aks-egress"
   }
 }
 
@@ -238,7 +222,7 @@ run "system_pool_has_two_or_more_nodes_and_is_not_b_series" {
   }
 
   assert {
-    condition     = azurerm_kubernetes_cluster.this.default_node_pool[0].vnet_subnet_id == data.terraform_remote_state.net.outputs.spoke_subnet_ids["snet-aks-system"]
+    condition     = azurerm_kubernetes_cluster.this.default_node_pool[0].vnet_subnet_id == azurerm_subnet.subnet["snet-aks-system"].id
     error_message = "The system pool belongs in snet-aks-system."
   }
 }
@@ -282,7 +266,7 @@ run "sandbox_pool_uses_kata_on_azure_linux" {
   }
 
   assert {
-    condition     = azurerm_kubernetes_cluster_node_pool.sandbox.vnet_subnet_id == data.terraform_remote_state.net.outputs.spoke_subnet_ids["snet-aks-sandbox"]
+    condition     = azurerm_kubernetes_cluster_node_pool.sandbox.vnet_subnet_id == azurerm_subnet.subnet["snet-aks-sandbox"].id
     error_message = "The sandbox pool belongs in snet-aks-sandbox."
   }
 }
@@ -368,17 +352,17 @@ run "cluster_network_is_cilium_overlay_with_acns" {
   }
 
   assert {
-    condition     = azurerm_kubernetes_cluster.this.network_profile[0].pod_cidr == data.terraform_remote_state.net.outputs.aks_pod_cidr
-    error_message = "The pod range must be the one the infra/net NSGs allow."
+    condition     = azurerm_kubernetes_cluster.this.network_profile[0].pod_cidr == var.aks_pod_cidr
+    error_message = "The pod range must be the one the AKS NSGs allow."
   }
 }
 
-run "api_server_admits_only_listed_ranges_and_the_firewall" {
+run "api_server_admits_only_listed_ranges" {
   command = plan
 
   assert {
-    condition     = toset(azurerm_kubernetes_cluster.this.api_server_access_profile[0].authorized_ip_ranges) == toset(["203.0.113.10/32", "198.51.100.7/32"])
-    error_message = "Authorized ranges must be exactly the variable plus the firewall's public IP."
+    condition     = toset(azurerm_kubernetes_cluster.this.api_server_access_profile[0].authorized_ip_ranges) == toset(["203.0.113.10/32"])
+    error_message = "Authorized ranges must be exactly the variable."
   }
 }
 
@@ -402,141 +386,77 @@ run "empty_api_range_list_is_refused" {
   expect_failures = [var.api_authorized_ip_ranges]
 }
 
-# ---------------------------------------------------------------- egress and firewall
+# ---------------------------------------------------------------- network and egress
 
-run "firewall_on_routes_all_aks_egress_through_it" {
+run "one_vnet_with_three_subnets_and_no_firewall" {
   command = plan
 
   assert {
-    condition     = length(azurerm_firewall.hub) == 1 && azurerm_kubernetes_cluster.this.network_profile[0].outbound_type == "userDefinedRouting"
-    error_message = "With the firewall on, there is one firewall and the cluster uses userDefinedRouting."
-  }
-
-  assert {
-    condition     = azurerm_route.default_to_firewall[0].address_prefix == "0.0.0.0/0" && azurerm_route.default_to_firewall[0].next_hop_type == "VirtualAppliance" && azurerm_route.default_to_firewall[0].next_hop_in_ip_address == "10.10.0.4"
-    error_message = "The default route must point at the firewall's private IP."
-  }
-
-  assert {
-    condition     = azurerm_route.firewall_ip_to_internet[0].address_prefix == "198.51.100.7/32" && azurerm_route.firewall_ip_to_internet[0].next_hop_type == "Internet"
-    error_message = "The firewall's public IP must route to the Internet."
-  }
-
-  assert {
-    condition     = toset(keys(azurerm_subnet_route_table_association.aks)) == toset(["snet-aks-system", "snet-aks-sandbox"])
-    error_message = "Both AKS subnets, and only they, use the route table."
-  }
-}
-
-run "firewall_off_removes_every_firewall_piece" {
-  command = plan
-
-  variables {
-    enable_firewall = false
+    condition     = azurerm_virtual_network.vnet.address_space == toset(["10.20.0.0/16"])
+    error_message = "The lab has one VNet, 10.20.0.0/16."
   }
 
   assert {
     condition = (
-      length(azurerm_firewall.hub) == 0
-      && length(azurerm_firewall_policy.egress) == 0
-      && length(azurerm_firewall_policy_rule_collection_group.egress) == 0
-      && length(azurerm_public_ip.firewall_data) == 0
-      && length(azurerm_public_ip.firewall_management) == 0
-      && length(azurerm_route_table.aks) == 0
-      && length(azurerm_route.default_to_firewall) == 0
-      && length(azurerm_subnet_route_table_association.aks) == 0
-      && length(azurerm_monitor_diagnostic_setting.firewall) == 0
+      azurerm_subnet.subnet["snet-aks-system"].address_prefixes == tolist(["10.20.0.0/24"])
+      && azurerm_subnet.subnet["snet-aks-sandbox"].address_prefixes == tolist(["10.20.1.0/24"])
+      && azurerm_subnet.subnet["snet-pe"].address_prefixes == tolist(["10.20.2.0/26"])
+      && length(azurerm_subnet.subnet) == 3
     )
-    error_message = "enable_firewall = false must remove every firewall resource."
+    error_message = "Three subnets: system, sandbox, private endpoints."
+  }
+
+  assert {
+    condition     = azurerm_subnet.subnet["snet-pe"].private_endpoint_network_policies == "Enabled"
+    error_message = "NSG rules must apply to the private endpoint subnet."
+  }
+
+  # The Key Vaults in rg-base accept only the AKS subnets, through this service endpoint.
+  assert {
+    condition = (
+      azurerm_subnet.subnet["snet-aks-system"].service_endpoints == toset(["Microsoft.KeyVault"])
+      && azurerm_subnet.subnet["snet-aks-sandbox"].service_endpoints == toset(["Microsoft.KeyVault"])
+    )
+    error_message = "Both AKS subnets need the Microsoft.KeyVault service endpoint."
   }
 
   assert {
     condition     = azurerm_kubernetes_cluster.this.network_profile[0].outbound_type == "loadBalancer"
-    error_message = "Without the firewall, AKS egress uses its load balancer."
-  }
-
-  assert {
-    condition     = toset(azurerm_kubernetes_cluster.this.api_server_access_profile[0].authorized_ip_ranges) == toset(["203.0.113.10/32"])
-    error_message = "Without the firewall, only the listed ranges reach the API."
-  }
-
-  assert {
-    condition     = !contains(keys(azurerm_monitor_scheduled_query_rules_alert_v2.this), "firewall-deny-burst")
-    error_message = "No firewall, no firewall alert."
+    error_message = "With no firewall, AKS egress uses its load balancer."
   }
 }
 
-run "firewall_is_basic_with_a_management_ip_next_to_the_hub" {
+run "every_subnet_has_an_nsg_that_ends_in_deny_all" {
   command = plan
 
   assert {
-    condition     = azurerm_firewall.hub[0].sku_tier == "Basic" && azurerm_firewall_policy.egress[0].sku == "Basic"
-    error_message = "Firewall and policy must be Basic."
+    condition     = toset(keys(azurerm_subnet_network_security_group_association.subnet)) == toset(["snet-aks-system", "snet-aks-sandbox", "snet-pe"])
+    error_message = "Every subnet is attached to an NSG."
   }
 
-  assert {
-    condition     = azurerm_firewall.hub[0].management_ip_configuration[0].subnet_id == data.terraform_remote_state.net.outputs.hub_subnet_ids["AzureFirewallManagementSubnet"]
-    error_message = "Firewall Basic needs the management subnet and a management public IP."
-  }
-
-  assert {
-    condition     = azurerm_firewall.hub[0].resource_group_name == "rg-net"
-    error_message = "Azure requires the firewall in the same resource group as its VNet (rg-net)."
-  }
-}
-
-run "firewall_rules_name_their_sources_and_keep_the_model_api_to_the_system_pool" {
-  command = plan
-
-  # No rule may take traffic from anywhere.
-  assert {
-    condition = alltrue(flatten([
-      for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : [
-        for r in c.rule : length(r.source_addresses) > 0 && !contains(r.source_addresses, "*")
-      ]
-    ]))
-    error_message = "Every rule must name its source subnets; \"*\" is not allowed."
-  }
-
-  # No rule may open every destination.
-  assert {
-    condition = alltrue(flatten([
-      for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : [
-        for r in c.rule : !contains(r.destination_fqdns, "*")
-      ]
-    ]))
-    error_message = "No rule may allow every FQDN."
-  }
-
-  assert {
-    condition = alltrue(flatten([
-      for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : [
-        for r in c.rule : contains(r.destination_fqdns, "api.anthropic.com") ? toset(r.source_addresses) == toset(["10.20.0.0/24"]) : true
-      ]
-    ]))
-    error_message = "api.anthropic.com may only be reached from the system subnet (where llm-gateway runs)."
-  }
-
-  # Control: the destinations the cluster needs are reachable from both AKS subnets.
   assert {
     condition = alltrue([
-      for d in ["AzureKubernetesService", "login.microsoftonline.com", "acrahtest.azurecr.io", "mcr.microsoft.com", "kas.gitlab.com"] :
-      anytrue(flatten([
-        for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : [
-          for r in c.rule :
-          (contains(r.destination_fqdns, d) || contains(r.destination_fqdn_tags, d))
-          && toset(r.source_addresses) == toset(["10.20.0.0/24", "10.20.1.0/24"])
-        ]
-      ]))
+      for k, n in azurerm_network_security_group.subnet :
+      anytrue([for r in n.security_rule : r.direction == "Inbound" && r.access == "Deny" && r.priority == 4096 && r.source_address_prefixes == toset(["*"])])
     ])
-    error_message = "AKS tag, Entra login, ACR, MCR and kas.gitlab.com must be allowed from both AKS subnets."
+    error_message = "Every NSG must end with an inbound deny-all rule."
   }
 
   assert {
-    condition = alltrue(flatten([
-      for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : c.action == "Allow"
-    ]))
-    error_message = "Only allow-lists: everything else hits the firewall's default deny."
+    condition = alltrue([
+      for k, n in azurerm_network_security_group.subnet :
+      anytrue([for r in n.security_rule : r.direction == "Outbound" && r.access == "Deny" && r.priority == 4096 && r.destination_address_prefixes == toset(["*"])])
+    ])
+    error_message = "Every NSG must end with an outbound deny-all rule."
+  }
+
+  # The private endpoint subnet only takes traffic from the AKS subnets.
+  assert {
+    condition = alltrue([
+      for r in azurerm_network_security_group.subnet["snet-pe"].security_rule :
+      r.access == "Deny" || (r.direction == "Inbound" && r.source_address_prefixes == toset(["10.20.0.0/24", "10.20.1.0/24"]))
+    ])
+    error_message = "snet-pe may only be reached from the two AKS subnets."
   }
 }
 
@@ -548,23 +468,6 @@ run "service_range_overlapping_the_pod_range_is_refused" {
   }
 
   expect_failures = [azurerm_kubernetes_cluster.this]
-}
-
-run "scripted_has_no_provider_route" {
-  command = plan
-  assert {
-    condition     = length(local.llm_rules) == 0
-    error_message = "The default scripted model must have no paid-provider route."
-  }
-}
-
-run "anthropic_has_only_its_own_provider_route" {
-  command = plan
-  variables { anthropic_enabled = true }
-  assert {
-    condition     = toset(keys(local.llm_rules)) == toset(["anthropic-api"])
-    error_message = "Anthropic enabled opens the Anthropic host and nothing else."
-  }
 }
 
 # ---------------------------------------------------------------- PostgreSQL
@@ -602,11 +505,20 @@ run "postgres_is_private_b1ms_17_with_password_and_entra" {
 
   assert {
     condition = (
-      azurerm_private_endpoint.postgres.subnet_id == data.terraform_remote_state.net.outputs.spoke_subnet_ids["snet-pe"]
+      azurerm_private_endpoint.postgres.subnet_id == azurerm_subnet.subnet["snet-pe"].id
       && azurerm_private_endpoint.postgres.private_service_connection[0].subresource_names == tolist(["postgresqlServer"])
-      && azurerm_private_endpoint.postgres.private_dns_zone_group[0].private_dns_zone_ids == tolist([data.terraform_remote_state.net.outputs.private_dns_zone_ids["postgres"]])
+      && azurerm_private_endpoint.postgres.private_dns_zone_group[0].private_dns_zone_ids == tolist([azurerm_private_dns_zone.postgres.id])
     )
     error_message = "The server is reached through a private endpoint in snet-pe registered in the postgres private DNS zone."
+  }
+
+  assert {
+    condition = (
+      azurerm_private_dns_zone.postgres.name == "privatelink.postgres.database.azure.com"
+      && azurerm_private_dns_zone_virtual_network_link.postgres.virtual_network_id == azurerm_virtual_network.vnet.id
+      && azurerm_private_dns_zone_virtual_network_link.postgres.private_dns_zone_name == azurerm_private_dns_zone.postgres.name
+    )
+    error_message = "The postgres private DNS zone must be linked to the lab VNet."
   }
 }
 
@@ -667,7 +579,7 @@ run "identities_come_from_the_manifests" {
   }
 
   assert {
-    condition     = output.unassigned_azure_roles == ["llm-gateway: Foundry User on foundry-resource"]
+    condition     = output.unassigned_azure_roles == ["llm-gateway: Storage Blob Data Reader on storage-resource"]
     error_message = "Roles outside Key Vault must be reported, not assigned."
   }
 }
@@ -802,7 +714,7 @@ run "cluster_identities_get_their_roles_before_the_cluster" {
   }
 
   assert {
-    condition     = toset([for a in azurerm_role_assignment.aks_control_plane_subnets : a.scope]) == toset([data.terraform_remote_state.net.outputs.spoke_subnet_ids["snet-aks-system"], data.terraform_remote_state.net.outputs.spoke_subnet_ids["snet-aks-sandbox"]])
+    condition     = toset([for a in azurerm_role_assignment.aks_control_plane_subnets : a.scope]) == toset([azurerm_subnet.subnet["snet-aks-system"].id, azurerm_subnet.subnet["snet-aks-sandbox"].id])
     error_message = "The control plane gets Network Contributor on exactly the two AKS subnets."
   }
 
@@ -820,11 +732,6 @@ run "diagnostic_settings_send_audit_logs_to_the_workspace" {
   assert {
     condition     = contains([for l in azurerm_monitor_diagnostic_setting.aks.enabled_log : l.category], "kube-audit-admin")
     error_message = "AKS audit logs must be collected."
-  }
-
-  assert {
-    condition     = toset([for l in azurerm_monitor_diagnostic_setting.firewall[0].enabled_log : l.category]) == toset(["AZFWApplicationRule", "AZFWNetworkRule", "AZFWThreatIntel"]) && azurerm_monitor_diagnostic_setting.firewall[0].log_analytics_destination_type == "Dedicated"
-    error_message = "Firewall logs must be the structured (resource-specific) ones."
   }
 
   assert {
@@ -866,12 +773,12 @@ run "container_logs_are_collected_from_the_app_namespaces_only" {
   }
 }
 
-run "four_log_alerts_reach_the_owner" {
+run "two_log_alerts_reach_the_owner" {
   command = plan
 
   assert {
-    condition     = toset(keys(azurerm_monitor_scheduled_query_rules_alert_v2.this)) == toset(["heartbeat-missing", "attack-events", "firewall-deny-burst", "dns-policy-hits"])
-    error_message = "The four alert rules must exist."
+    condition     = toset(keys(azurerm_monitor_scheduled_query_rules_alert_v2.this)) == toset(["heartbeat-missing", "attack-events"])
+    error_message = "The two alert rules must exist."
   }
 
   assert {
@@ -892,8 +799,6 @@ run "four_log_alerts_reach_the_owner" {
       strcontains(azurerm_monitor_scheduled_query_rules_alert_v2.this["heartbeat-missing"].criteria[0].query, "KubePodInventory")
       && strcontains(azurerm_monitor_scheduled_query_rules_alert_v2.this["attack-events"].criteria[0].query, "ContainerLogV2")
       && strcontains(azurerm_monitor_scheduled_query_rules_alert_v2.this["attack-events"].criteria[0].query, "\"blocked\"")
-      && strcontains(azurerm_monitor_scheduled_query_rules_alert_v2.this["firewall-deny-burst"].criteria[0].query, "AZFWApplicationRule")
-      && strcontains(azurerm_monitor_scheduled_query_rules_alert_v2.this["dns-policy-hits"].criteria[0].query, "DNSQueryLogs")
     )
     error_message = "Each rule must query its table."
   }

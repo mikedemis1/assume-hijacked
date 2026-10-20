@@ -15,7 +15,7 @@ terraform {
     }
   }
 
-  # State: same storage account as infra/base and infra/net, own key. Enable after base is
+  # State: same storage account as infra/base, own key. Enable after base is
   # applied and its state migrated (see the bootstrap note in infra/base/versions.tf).
   #
   # backend "azurerm" {

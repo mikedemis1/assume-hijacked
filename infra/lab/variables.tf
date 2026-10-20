@@ -35,7 +35,7 @@ variable "resource_group_name" {
   default     = "rg-lab"
 }
 
-# ---------------------------------------------------------------- where base and net live
+# ---------------------------------------------------------------- where base lives
 
 variable "state_resource_group_name" {
   description = "Resource group of the Terraform state storage account (infra/base)."
@@ -44,7 +44,7 @@ variable "state_resource_group_name" {
 }
 
 variable "state_storage_account_name" {
-  description = "State storage account (infra/base output state_storage_account_name). The lab reads the base and net states from it."
+  description = "State storage account (infra/base output state_storage_account_name). The lab reads the base state from it."
   type        = string
 
   validation {
@@ -63,12 +63,6 @@ variable "base_state_key" {
   description = "Blob name of the infra/base state."
   type        = string
   default     = "base.tfstate"
-}
-
-variable "net_state_key" {
-  description = "Blob name of the infra/net state."
-  type        = string
-  default     = "net.tfstate"
 }
 
 # ---------------------------------------------------------------- workload identities
@@ -98,6 +92,42 @@ variable "db_admin_component" {
   description = "Component whose identity becomes the PostgreSQL Entra administrator (it runs the schema migration)."
   type        = string
   default     = "db-migrate"
+}
+
+# ---------------------------------------------------------------- network
+
+variable "vnet_address_space" {
+  description = "Address space of the lab VNet. Must be a /16: it is split into the two AKS subnets and the private endpoint subnet."
+  type        = string
+  default     = "10.20.0.0/16"
+
+  validation {
+    condition     = can(cidrhost(var.vnet_address_space, 0)) && try(tonumber(split("/", var.vnet_address_space)[1]) == 16, false)
+    error_message = "vnet_address_space must be a valid IPv4 CIDR with prefix length 16."
+  }
+}
+
+variable "aks_pod_cidr" {
+  description = "Pod range of the AKS overlay network. Overlay pod traffic is not encapsulated, so the AKS subnet NSGs must allow it."
+  type        = string
+  default     = "10.244.0.0/16"
+
+  validation {
+    # Two IPv4 ranges overlap when their first addresses (as integers) agree on the shorter
+    # of the two prefixes. Checked against the VNet address space.
+    condition = can(cidrhost(var.aks_pod_cidr, 0)) && try(
+      floor(
+        sum([for i, o in split(".", cidrhost(var.aks_pod_cidr, 0)) : tonumber(o) * pow(256, 3 - i)])
+        / pow(2, 32 - min(tonumber(split("/", var.aks_pod_cidr)[1]), tonumber(split("/", var.vnet_address_space)[1])))
+      )
+      != floor(
+        sum([for i, o in split(".", cidrhost(var.vnet_address_space, 0)) : tonumber(o) * pow(256, 3 - i)])
+        / pow(2, 32 - min(tonumber(split("/", var.aks_pod_cidr)[1]), tonumber(split("/", var.vnet_address_space)[1])))
+      ),
+      false
+    )
+    error_message = "aks_pod_cidr must be an IPv4 CIDR that does not overlap the VNet address space (the NSGs allow every port to and from it)."
+  }
 }
 
 # ---------------------------------------------------------------- AKS
@@ -148,7 +178,7 @@ variable "sandbox_node_count" {
 }
 
 variable "service_cidr" {
-  description = "Kubernetes service range. Must not overlap the pod range (infra/net aks_pod_cidr), the hub or the spoke. The DNS service gets its 10th address."
+  description = "Kubernetes service range. Must not overlap the pod range (aks_pod_cidr) or the VNet. The DNS service gets its 10th address."
   type        = string
   default     = "10.0.0.0/16"
 
@@ -159,7 +189,7 @@ variable "service_cidr" {
 }
 
 variable "api_authorized_ip_ranges" {
-  description = "Public CIDRs that may reach the Kubernetes API (for example the owner's IP as x.x.x.x/32). The firewall's public IP is added automatically when the firewall is on."
+  description = "Public CIDRs that may reach the Kubernetes API (for example the owner's IP as x.x.x.x/32)."
   type        = list(string)
 
   validation {
@@ -197,20 +227,6 @@ variable "aks_audit_log_category" {
     condition     = contains(["kube-audit", "kube-audit-admin"], var.aks_audit_log_category)
     error_message = "aks_audit_log_category must be kube-audit or kube-audit-admin."
   }
-}
-
-# ---------------------------------------------------------------- egress
-
-variable "enable_firewall" {
-  description = "true: Azure Firewall Basic in the hub and a route table that sends all AKS egress through it (outbound type userDefinedRouting). false: no firewall, AKS egress through its load balancer. The firewall bills by the hour."
-  type        = bool
-  default     = true
-}
-
-variable "anthropic_enabled" {
-  description = "Allow the Anthropic API from the system pool only when that backend is selected."
-  type        = bool
-  default     = false
 }
 
 # ---------------------------------------------------------------- PostgreSQL
@@ -259,12 +275,6 @@ variable "attack_event_kinds" {
     condition     = length(var.attack_event_kinds) >= 1 && alltrue([for k in var.attack_event_kinds : can(regex("^[a-z_]+$", k))])
     error_message = "Give at least one kind; kinds are lowercase letters and underscores (they go into a KQL query)."
   }
-}
-
-variable "firewall_deny_threshold" {
-  description = "Firewall denies in one 15-minute window that count as a burst."
-  type        = number
-  default     = 20
 }
 
 variable "tags" {

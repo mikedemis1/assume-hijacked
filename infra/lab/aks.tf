@@ -18,16 +18,15 @@
 #   - Standard_D4als_v6: Gen2, nested virtualization supported, no local disk so no ephemeral
 #     OS disk (learn.microsoft.com/azure/virtual-machines/sizes/general-purpose/dalsv6-series).
 #   - network_profile.advanced_networking {observability_enabled, security_enabled} = ACNS.
-#   - Egress with userDefinedRouting: route table on the subnets before the cluster exists,
-#     firewall public IP in the API authorized ranges
-#     (learn.microsoft.com/azure/aks/limit-egress-traffic).
+#   - Outbound type loadBalancer: nodes leave through the cluster's standard load balancer.
+#     There is no firewall for now; outbound control is decided at the Azure step.
 
 locals {
   service_cidr = var.service_cidr
 
   # Overlap test on IPv4 ranges: same start on the shorter prefix.
   service_pod_ranges = {
-    for k, c in { service = local.service_cidr, pod = local.net.aks_pod_cidr } : k => {
+    for k, c in { service = local.service_cidr, pod = var.aks_pod_cidr } : k => {
       start               = sum([for i, o in split(".", cidrhost(c, 0)) : tonumber(o) * pow(256, 3 - i)])
       bits                = tonumber(split("/", c)[1])
     }
@@ -36,13 +35,6 @@ locals {
   service_overlaps_pods = (
     floor(local.service_pod_ranges.service.start / pow(2, 32 - local.service_pod_bits))
     == floor(local.service_pod_ranges.pod.start / pow(2, 32 - local.service_pod_bits))
-  )
-
-  # The firewall's public IP must be authorized, or nodes behind the firewall cannot reach
-  # the API server (their traffic leaves through that IP).
-  api_authorized_ip_ranges = concat(
-    var.api_authorized_ip_ranges,
-    var.enable_firewall ? ["${azurerm_public_ip.firewall_data[0].ip_address}/32"] : [],
   )
 }
 
@@ -78,7 +70,7 @@ resource "azurerm_kubernetes_cluster" "this" {
   }
 
   api_server_access_profile {
-    authorized_ip_ranges = local.api_authorized_ip_ranges
+    authorized_ip_ranges = var.api_authorized_ip_ranges
   }
 
   # Workload identity: pods trade their ServiceAccount token for an Entra token.
@@ -131,11 +123,11 @@ resource "azurerm_kubernetes_cluster" "this" {
     network_data_plane  = "cilium"
     network_policy      = "cilium"
     load_balancer_sku   = "standard"
-    outbound_type       = var.enable_firewall ? "userDefinedRouting" : "loadBalancer"
+    outbound_type       = "loadBalancer"
 
-    # Pod range from infra/net, whose AKS NSGs allow exactly this range (overlay pod traffic
-    # is not encapsulated). Service range: outside hub 10.10.0.0/24, spoke 10.20.0.0/16 and pods.
-    pod_cidr       = local.net.aks_pod_cidr
+    # Pod range: the AKS NSGs (nsg.tf) allow exactly this range (overlay pod traffic is not
+    # encapsulated). Service range: outside the VNet 10.20.0.0/16 and the pods.
+    pod_cidr       = var.aks_pod_cidr
     service_cidr   = local.service_cidr
     dns_service_ip = cidrhost(local.service_cidr, 10)
 
@@ -163,14 +155,12 @@ resource "azurerm_kubernetes_cluster" "this" {
 
   tags = var.tags
 
-  # Roles and routes must exist before AKS validates the subnets and starts the nodes.
+  # Roles and NSGs must exist before AKS validates the subnets and starts the nodes.
   depends_on = [
     azurerm_role_assignment.aks_control_plane_kubelet_operator,
     azurerm_role_assignment.aks_control_plane_subnets,
-    azurerm_role_assignment.aks_control_plane_route_table,
     azurerm_role_assignment.aks_kubelet_acr_pull,
-    azurerm_subnet_route_table_association.aks,
-    azurerm_firewall_policy_rule_collection_group.egress,
+    azurerm_subnet_network_security_group_association.subnet,
   ]
 
   lifecycle {
@@ -180,7 +170,7 @@ resource "azurerm_kubernetes_cluster" "this" {
 
     precondition {
       condition     = !local.service_overlaps_pods
-      error_message = "The service range ${local.service_cidr} overlaps the pod range ${local.net.aks_pod_cidr} from infra/net."
+      error_message = "The service range ${local.service_cidr} overlaps the pod range ${var.aks_pod_cidr}."
     }
   }
 }

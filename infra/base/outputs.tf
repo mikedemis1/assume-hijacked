@@ -76,9 +76,8 @@ output "key_vault_names" {
 }
 
 output "resource_group_ids" {
-  description = "IDs of the empty rg-net and rg-lab groups created here."
+  description = "ID of the empty rg-lab group created here."
   value = {
-    net = azurerm_resource_group.net.id
     lab = azurerm_resource_group.lab.id
   }
 }

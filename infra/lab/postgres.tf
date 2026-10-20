@@ -127,7 +127,7 @@ resource "azurerm_private_endpoint" "postgres" {
   name                = "pe-${local.postgres_server_name}"
   resource_group_name = data.azurerm_resource_group.lab.name
   location            = var.location
-  subnet_id           = local.net.spoke_subnet_ids["snet-pe"]
+  subnet_id           = azurerm_subnet.subnet["snet-pe"].id
 
   private_service_connection {
     name                           = "psc-postgres"
@@ -136,11 +136,11 @@ resource "azurerm_private_endpoint" "postgres" {
     is_manual_connection           = false
   }
 
-  # The server's public name resolves to the private IP for every VNet linked to this zone
-  # (infra/net links it to hub and spoke).
+  # The server's public name resolves to the private IP inside the VNet linked to this zone
+  # (network.tf).
   private_dns_zone_group {
     name                 = "postgres"
-    private_dns_zone_ids = [local.net.private_dns_zone_ids["postgres"]]
+    private_dns_zone_ids = [azurerm_private_dns_zone.postgres.id]
   }
 
   tags = var.tags

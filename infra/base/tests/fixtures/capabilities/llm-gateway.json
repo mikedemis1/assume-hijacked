@@ -2,6 +2,6 @@
  "db": {"role": null, "execute": [], "tables": {}},
  "network": {"ingress_from": ["agent"], "egress_to": ["foundry"], "dns": ["cluster"]},
  "k8s": {"service_account": "llm-gateway", "rbac": []},
- "azure": {"identity": "id-llm-gateway", "roles": [{"role": "Foundry User", "scope": "foundry-resource"}]},
+ "azure": {"identity": "id-llm-gateway", "roles": [{"role": "Storage Blob Data Reader", "scope": "storage-resource"}]},
  "runtime_class": "runc",
  "mcp": {"tools": []}}

@@ -1,9 +1,9 @@
 # Evidence and alerts. Everything goes to the Log Analytics workspace in rg-base (daily cap
 # 0.5 GB there is the cost ceiling).
 #
-#   diagnostic settings  AKS audit, firewall structured logs, PostgreSQL logs, Key Vault audit
+#   diagnostic settings  AKS audit, PostgreSQL logs, Key Vault audit
 #   container logs       Azure Monitor agent + data collection rule, only the ah-* namespaces
-#   alert rules          heartbeat missing, attack events, firewall deny burst, DNS policy hits
+#   alert rules          heartbeat missing, attack events
 #
 # Alert rules and the action group live in rg-lab on purpose: they are destroyed with the lab,
 # so the "heartbeat missing" rule cannot fire every night while the lab is down. The Key Vault
@@ -11,9 +11,8 @@
 # Monitoring Contributor there); vault reads while the lab is down are therefore
 # not logged, and nothing can read the vaults then except their owners.
 #
-# Table and category names checked on learn.microsoft.com/azure/azure-monitor/reference/tables:
-# AZFWApplicationRule / AZFWNetworkRule (resource-specific, Action column), DNSQueryLogs
-# (ResolverPolicyRuleAction column), ContainerLogV2, KubePodInventory.
+# Table names checked on learn.microsoft.com/azure/azure-monitor/reference/tables:
+# ContainerLogV2, KubePodInventory.
 
 locals {
   workspace_id = local.base.log_analytics_workspace_id
@@ -25,62 +24,34 @@ locals {
   attack_kinds_kql = join(", ", [for k in var.attack_event_kinds : "\"${k}\""])
 
   # name -> rule. Queries return one row with a number; the rule fires on the threshold.
-  alert_rules = merge(
-    {
-      heartbeat-missing = {
-        severity    = 1
-        description = "No running executor pod reported in the last 15 minutes: effects (credits, move-outs) are not being executed or checked."
-        query       = <<-KQL
+  alert_rules = {
+    heartbeat-missing = {
+      severity    = 1
+      description = "No running executor pod reported in the last 15 minutes: effects (credits, move-outs) are not being executed or checked."
+      query       = <<-KQL
           KubePodInventory
           | where Namespace == "ah-core" and ControllerName startswith "executor"
           | summarize running = dcountif(Name, PodStatus == "Running")
         KQL
-        column      = "running"
-        operator    = "LessThan"
-        threshold   = 1
-      }
-      attack-events = {
-        severity    = 2
-        description = "The app logged security events of an attack kind (blocked tool call, blocked reply, unknown tool)."
-        query       = <<-KQL
+      column      = "running"
+      operator    = "LessThan"
+      threshold   = 1
+    }
+    attack-events = {
+      severity    = 2
+      description = "The app logged security events of an attack kind (blocked tool call, blocked reply, unknown tool)."
+      query       = <<-KQL
           ContainerLogV2
           | where PodNamespace startswith "ah-"
           | extend kind = extract(@'"kind":\s*"([a-z_]+)"', 1, tostring(LogMessage))
           | where kind in (${local.attack_kinds_kql})
           | summarize events = count()
         KQL
-        column      = "events"
-        operator    = "GreaterThan"
-        threshold   = 0
-      }
-      dns-policy-hits = {
-        severity    = 3
-        description = "DNS security policy matched a query off the allowlist (Alert or Block action)."
-        query       = <<-KQL
-          DNSQueryLogs
-          | where ResolverPolicyRuleAction in~ ("Alert", "Block")
-          | summarize hits = count()
-        KQL
-        column      = "hits"
-        operator    = "GreaterThan"
-        threshold   = 0
-      }
-    },
-    var.enable_firewall ? {
-      firewall-deny-burst = {
-        severity    = 2
-        description = "Azure Firewall denied more egress than usual: something in the cluster is trying to reach a destination off the allowlist."
-        query       = <<-KQL
-          union AZFWApplicationRule, AZFWNetworkRule
-          | where Action == "Deny"
-          | summarize denies = count()
-        KQL
-        column      = "denies"
-        operator    = "GreaterThan"
-        threshold   = var.firewall_deny_threshold
-      }
-    } : {},
-  )
+      column      = "events"
+      operator    = "GreaterThan"
+      threshold   = 0
+    }
+  }
 }
 
 # ---------------------------------------------------------------- diagnostic settings
@@ -98,27 +69,6 @@ resource "azurerm_monitor_diagnostic_setting" "aks" {
   # Entra (guard) authentication decisions: who tried to use the API.
   enabled_log {
     category = "guard"
-  }
-}
-
-resource "azurerm_monitor_diagnostic_setting" "firewall" {
-  count = local.firewall_count
-
-  name                           = "to-log-analytics"
-  target_resource_id             = azurerm_firewall.hub[0].id
-  log_analytics_workspace_id     = local.workspace_id
-  log_analytics_destination_type = "Dedicated" # structured logs (AZFW* tables)
-
-  enabled_log {
-    category = "AZFWApplicationRule"
-  }
-
-  enabled_log {
-    category = "AZFWNetworkRule"
-  }
-
-  enabled_log {
-    category = "AZFWThreatIntel"
   }
 }
 
@@ -231,8 +181,8 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "this" {
   evaluation_frequency = "PT15M"
   window_duration      = "PT15M"
 
-  # Tables appear only after the first record arrives (a fresh workspace has no AZFW* or
-  # DNSQueryLogs table), so creation must not fail on an unknown table.
+  # Tables appear only after the first record arrives, so creation must not fail on an
+  # unknown table.
   skip_query_validation   = true
   auto_mitigation_enabled = true
 

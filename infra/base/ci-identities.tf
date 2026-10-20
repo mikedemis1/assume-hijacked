@@ -4,7 +4,7 @@
 #
 #   ci-plan   any branch   Reader on the subscription, read on the state blob
 #   ci-push   main         AcrPush on the registry
-#   ci-apply  main         Contributor on rg-lab and rg-net, Monitoring Contributor on
+#   ci-apply  main         Contributor on rg-lab, Monitoring Contributor on
 #                          rg-base, plus a role-assignment right that can only hand
 #                          out a short list of roles
 #
@@ -51,7 +51,6 @@ locals {
   # depend_on the groups so they are created after them.
   lab_scopes = {
     lab = "${local.subscription_scope}/resourceGroups/${var.lab_resource_group_name}"
-    net = "${local.subscription_scope}/resourceGroups/${var.net_resource_group_name}"
   }
 
   # Scopes in rg-base where infra/lab must create role assignments (AcrPull for the
@@ -173,7 +172,7 @@ resource "azurerm_role_assignment" "ci_apply_contributor" {
   principal_type                   = "ServicePrincipal"
   skip_service_principal_aad_check = true
 
-  depends_on = [azurerm_resource_group.lab, azurerm_resource_group.net]
+  depends_on = [azurerm_resource_group.lab]
 }
 
 # Role assignment rights, limited by the condition to the short role list above.
@@ -188,7 +187,7 @@ resource "azurerm_role_assignment" "ci_apply_rbac_admin_lab" {
   condition_version                = "2.0"
   condition                        = local.ci_apply_rbac_condition
 
-  depends_on = [azurerm_resource_group.lab, azurerm_resource_group.net]
+  depends_on = [azurerm_resource_group.lab]
 }
 
 resource "azurerm_role_assignment" "ci_apply_rbac_admin_base" {

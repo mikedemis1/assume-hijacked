@@ -1,22 +1,16 @@
-# One NSG per spoke subnet. Azure-managed subnets cannot have one, so the hub's two
-# firewall subnets are exempt, by name (local.nsg_exempt_subnets). The Azure Firewall is
-# the control point there.
+# One NSG per subnet.
 #
 # Rule layout (all three NSGs):
 #   100-399   allow only what the subnet needs
 #   4000      deny inbound from the Internet (explicit, so it shows in reviews and logs)
 #   4096      deny everything else, inbound and outbound
 #
-# An NSG sees the ORIGINAL destination, even when a route table later sends the packet to
-# the firewall. NSG rules are the coarse wall; Cilium and the firewall FQDN rules are the
-# fine ones. Because our deny rule sits before the default allow rules (priority 65000+),
+# NSG rules are the coarse wall; the Cilium policies are the fine ones. Because our deny rule sits before the default allow rules (priority 65000+),
 # every platform range a subnet needs is named explicitly (168.63.129.16 = Azure DNS and
 # health probes).
 
 locals {
-  nsg_exempt_subnets = ["AzureFirewallSubnet", "AzureFirewallManagementSubnet"]
-
-  pe_prefix = local.spoke_subnets["snet-pe"]
+  pe_prefix = local.subnets["snet-pe"]
 
   # Rules both AKS subnets have. Priorities are unique per direction.
   aks_common_rules = {
@@ -65,8 +59,7 @@ locals {
         priority         = 140, direction = "Outbound", access = "Allow", protocol = "Tcp"
         dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureActiveDirectory"]
       }
-      # Node egress (image pulls, GitLab agent, Azure APIs). The packet then follows the
-      # route table to the firewall, which applies the FQDN allowlist.
+      # Node egress (image pulls, GitLab agent, Azure APIs) leaves through the AKS load balancer.
       allow-node-https-out = {
         priority         = 150, direction = "Outbound", access = "Allow", protocol = "Tcp"
         dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["Internet"]
@@ -126,12 +119,12 @@ locals {
   }
 }
 
-resource "azurerm_network_security_group" "spoke" {
+resource "azurerm_network_security_group" "subnet" {
   for_each = local.nsg_rules
 
   name                = "nsg-${each.key}"
   location            = var.location
-  resource_group_name = data.azurerm_resource_group.net.name
+  resource_group_name = data.azurerm_resource_group.lab.name
   tags                = var.tags
 
   dynamic "security_rule" {
@@ -151,11 +144,11 @@ resource "azurerm_network_security_group" "spoke" {
   }
 }
 
-# Every subnet except the exempt ones gets its NSG. A spoke subnet without an entry in
-# local.nsg_rules fails the lookup at plan time instead of staying open.
-resource "azurerm_subnet_network_security_group_association" "spoke" {
-  for_each = { for name, s in azurerm_subnet.spoke : name => s if !contains(local.nsg_exempt_subnets, name) }
+# Every subnet gets its NSG. A subnet without an entry in local.nsg_rules fails the lookup
+# at plan time instead of staying open.
+resource "azurerm_subnet_network_security_group_association" "subnet" {
+  for_each = azurerm_subnet.subnet
 
   subnet_id                 = each.value.id
-  network_security_group_id = azurerm_network_security_group.spoke[each.key].id
+  network_security_group_id = azurerm_network_security_group.subnet[each.key].id
 }

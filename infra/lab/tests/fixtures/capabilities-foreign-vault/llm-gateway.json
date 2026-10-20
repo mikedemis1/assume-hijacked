@@ -4,6 +4,6 @@
  "k8s": {"service_account": "llm-gateway", "rbac": []},
  "azure": {"identity": "id-llm-gateway", "roles": [
    {"role": "Key Vault Secrets User", "scope": "kv-llm-gateway"},
-   {"role": "Foundry User", "scope": "foundry-resource"}]},
+   {"role": "Storage Blob Data Reader", "scope": "storage-resource"}]},
  "runtime_class": "runc",
  "mcp": {"tools": []}}

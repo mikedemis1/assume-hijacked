@@ -86,7 +86,7 @@ variable "capabilities_dir" {
 }
 
 variable "spoke_subnet_ids" {
-  description = "Subnets (with the Microsoft.KeyVault service endpoint) that may reach the vaults. Filled in after infra/net exists."
+  description = "Subnets (with the Microsoft.KeyVault service endpoint) that may reach the vaults. Set after infra/lab has created its VNet (output aks_subnet_ids of infra/lab)."
   type        = list(string)
   default     = []
 }
@@ -130,12 +130,6 @@ variable "budget_notification_emails" {
   }
 }
 
-variable "allowed_locations" {
-  description = "Locations the subscription may deploy to (Azure Policy)."
-  type        = list(string)
-  default     = ["northeurope"]
-}
-
 variable "allowed_vm_sizes" {
   description = "VM sizes the subscription may use (Azure Policy). AKS nodes are VM scale sets, so this covers them."
   type        = list(string)
@@ -146,12 +140,6 @@ variable "lab_resource_group_name" {
   description = "Empty resource group created here for infra/lab, which references it by data source. A lab destroy removes its contents, never the group."
   type        = string
   default     = "rg-lab"
-}
-
-variable "net_resource_group_name" {
-  description = "Empty resource group created here for infra/net, which references it by data source."
-  type        = string
-  default     = "rg-net"
 }
 
 variable "gitlab_issuer" {

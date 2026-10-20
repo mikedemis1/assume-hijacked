@@ -54,7 +54,7 @@ locals {
 resource "azurerm_key_vault" "workload" {
   #checkov:skip=CKV_AZURE_42: lab: no purge protection, so a vault name can be reused in the same week (see below)
   #checkov:skip=CKV_AZURE_110: lab: no purge protection, so a vault name can be reused in the same week (see below)
-  #checkov:skip=CKV_AZURE_189: public endpoint behind the vault firewall (default Deny, spoke subnets only); no private endpoint per vault
+  #checkov:skip=CKV_AZURE_189: public endpoint behind the vault firewall (default Deny, AKS subnets only); no private endpoint per vault
   #checkov:skip=CKV2_AZURE_32: a private endpoint per workload vault costs money every month; the vault firewall is the wall in the lab
   for_each = local.key_vault_scopes
 
@@ -73,9 +73,7 @@ resource "azurerm_key_vault" "workload" {
   soft_delete_retention_days = 7
 
   # Service-endpoint pattern: the vault stays reachable on its public endpoint, but the
-  # firewall denies everything except the spoke subnets (and any listed IP).
-  # The "firewall enabled or public access disabled" built-in policy in policy.tf checks
-  # exactly this.
+  # firewall denies everything except the lab's AKS subnets (and any listed IP).
   public_network_access_enabled = true
 
   network_acls {

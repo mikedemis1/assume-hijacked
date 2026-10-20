@@ -1,25 +1,26 @@
 # rg-lab: the part of the lab that is destroyed every night and rebuilt on demand.
-#   main.tf        inputs: rg-lab, the base and net states, the capability manifests
+#   main.tf        inputs: rg-lab, the base state, the capability manifests
+#   network.tf     the VNet, its subnets and the private DNS zone for PostgreSQL
+#   nsg.tf         one NSG per subnet
 #   identities.tf  workload identities (module) and the two AKS identities, with their roles
 #   aks.tf         the cluster: system pool + Kata sandbox pool
 #   postgres.tf    PostgreSQL flexible server behind a private endpoint
-#   firewall.tf    Azure Firewall Basic, its policy and the route table (count = enable_firewall)
 #   monitoring.tf  diagnostic settings, container log collection, log alert rules
 #
 # The resource group is created EMPTY by infra/base; destroying this stack must never remove it. This stack only reads it.
 #
-# How the lab gets the values of base and net
-# -------------------------------------------
+# How the lab gets the values of base
+# -----------------------------------
 # terraform_remote_state on the same azurerm backend, not hand-copied IDs and not lookups by
 # name. Reasons:
 #   - The Key Vault physical names are derived (prefix + hash) in infra/base. Its key_vaults
 #     output is the single source for scope -> {name, id, uri}; a by-name lookup would have to
 #     repeat the hash rule.
-#   - Nothing to copy by hand after each base/net apply, so nothing goes stale.
+#   - Nothing to copy by hand after each base apply, so nothing goes stale.
 #   - ci-plan already has Storage Blob Data Reader on the state account (infra/base), so plan
 #     on any branch can read it. Neither state holds a secret (by design, see postgres.tf).
-#   - terraform test replaces both data sources with override_data, so the tests need no Azure.
-# Cost of the choice: base and net must be applied (and their state migrated to the backend)
+#   - terraform test replaces the data sources with override_data, so the tests need no Azure.
+# Cost of the choice: base must be applied (and its state migrated to the backend)
 # before the lab can plan. That is the real order anyway.
 
 data "azurerm_resource_group" "lab" {
@@ -40,30 +41,11 @@ data "terraform_remote_state" "base" {
   }
 }
 
-data "terraform_remote_state" "net" {
-  backend = "azurerm"
-
-  config = {
-    resource_group_name  = var.state_resource_group_name
-    storage_account_name = var.state_storage_account_name
-    container_name       = var.state_container_name
-    key                  = var.net_state_key
-    use_azuread_auth     = true
-    subscription_id      = var.subscription_id
-    tenant_id            = var.tenant_id
-  }
-}
-
 locals {
   base = data.terraform_remote_state.base.outputs
-  net  = data.terraform_remote_state.net.outputs
 
   # scope ("kv-tool-gateway") -> {name, id, uri}. Never use the scope itself as a vault name.
   key_vaults = local.base.key_vaults
-
-  aks_subnet_names = ["snet-aks-system", "snet-aks-sandbox"]
-  aks_subnet_ids   = { for n in local.aks_subnet_names : n => local.net.spoke_subnet_ids[n] }
-  aks_prefixes     = { for n in local.aks_subnet_names : n => local.net.spoke_subnet_address_prefixes[n] }
 
   # ------------------------------------------------------------ capability manifests
   capabilities_dir = coalesce(var.capabilities_dir, "${path.module}/../../security/capabilities")

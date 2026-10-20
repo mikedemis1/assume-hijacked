@@ -12,7 +12,7 @@ acr_name                   = "acrassumehijackedexample"
 budget_notification_emails = ["owner@example.com"]
 budget_start_date          = "2026-10-01T00:00:00Z" # first day of a month
 
-# Set after infra/net exists: the spoke subnets that may reach the Key Vaults.
+# Set after infra/lab has created its VNet: the AKS subnets that may reach the Key Vaults.
 # spoke_subnet_ids = ["/subscriptions/.../subnets/snet-aks"]
 
 # Default: <repo>/security/capabilities
