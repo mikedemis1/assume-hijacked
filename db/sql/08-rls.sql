@@ -34,7 +34,10 @@ BEGIN
         EXECUTE format(
             'CREATE POLICY trusted_all ON %I FOR ALL TO executor, approver, risk_engine, dispatcher, '
             'gateway, api_owner, lease_owner, flags_writer, '
-            'risk_owner, staff_owner '
+            'risk_owner '
             'USING (true) WITH CHECK (true)', t);
     END LOOP;
 END $$;
+
+-- approve_request (06-risk.sql, owner staff_owner) reads the status of one request, nothing else.
+CREATE POLICY staff_owner_read ON action_requests FOR SELECT TO staff_owner USING (true);

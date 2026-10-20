@@ -204,3 +204,9 @@ def test_the_local_staff_are_seeded(admin):
         {"oid": BOB_DEV, "roles": ["SeniorApprover"], "active": True},
         {"oid": CAROL_DEV, "roles": ["SeniorApprover"], "active": True},
     ]
+
+
+def test_console_role_cannot_write_events(as_role):
+    # resume_agents writes its own event; a console that could insert events could fake one.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        as_role("approver").execute("INSERT INTO events (kind, detail) VALUES ('agents_resumed', 'forged')")

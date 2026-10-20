@@ -15,8 +15,10 @@ GRANT USAGE ON SCHEMA public TO
 
 -- Audit trail: append only. Roles set kind and detail; actor (current_user) and
 -- created_at (now()) come from the column defaults, so nobody can forge who or when.
-GRANT INSERT (kind, detail) ON events TO executor, approver;
-GRANT USAGE ON SEQUENCE events_id_seq TO executor, approver;
+-- The console role has no INSERT here: resume_agents writes the one event it needs, as risk_owner,
+-- so a compromised console cannot write a fake agents_resumed or ALERT event.
+GRANT INSERT (kind, detail) ON events TO executor;
+GRANT USAGE ON SEQUENCE events_id_seq TO executor;
 
 -- Executor: reads evidence and flags, decides, writes effects.
 GRANT SELECT ON accounts, supply_points, charges, flags, approvals,

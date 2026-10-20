@@ -167,6 +167,7 @@ spec:
             - {name: POSTGRES_USER, value: postgres}
             - {name: POSTGRES_DB, value: {{ .Values.db.name | quote }}}
             - {name: SQL_DIR, value: /db/sql}
+            - {name: SEED_DEV_STAFF, value: "yes"}
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef: {name: postgres-secrets, key: POSTGRES_PASSWORD}

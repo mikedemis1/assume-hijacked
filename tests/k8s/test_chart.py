@@ -521,3 +521,27 @@ def test_only_the_tool_gateway_gets_the_signing_key(env):
         with_key = {s["metadata"]["name"] for s in objects(env, "SecretProviderClass")
                     if "gateway-signing-key" in s["spec"]["parameters"]["objects"]}
         assert with_key == holders
+
+
+def dev_staff_seeded(env: str) -> list[str]:
+    """Names of the pods whose containers turn the dev staff seed on (db/init/init.sh, SEED_DEV_STAFF)."""
+    return [name for name, spec in pod_specs(env)
+            for c in containers(spec)
+            for e in c.get("env", []) if e["name"] == "SEED_DEV_STAFF" and e.get("value") == "yes"]
+
+
+def test_dev_staff_are_seeded_on_kind_and_never_on_azure():
+    """The dev oids are public; on the staff list they would let anyone who can send the console a
+    dev sign-in approve. Only the kind database setup Job turns the seed on (gap M2)."""
+    assert dev_staff_seeded("kind") == ["postgres-init"]
+    assert dev_staff_seeded("azure") == []
+    migrate = [c for name, spec in pod_specs("azure") if name == "db-migrate" for c in containers(spec)]
+    assert migrate and not any(e["name"] == "SEED_DEV_STAFF" and e.get("value") != "no"
+                               for c in migrate for e in c.get("env", []))
+
+
+def test_init_script_seeds_dev_staff_only_when_asked():
+    # Opt-in: a manual init.sh run against Azure, or a dropped env line, must not seed the dev oids.
+    script = (ROOT / "db" / "init" / "init.sh").read_text(encoding="utf-8")
+    assert '[ "${SEED_DEV_STAFF:-no}" = yes ]' in script
+    assert script.count("09-dev-staff.sql") == 1

@@ -27,17 +27,18 @@ These are open on purpose. None of them blocks the kind work.
 
 ## Staff
 
-The database accepts an approval or a resume only for an object id on its `staff` table. Locally `db/sql/09-dev-staff.sql` fills it with the three dev sign-in users. On Azure the migration job sets `SEED_DEV_STAFF=no`, so the list starts empty and an admin fills it once per person, as the database admin (not the console). The table belongs to the no-login role `staff_owner`; the admin needs to be allowed to act as that role (`GRANT staff_owner TO <admin>` if not).
+The database accepts an approval or a resume only for an object id on its `staff` table. The dev staff (`db/sql/09-dev-staff.sql`, public oids) are seeded only where `SEED_DEV_STAFF=yes` (local test database, CI, the kind postgres-init Job); the Azure migration never sets it, and a chart test checks that. On Azure an admin fills the list once per person, as the database admin (not the console), in the `supplier` database. The table belongs to the no-login role `staff_owner`.
 
 ```sql
 SET ROLE staff_owner;
 INSERT INTO staff (oid, display_name, roles)
 VALUES ('<Entra object id>', '<display name>', '{Approver}');   -- or '{SeniorApprover}'
+-- Leaving:
+UPDATE staff SET active = false WHERE oid = '<Entra object id>';
 RESET ROLE;
--- Leaving: UPDATE staff SET active = false WHERE oid = '<Entra object id>';
 ```
 
-The roles must match the app roles assigned in Entra. No automation yet.
+The roles must match the app roles assigned in Entra. No automation yet. Whether the admin may act as `staff_owner` (a `GRANT staff_owner TO <admin>` may be needed) belongs to the Azure migration work (gap M4).
 
 ## Order
 

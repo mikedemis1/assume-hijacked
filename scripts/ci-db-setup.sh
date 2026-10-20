@@ -51,7 +51,7 @@ for role in TOOL_READ_TICKET TOOL_LOOKUP_ACCOUNT TOOL_REQUEST_DISCONNECTION \
     eval "export DB_PASSWORD_$role=$(rand_hex)"
 done
 
-POSTGRES_USER=postgres POSTGRES_DB=supplier SQL_DIR=db/sql sh db/init/init.sh >/dev/null
+POSTGRES_USER=postgres POSTGRES_DB=supplier SQL_DIR=db/sql SEED_DEV_STAFF=yes sh db/init/init.sh >/dev/null
 
 # What the test suite reads (tests/conftest.py accepts this alias only inside GitLab CI).
 export DB_HOST="$TEST_DB_SERVICE_HOST" DB_PORT=5432 TEST_DB_NAME=supplier_test

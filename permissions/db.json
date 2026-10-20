@@ -251,8 +251,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -275,11 +274,19 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "staff_owner_read",
+            "command": "SELECT",
+            "roles": [
+              "staff_owner"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },
@@ -299,8 +306,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -323,8 +329,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -347,8 +352,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -371,8 +375,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -395,8 +398,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -419,8 +421,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -443,8 +444,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -467,8 +467,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -491,8 +490,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -515,8 +513,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -539,8 +536,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"
@@ -563,8 +559,7 @@
               "gateway",
               "lease_owner",
               "risk_engine",
-              "risk_owner",
-              "staff_owner"
+              "risk_owner"
             ],
             "using": "true",
             "check": "true"

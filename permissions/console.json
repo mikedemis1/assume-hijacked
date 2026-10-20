@@ -16,11 +16,7 @@
         "UPDATE (decided_at, decision_reason, status)"
       ],
       "events": [
-        "INSERT (detail, kind)",
         "SELECT (actor, created_at, id, kind)"
-      ],
-      "events_id_seq": [
-        "USAGE"
       ],
       "risk_assessments": [
         "SELECT"

@@ -66,6 +66,7 @@ start() {
     docker create --name "$NAME" \
         -p "127.0.0.1:$port:5432" \
         -e POSTGRES_DB=supplier \
+        -e SEED_DEV_STAFF=yes \
         -e POSTGRES_PASSWORD \
         -e DB_PASSWORD_TOOL_READ_TICKET \
         -e DB_PASSWORD_TOOL_LOOKUP_ACCOUNT \

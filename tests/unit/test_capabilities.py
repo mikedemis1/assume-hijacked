@@ -173,3 +173,14 @@ def test_asi04_fingerprint_changes_with_description_or_schema():
     assert descriptors.descriptor_sha256(schema) != hashed
     renamed = {**base, "name": "issue_bill_credit_v2"}
     assert descriptors.descriptor_sha256(renamed) != hashed
+
+
+def test_owner_roles_with_closed_function_defaults_have_them_in_the_database(admin):
+    # db.json says "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC" for these roles: pg_default_acl must hold a
+    # function entry for each (ALTER DEFAULT PRIVILEGES in db/sql/01-schema.sql).
+    claimed = {r["role"] for r in manifests()["db"]["db"]["roles"]
+               if "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC" in r.get("default_privileges", [])}
+    held = {r["rolname"] for r in admin.execute(
+        "SELECT r.rolname FROM pg_default_acl d JOIN pg_roles r ON r.oid = d.defaclrole WHERE d.defaclobjtype = 'f'"
+    ).fetchall()}
+    assert claimed and claimed <= held, claimed - held
