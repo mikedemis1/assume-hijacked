@@ -8,7 +8,9 @@ anthropic reads its key from a secret file.
     (dict "name" "CALLER_AUTH" "value" "k8s")
     (dict "name" "LLM_BACKEND" "value" $l.backend)
     (dict "name" "LLM_MODEL" "value" $l.model)
-    (dict "name" "LLM_TOKEN_BUDGET_PER_LEASE" "value" (toString $l.tokenBudgetPerLease)) -}}
+    (dict "name" "LLM_TOKEN_BUDGET_PER_LEASE" "value" (toString $l.tokenBudgetPerLease))
+    (dict "name" "LLM_TOKEN_BUDGET_TOTAL" "value" (toString $l.tokenBudgetTotal))
+    (dict "name" "LLM_SIMULATED_HIJACK" "value" (ternary "1" "0" $l.simulatedHijack)) -}}
 {{- $files := list -}}
 {{- if eq $l.backend "anthropic" -}}
 {{- $files = append $files (dict

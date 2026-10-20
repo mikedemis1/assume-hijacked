@@ -206,6 +206,23 @@ set -- --set-file "dbFiles.initSh=db/init/init.sh"
 for file in db/sql/*.sql; do
     set -- "$@" --set-file "dbFiles.sql.$(basename "$file" .sql)=$file"
 done
+# The real model, only when asked: LLM_BACKEND=anthropic ANTHROPIC_KEY_FILE=<one-line key file>.
+# The armed demo attack stays scripted (llm.simulatedHijack). Without LLM_BACKEND: scripted, no key.
+if [ "${LLM_BACKEND:-scripted}" = anthropic ]; then
+    if [ -z "${ANTHROPIC_KEY_FILE:-}" ] || [ ! -f "$ANTHROPIC_KEY_FILE" ]; then
+        echo "LLM_BACKEND=anthropic needs ANTHROPIC_KEY_FILE to name an existing key file" >&2
+        exit 1
+    fi
+    native_key=$ANTHROPIC_KEY_FILE
+    if command -v cygpath >/dev/null 2>&1; then
+        native_key=$(cygpath -m "$ANTHROPIC_KEY_FILE")
+    fi
+    set -- "$@" --set llm.backend=anthropic --set llm.simulatedHijack=true \
+        --set-file "secrets.anthropicApiKey=$native_key"
+elif [ "${LLM_BACKEND:-scripted}" != scripted ]; then
+    echo "LLM_BACKEND must be scripted or anthropic" >&2
+    exit 1
+fi
 h upgrade --install "$RELEASE" "$CHART" \
     -f "$CHART/values-kind.yaml" \
     -f "$native_work/secrets.yaml" \

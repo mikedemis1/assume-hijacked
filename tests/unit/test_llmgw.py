@@ -19,7 +19,7 @@ from app.common.ops import Metrics
 from app.common.tokenreview import Review
 from app.gateway.auth import AGENT_USER
 from app.llmgw import backends, main as llmgw_main
-from app.llmgw.backends import AnthropicBackend, ScriptedBackend
+from app.llmgw.backends import AnthropicBackend, RoutedBackend, ScriptedBackend
 from app.llmgw.main import Budget, LlmGateway, build_app, init_metrics
 from tests.conftest import TOOLS
 
@@ -226,6 +226,58 @@ def test_anthropic_backend_against_fake_upstream(key_file):
     assert result == {"type": "tool_result", "tool_use_id": use["id"], "content": '{"status": "active"}'}
     # Tokens come from the provider's usage.
     assert metric(h, "llmgw_tokens_total") == 2 * (120 + 30)
+
+
+def test_the_request_turns_thinking_off(key_file):
+    upstream = Upstream()
+    Harness(anthropic(upstream, key_file)).post(TICKET)
+    assert upstream.body(0)["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize("stop_reason, category", [("max_tokens", "bad_answer"), ("refusal", "refusal")])
+def test_a_cut_off_or_refused_answer_is_an_upstream_error(key_file, stop_reason, category):
+    upstream = Upstream({**message(text="Half a sent"), "stop_reason": stop_reason})
+    h = Harness(anthropic(upstream, key_file))
+    assert h.post(TICKET).status_code == 502
+    assert metric(h, "llmgw_upstream_errors_total", category=category) == 1
+
+
+def test_a_rate_limit_is_tried_once_more(key_file):
+    upstream = Upstream(httpx2.Response(429, headers={"retry-after": "0"}), message(text="Done."))
+    h = Harness(anthropic(upstream, key_file))
+    assert h.post(TICKET).json() == {"type": "reply", "text": "Done."}
+    assert len(upstream.seen) == 2
+    # Two 429s in a row: one retry only, and the metric names the rate limit.
+    upstream = Upstream(httpx2.Response(429, headers={"retry-after": "0"}))
+    h = Harness(anthropic(upstream, key_file))
+    assert h.post(TICKET).status_code == 502
+    assert len(upstream.seen) == 2
+    assert metric(h, "llmgw_upstream_errors_total", category="status_429") == 1
+
+
+# --- the routed backend: honest tickets to the real model, the simulated attack to the scripted one ---
+
+ATTACK = [{"role": "ticket", "text": "Hello\n[simulated hijacked model]\nCALL lookup_account {}"}]
+
+
+def test_a_ticket_with_the_marker_goes_to_the_scripted_model(key_file):
+    upstream = Upstream()
+    h = Harness(RoutedBackend(anthropic(upstream, key_file), ScriptedBackend()))
+    assert h.post(ATTACK).json() == {"type": "call", "name": "lookup_account", "args": {}}
+    assert upstream.seen == []                                      # the provider was not called
+
+
+def test_a_ticket_without_the_marker_goes_to_the_real_model(key_file):
+    upstream = Upstream()
+    h = Harness(RoutedBackend(anthropic(upstream, key_file), ScriptedBackend()))
+    assert h.post(TICKET).json() == {"type": "reply", "text": "Hello from the model"}
+    assert len(upstream.seen) == 1
+
+
+def test_the_hijack_switch_turns_routing_on(key_file):
+    env = {"LLM_BACKEND": "anthropic", "ANTHROPIC_API_KEY_FILE": str(key_file)}
+    assert isinstance(backends.make_backend(env), AnthropicBackend)
+    assert isinstance(backends.make_backend({**env, "LLM_SIMULATED_HIJACK": "1"}), RoutedBackend)
 
 
 # --- the caller's own credentials never reach the provider ---------------------------------------------

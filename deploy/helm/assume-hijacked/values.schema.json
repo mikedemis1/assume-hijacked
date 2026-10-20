@@ -45,11 +45,13 @@
     },
     "llm": {
       "type": "object",
-      "required": ["backend", "model", "tokenBudgetPerLease"],
+      "required": ["backend", "model", "tokenBudgetPerLease", "tokenBudgetTotal", "simulatedHijack"],
       "properties": {
         "backend": {"enum": ["scripted", "anthropic"]},
         "model": {"type": "string", "minLength": 1},
-        "tokenBudgetPerLease": {"type": "integer", "minimum": 1}
+        "tokenBudgetPerLease": {"type": "integer", "minimum": 1},
+        "tokenBudgetTotal": {"type": "integer", "minimum": 1},
+        "simulatedHijack": {"type": "boolean"}
       }
     },
     "db": {

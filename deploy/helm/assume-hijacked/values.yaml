@@ -44,6 +44,8 @@ llm:
   backend: scripted          # scripted | anthropic
   model: claude-haiku-5-5
   tokenBudgetPerLease: 20000
+  tokenBudgetTotal: 500000   # all callers together, per 15 minutes
+  simulatedHijack: false     # with anthropic: a ticket with the marker line is answered by the scripted model
 
 db:
   host: postgres.ah-data.svc.cluster.local

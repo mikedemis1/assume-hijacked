@@ -45,6 +45,7 @@ authorization, or any other) is not copied into it.
 
 Environment: LLM_BACKEND (scripted|anthropic, default scripted), LLM_MODEL (default
 claude-haiku-5-5), LLM_TOKEN_BUDGET_PER_LEASE (default 20000), LLM_TOKEN_BUDGET_TOTAL (default 500000), ANTHROPIC_API_KEY_FILE,
+LLM_SIMULATED_HIJACK (1 with anthropic: a ticket holding the marker line goes to the scripted model),
 CALLER_AUTH (k8s, the only mode).
 """
 
@@ -98,7 +99,8 @@ REQUEST_OUTCOMES = ("ok", "budget", "bad_request", "too_large", "upstream")
 REFUSAL_REASONS = (
     "missing", "malformed", "review_failed", "not_authenticated", "wrong_service_account", "no_pod",
 )
-UPSTREAM_CATEGORIES = ("status_2xx", "status_3xx", "status_4xx", "status_5xx", "unreachable", "too_large", "bad_answer", "no_credential",
+UPSTREAM_CATEGORIES = ("status_2xx", "status_3xx", "status_429", "status_4xx", "status_5xx", "unreachable", "too_large", "bad_answer", "refusal",
+                       "no_credential",
                        "token_unreachable", "token_refused", "token_bad_answer", "other")
 
 
