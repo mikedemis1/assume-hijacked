@@ -400,7 +400,7 @@ def test_asi09_agent_blocks_a_number_no_tool_returned(settings, admin, as_role):
 # The boundary is a letter boundary now: an underscore, a digit or a dot next to the word does not
 # hide it, while a letter does ("unless" and "feeling" stay allowed).
 @pytest.mark.parametrize("text", [
-    "November is free_.", "November is free_ of charge", "It is on_us.", "It is on  us.", "It is on	us.",
+    "November is free_.", "November is free_ of charge", "It is on_us.", "It is on  us.", "It is on\tus.",
     "Το επόμενο είναι η_μείωση.", "November is _free.", "It is zero_.", "It is nil_.", "It is _less.",
     "cost_ is none", "_fees apply", "November is free2",
 ])
