@@ -1,0 +1,72 @@
+/* The fictional supplier's website, and the chat widget in its corner. */
+.nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); }
+.links { display: flex; gap: 22px; font-size: 14px; color: var(--ink-soft); }
+
+.hero { max-width: 1040px; margin: 0 auto; padding: 72px 24px 160px; }
+.hero h1 { margin: 0; font-size: clamp(34px, 5vw, 56px); line-height: 1.08; letter-spacing: -.02em; max-width: 14ch; }
+.lede { margin: 16px 0 0; color: var(--ink-soft); font-size: 17px; }
+.cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 48px; max-width: 640px; }
+.card { padding: 20px; }
+.card h2 { margin: 0 0 6px; font-size: 16px; }
+.card p { margin: 0; color: var(--ink-faint); font-size: 14px; }
+.fine { margin-top: 32px; font-size: 12px; color: var(--ink-soft); }
+
+/* the widget, bottom right */
+.widget {
+  position: fixed; right: 20px; bottom: 20px; width: 380px; max-height: min(640px, calc(100vh - 40px));
+  display: flex; flex-direction: column; overflow: hidden;
+  background: rgba(9, 27, 58, .92); box-shadow: 0 14px 40px rgba(0, 0, 0, .45);
+}
+.widget[hidden], .launcher[hidden], .w-body[hidden], .w-error[hidden] { display: none; }
+.w-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: rgba(255, 255, 255, .07); }
+.bot { border-radius: 50%; flex: none; }
+.w-who { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; flex: 1; }
+.w-who strong { font-size: 14px; }
+.icon-btn { width: 32px; height: 32px; border-radius: 8px; border: 0; background: transparent; display: grid; place-items: center; }
+.icon-btn:hover { background: var(--glass-strong); }
+.icon-btn svg { width: 18px; height: 18px; stroke: var(--ink); stroke-width: 2; fill: none; stroke-linecap: round; }
+.w-error { margin: 0; padding: 8px 14px; font-size: 13px; background: rgba(255, 107, 129, .18); color: #ffd3da; }
+.w-body { padding: 14px; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+.w-hello { margin: 0 0 12px; font-size: 14px; color: var(--ink-faint); }
+
+.people { display: grid; gap: 8px; }
+.person { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--glass); text-align: left; }
+.person:hover { background: var(--glass-strong); }
+.person img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid #fff; flex: none; }
+.person strong { display: block; font-size: 14px; }
+.person span { font-size: 12px; color: var(--ink-soft); }
+
+.me { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); margin-bottom: 10px; }
+.me img { border-radius: 50%; object-fit: cover; border: 2px solid #fff; width: 24px; height: 24px; }
+.link { background: none; border: 0; padding: 0; margin-left: auto; color: var(--accent); text-decoration: underline; font-size: 13px; }
+
+.log { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; min-height: 220px; max-height: 420px; padding-right: 2px; }
+.msg { display: flex; align-items: flex-end; gap: 8px; }
+.msg.mine { justify-content: flex-end; }
+.msg img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex: none; }
+.msg.mine img { border: 2px solid #fff; }
+.bubble { padding: 8px 12px; border-radius: 14px; font-size: 14px; max-width: 78%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.mine .bubble { background: #fff; color: var(--navy-0); border-bottom-right-radius: 4px; }
+.msg.bot .bubble { background: rgba(255, 255, 255, .12); border: 1px solid rgba(255, 255, 255, .2); border-bottom-left-radius: 4px; }
+.typing .bubble { color: var(--ink-soft); font-style: italic; }
+
+.composer { margin-top: 12px; display: grid; gap: 8px; }
+.chip { justify-self: start; border: 1px solid var(--line); background: var(--glass); border-radius: 999px; padding: 4px 12px; font-size: 13px; }
+.chip:hover { background: var(--glass-strong); }
+.row { display: flex; gap: 8px; align-items: flex-end; }
+textarea { flex: 1; resize: none; min-height: 40px; max-height: 120px; padding: 9px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, .1); color: var(--ink); }
+textarea::placeholder { color: var(--ink-faint); opacity: .8; }
+.send { border: 0; border-radius: 12px; padding: 0 16px; min-height: 40px; background: var(--accent); color: #fff; font-weight: 600; }
+.send:disabled { opacity: .5; cursor: default; }
+
+.launcher { position: fixed; right: 20px; bottom: 20px; width: 60px; height: 60px; border-radius: 50%; border: 1px solid var(--line); background: rgba(9, 27, 58, .92); box-shadow: 0 10px 30px rgba(0, 0, 0, .45); display: grid; place-items: center; }
+.launcher img { border-radius: 50%; }
+
+@media (max-width: 640px) {
+  .nav { padding: 12px 16px; }
+  .links { display: none; }
+  .hero { padding: 40px 16px 120px; }
+  .cards { grid-template-columns: 1fr; margin-top: 28px; }
+  .widget { right: 8px; left: 8px; bottom: 8px; width: auto; max-height: 78vh; }
+  .log { min-height: 180px; max-height: 38vh; }
+}

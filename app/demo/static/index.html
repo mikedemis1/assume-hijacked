@@ -3,88 +3,81 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>Examplia Energy support (demo)</title>
-<link rel="icon" href="data:,">
-<link rel="stylesheet" href="/static/app.css">
-<script src="/static/app.js" defer></script>
+<meta name="color-scheme" content="dark">
+<title>Hijack Lab Energy</title>
+<link rel="icon" href="/static/volt.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/base.css">
+<link rel="stylesheet" href="/static/site.css">
+<script src="/static/site.js" defer></script>
 </head>
 <body>
-<a class="skip" href="#composer">Skip to the message box</a>
+<a class="skip" href="#text">Skip to the chat</a>
 <p class="vh" id="status" role="status" aria-live="polite"></p>
 
-<header class="top">
+<header class="nav">
   <div class="brand">
-    <svg class="mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13.5 2 5 13.5h6L10 22l9-12h-6z"/></svg>
-    <div>
-      <h1 class="name">Examplia Energy</h1>
-      <div class="sub">Customer support</div>
-    </div>
+    <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M13.5 2 5 13.5h6L10 22l9-12h-6z"/></svg></span>
+    <span class="brand-name">Hijack Lab Energy</span>
   </div>
-  <ul class="tags" aria-label="About this page">
-    <li class="tag">Fictional supplier</li>
-    <li class="tag">Open-source demo</li>
-    <li class="tag backend" id="backend"><span class="dot" aria-hidden="true"></span><span id="backend-name">Model</span></li>
-  </ul>
-  <div class="who" id="who" hidden>
-    <span class="who-label">Signed in as</span>
-    <strong id="who-name"></strong>
-    <button type="button" class="link" id="signout">Switch customer</button>
-  </div>
+  <nav class="links" aria-label="Site">
+    <span>Plans</span><span>Outages</span><span>My account</span>
+  </nav>
 </header>
 
-<div class="banner" id="banner" role="alert" hidden></div>
-
-<main id="main">
-  <section class="card signin" id="signin" aria-labelledby="signin-title" hidden>
-    <h2 id="signin-title">Choose a customer</h2>
-    <p class="muted">This is a demo with made-up people. Pick one to open the support chat.</p>
-    <div class="people" id="people"></div>
-  </section>
-
-  <div class="panes" id="panes" hidden>
-    <section class="card chat" aria-labelledby="chat-title">
-      <header class="card-head">
-        <h2 id="chat-title">Support chat</h2>
-        <p class="muted" id="chat-sub">Messages go to the support agent. Replies appear here.</p>
-      </header>
-      <div class="log" id="log" role="region" tabindex="0" aria-label="Conversation">
-        <p class="empty" id="log-empty">No messages yet. Write one below, or start from an example.</p>
-      </div>
-      <div class="composer" id="composer">
-        <div class="examples" aria-labelledby="examples-title">
-          <h3 id="examples-title">Start from an example</h3>
-          <div class="chips" id="examples"></div>
-        </div>
-        <form id="form" autocomplete="off">
-          <label class="vh" for="text">Your message</label>
-          <textarea id="text" name="text" rows="4" maxlength="2000" placeholder="Write a message to support"></textarea>
-          <p class="hint" id="hint">Lines that start with CALL or SAY are orders that the scripted model obeys, as a hijacked model would.</p>
-          <div class="row">
-            <span class="count" id="count" aria-hidden="true">0 / 2000</span>
-            <button type="submit" class="primary" id="send">Send</button>
-          </div>
-        </form>
-      </div>
-    </section>
-
-    <section class="card scenes" aria-labelledby="scenes-title">
-      <header class="card-head">
-        <h2 id="scenes-title">Behind the scenes</h2>
-        <p class="muted">What each wall recorded for your tickets, newest first.</p>
-        <ul class="legend" aria-label="Colour key">
-          <li><span class="dot tone-neutral" aria-hidden="true"></span>allowed</li>
-          <li><span class="dot tone-warn" aria-hidden="true"></span>changed or waiting</li>
-          <li><span class="dot tone-bad" aria-hidden="true"></span>denied or blocked</li>
-          <li><span class="dot tone-ok" aria-hidden="true"></span>stored</li>
-        </ul>
-      </header>
-      <div class="tickets" id="tickets">
-        <p class="empty" id="tickets-empty">Send a message and each step shows up here: the agent, every tool call, the risk check and the reply.</p>
-      </div>
-      <footer class="foot">Lines come from the database records. Lines marked "reported by the agent" are the agent's own account of what it dropped, stored by the dispatcher; the agent could leave one out. Only when there is none do lines marked "from your message" compare what the scripted model was told with what the records show.</footer>
-    </section>
+<main class="hero">
+  <h1>Clean energy for every home.</h1>
+  <p class="lede">A fictional supplier &middot; AI-agent security sandbox</p>
+  <div class="cards">
+    <article class="glass card">
+      <h2>Simple, fair plans</h2>
+      <p>One tariff per home, one bill a month, and no small print. Ask Volt which plan you are on.</p>
+    </article>
+    <article class="glass card">
+      <h2>Straight answers on outages</h2>
+      <p>We tell you what is happening on your street before you have to ask. Volt can help round the clock.</p>
+    </article>
   </div>
+  <p class="fine">Nothing on this page is real: the company, the customers and their portraits are made up.</p>
 </main>
+
+<button type="button" class="launcher" id="launcher" aria-label="Open the chat with Volt" hidden>
+  <img src="/static/volt.svg" alt="" width="40" height="40">
+</button>
+
+<section class="widget glass" id="widget" aria-labelledby="w-title">
+  <header class="w-head">
+    <img class="bot" src="/static/volt.svg" alt="" width="34" height="34">
+    <div class="w-who">
+      <strong id="w-title">Volt &middot; AI assistant</strong>
+      <span class="online">online</span>
+    </div>
+    <button type="button" class="icon-btn" id="minimise" aria-label="Minimise the chat" aria-expanded="true">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12h14" /></svg>
+    </button>
+  </header>
+  <p class="w-error" id="error" role="alert" hidden></p>
+
+  <div class="w-body" id="signin" hidden>
+    <p class="w-hello">Hi, I am Volt. This is a demo with made-up customers. Who are you today?</p>
+    <div class="people" id="people"></div>
+  </div>
+
+  <div class="w-body chat" id="chat" hidden>
+    <div class="me">
+      <img id="me-img" src="/static/volt.svg" alt="" width="24" height="24">
+      <span id="me-name"></span>
+      <button type="button" class="link" id="signout">Switch customer</button>
+    </div>
+    <div class="log" id="log" role="log" aria-label="Conversation" tabindex="0"></div>
+    <form class="composer" id="form" autocomplete="off">
+      <button type="button" class="chip" id="honest">What is my tariff?</button>
+      <div class="row">
+        <label class="vh" for="text">Your message</label>
+        <textarea id="text" rows="1" maxlength="2000" placeholder="Type a message&hellip;"></textarea>
+        <button type="submit" class="send" id="send">Send</button>
+      </div>
+    </form>
+  </div>
+</section>
 </body>
 </html>

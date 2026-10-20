@@ -1,0 +1,69 @@
+/* Shared by both pages: "navy glass" (deep navy gradient, translucent panels, one accent). Dark by design.
+   No inline styles and no external fonts or images: the page's Content-Security-Policy allows only these files. */
+:root {
+  --navy-0: #0b2447;
+  --navy-1: #19376d;
+  --navy-2: #2b5aa8;
+  --ink: #eaf2ff;
+  --ink-soft: #a9c7ff;
+  --ink-faint: #c5d6f5;
+  --glass: rgba(255, 255, 255, .08);
+  --glass-strong: rgba(255, 255, 255, .13);
+  --line: rgba(255, 255, 255, .16);
+  --accent: #29a8ef;
+  --ok: #9ff0c4;
+  --warn: #ffb86b;
+  --bad: #ff6b81;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--navy-0); }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font: 15px/1.5 var(--font);
+  color: var(--ink);
+  background: linear-gradient(160deg, var(--navy-0) 0%, var(--navy-1) 55%, var(--navy-2) 100%);
+  -webkit-text-size-adjust: 100%;
+}
+
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.vh {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.skip { position: absolute; left: 8px; top: -48px; background: #fff; color: var(--navy-0); padding: 8px 12px; border-radius: 8px; z-index: 50; }
+.skip:focus { top: 8px; }
+
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand-mark { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; flex: none; }
+.brand-mark svg { width: 16px; height: 16px; fill: #fff; }
+.brand-name { font-weight: 700; font-size: 16px; letter-spacing: .01em; }
+
+.online { color: var(--ok); font-size: 12px; }
+.online::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); margin-right: 5px; vertical-align: 1px; }
+
+.banner { margin: 12px 16px 0; padding: 10px 14px; border-radius: 12px; background: rgba(255, 107, 129, .16); border: 1px solid var(--bad); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
