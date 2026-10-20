@@ -19,7 +19,6 @@ x-db-common: &db-common
   DB_HOST: db
   DB_PORT: "5432"
   DB_NAME: supplier
-  VULNERABLE: ${VULNERABLE:-false}
 
 # Build-time only. Normally an empty file. On a network that intercepts TLS
 # (e.g. antivirus HTTPS scanning), set PIP_CERT_FILE in .env to the CA bundle.
@@ -161,8 +160,6 @@ services:
       DB_PASSWORD_RISK_ENGINE: ${DB_PASSWORD_RISK_ENGINE:?set DB_PASSWORD_RISK_ENGINE in .env}
       DB_PASSWORD_DISPATCHER: ${DB_PASSWORD_DISPATCHER:?set DB_PASSWORD_DISPATCHER in .env}
       DB_PASSWORD_REGISTER_SYNC: ${DB_PASSWORD_REGISTER_SYNC:?set DB_PASSWORD_REGISTER_SYNC in .env}
-      # 1 adds the demo-only function behind VULNERABLE=true (db/sql/90-vulnerable-demo.sql).
-      DEMO_VULNERABLE: ${DEMO_VULNERABLE:-0}
     ports:
       - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
@@ -456,7 +453,6 @@ services:
       - llm-gateway
       - dispatcher
     environment:
-      VULNERABLE: ${VULNERABLE:-false}
       CALLER_AUTH: compose
       GATEWAY_URL: http://tool-gateway:8080/mcp
       LLM_GATEWAY_URL: http://llm-gateway:8083

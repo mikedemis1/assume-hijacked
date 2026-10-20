@@ -167,7 +167,6 @@ spec:
             - {name: POSTGRES_USER, value: postgres}
             - {name: POSTGRES_DB, value: {{ .Values.db.name | quote }}}
             - {name: SQL_DIR, value: /db/sql}
-            - {name: DEMO_VULNERABLE, value: {{ ternary "1" "0" .Values.db.demoVulnerable | quote }}}
             - name: PGPASSWORD
               valueFrom:
                 secretKeyRef: {name: postgres-secrets, key: POSTGRES_PASSWORD}

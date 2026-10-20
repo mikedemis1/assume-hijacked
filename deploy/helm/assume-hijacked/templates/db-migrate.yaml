@@ -136,7 +136,6 @@ spec:
             - {name: POSTGRES_USER, value: {{ required "azure.dbAdmin is required with env=azure" $v.azure.dbAdmin | quote }}}
             - {name: POSTGRES_DB, value: {{ $v.db.name | quote }}}
             - {name: SQL_DIR, value: /db/sql}
-            - {name: DEMO_VULNERABLE, value: {{ ternary "1" "0" $v.db.demoVulnerable | quote }}}
           volumeMounts:
             {{- include "ah.dbFilesMounts" $root | nindent 12 }}
             - {name: ah-token, mountPath: /run/ah-token, readOnly: true}

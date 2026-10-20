@@ -45,8 +45,6 @@ db:
   host: postgres.ah-data.svc.cluster.local
   port: 5432
   name: supplier
-  # Applies db/sql/90-vulnerable-demo.sql at init (DEMO_VULNERABLE=1). Demo only.
-  demoVulnerable: false
 
 network:
   # azure only: the private endpoint subnet of PostgreSQL (infra/net snet-pe). The database is

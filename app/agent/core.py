@@ -28,7 +28,6 @@ ALLOWED_ARGS = {
     "issue_bill_credit": {"amount_eur", "reason", "evidence_ref"},
     "set_temp_protection": set(),
 }
-VULNERABLE_EXTRA = {"lookup_account": {"customer_id"}}
 
 # Tool and argument names come from the model, so they can carry any text. Log one only when it
 # looks like an identifier; anything else (a sentence, health data, a forged log line) is "<invalid>".
@@ -45,10 +44,9 @@ def _names(names) -> list[str]:
 
 
 class Agent:
-    def __init__(self, llm, gateway, *, vulnerable: bool = False):
+    def __init__(self, llm, gateway):
         self.llm = llm
         self.gateway = gateway
-        self.vulnerable = vulnerable
 
     def handle_ticket(self, ticket_id: int, lease: str) -> str:
         """The text to send as the reply to one ticket. `lease` is the lease the dispatcher handed
@@ -120,9 +118,7 @@ class Agent:
         """The arguments to send, and the names of the ones the model sent that were dropped."""
         if name not in ALLOWED_ARGS:
             return None, []
-        allowed = set(ALLOWED_ARGS[name])
-        if self.vulnerable:
-            allowed |= VULNERABLE_EXTRA.get(name, set())
+        allowed = ALLOWED_ARGS[name]
         if not isinstance(args, dict):
             args = {}
         clean = {key: value for key, value in args.items() if key in allowed}

@@ -7,7 +7,6 @@ descriptor, the grants of every database role, and who holds the gateway's keys.
 
 import asyncio
 import copy
-import dataclasses
 import hashlib
 import json
 import os
@@ -76,7 +75,7 @@ def test_manifest_descriptor_hashes_match_the_live_tools():
     # tool, run `python -m app.security.descriptors --write`, and review the diff.
     for tool, component in TOOL_COMPONENTS.items():
         listed = manifests()[component]["mcp"]["tools"]
-        assert listed == descriptors.reviewed_tools(tool), component
+        assert listed == descriptors.manifest_tools(tool), component
         assert [t["name"] for t in listed] == [tool]
         assert all(len(t["descriptor_sha256"]) == 64 for t in listed)
 
@@ -86,7 +85,7 @@ def test_manifest_hashes_match_a_tools_list_answer_read_over_http():
     # a signed tools/list request to the tool's app, and hash the entry in the JSON answer.
     private, public = KEYS
     for tool, component in TOOL_COMPONENTS.items():
-        app = serve.build_app(tool, descriptors.safe_settings(), public)
+        app = serve.build_app(tool, config.load(), public)
         token = mint_tool_token(private, tool, "ab" * 32, time.time())
         (answer, _), = asyncio.run(post_each(app, bearer(token)))
         assert answer.status_code == 200, component
@@ -134,15 +133,6 @@ def test_fingerprint_is_the_sha256_of_the_canonical_json():
     assert descriptors.canonical(known) == text.encode("utf-8")
     assert descriptors.descriptor_sha256(known) == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert descriptors.descriptor_sha256(known) == "612262db6ad6b7ce1b09fcd36e1d76a4f2f4283692fb05a4fdfc8619f531930e"
-
-
-def test_a_vulnerable_lookup_has_another_descriptor_than_the_safe_one():
-    # The demo switch changes what the model is told (a customer argument), so the fingerprint
-    # in the manifest, made for the safe build, would refuse it.
-    safe = descriptors.manifest_tools("lookup_account")
-    demo = descriptors.manifest_tools("lookup_account", dataclasses.replace(config.load(), vulnerable=True))
-    assert safe[0]["descriptor_sha256"] != demo[0]["descriptor_sha256"]
-    assert safe[0]["args"] == {} and demo[0]["args"] == {"customer_id": "integer"}
 
 
 def test_check_mode_reports_a_stale_manifest(tmp_path):

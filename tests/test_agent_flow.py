@@ -8,7 +8,6 @@ dispatcher did not hand out is never used here, so every wall on the path is the
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -271,7 +270,7 @@ def test_a_run_with_nothing_to_claim_ends_quietly_and_builds_no_model_client(cap
     built = []
     spy = SpyDispatcher(claim=None)
     with caplog.at_level(logging.INFO, logger=EVENTS):
-        code = agent_main.run(spy, lambda lease: built.append(lease) or ScriptedLLM(), SpyTools(), vulnerable=False)
+        code = agent_main.run(spy, lambda lease: built.append(lease) or ScriptedLLM(), SpyTools())
     assert code == 0 and built == [] and spy.replies == []
     assert [e["kind"] for e in events(caplog)] == ["no_ticket"]
 
@@ -279,7 +278,7 @@ def test_a_run_with_nothing_to_claim_ends_quietly_and_builds_no_model_client(cap
 def test_a_run_claims_works_and_replies_once_under_the_lease_it_was_handed(caplog):
     spy, tools, leases = SpyDispatcher(claim=Claim(7, LEASE)), SpyTools(), []
     with caplog.at_level(logging.INFO, logger=EVENTS):
-        code = agent_main.run(spy, lambda lease: leases.append(lease) or ScriptedLLM(), tools, vulnerable=False)
+        code = agent_main.run(spy, lambda lease: leases.append(lease) or ScriptedLLM(), tools)
     assert code == 0 and leases == [LEASE]
     assert spy.replies == [(LEASE, "Thanks")]                         # the text, no notice, under the claimed lease
     assert tools.calls == [("read_ticket", {"lease": LEASE})]
@@ -291,7 +290,7 @@ def test_a_run_claims_works_and_replies_once_under_the_lease_it_was_handed(caplo
 def test_a_claim_that_fails_ends_the_run_with_a_code_and_a_category(caplog, category):
     spy = SpyDispatcher(claim_error=DispatcherError(category))
     with caplog.at_level(logging.INFO, logger=EVENTS):
-        assert agent_main.run(spy, lambda lease: ScriptedLLM(), SpyTools(), vulnerable=False) == 1
+        assert agent_main.run(spy, lambda lease: ScriptedLLM(), SpyTools()) == 1
     (event,) = events(caplog)
     assert (event["kind"], event["category"]) == ("claim_failed", category)
 
@@ -299,7 +298,7 @@ def test_a_claim_that_fails_ends_the_run_with_a_code_and_a_category(caplog, cate
 def test_a_reply_that_is_refused_is_a_failed_run(caplog):
     spy = SpyDispatcher(claim=Claim(7, LEASE), reply_error=DispatcherError("lease"))
     with caplog.at_level(logging.INFO, logger=EVENTS):
-        assert agent_main.run(spy, lambda lease: ScriptedLLM(), SpyTools(), vulnerable=False) == 1
+        assert agent_main.run(spy, lambda lease: ScriptedLLM(), SpyTools()) == 1
     (event,) = events(caplog)
     assert (event["kind"], event["category"], event["ticket_id"]) == ("reply_failed", "lease", 7)
     assert LEASE not in caplog.text
@@ -308,7 +307,7 @@ def test_a_reply_that_is_refused_is_a_failed_run(caplog):
 def test_the_run_takes_no_ticket_number_from_anyone():
     import inspect
 
-    assert list(inspect.signature(agent_main.run).parameters) == ["dispatcher", "llm_for", "tools", "vulnerable"]
+    assert list(inspect.signature(agent_main.run).parameters) == ["dispatcher", "llm_for", "tools"]
 
 
 def test_the_process_refuses_a_ticket_number_on_its_command_line(monkeypatch):
@@ -341,7 +340,7 @@ def test_main_sends_security_events_to_stderr_and_nothing_to_stdout(monkeypatch,
     monkeypatch.setattr("sys.argv", ["main"])
     for name in ("GATEWAY_URL", "LLM_GATEWAY_URL", "DISPATCHER_URL"):
         monkeypatch.setenv(name, "http://x.test")
-    monkeypatch.setattr(agent_main.config, "load", lambda: type("S", (), {"vulnerable": False, "caller_auth": "compose"})())
+    monkeypatch.setattr(agent_main.config, "load", lambda: type("S", (), {"caller_auth": "compose"})())
     monkeypatch.setattr(agent_main, "DispatcherClient", lambda url, headers=None: SpyDispatcher(claim=Claim(7, LEASE)))
     monkeypatch.setattr(agent_main, "ToolGateway", lambda url, headers=None: SpyTools())
     monkeypatch.setattr(agent_main, "LlmGatewayClient", lambda url, lease, headers=None: ScriptedLLM())
@@ -369,7 +368,7 @@ def test_the_headers_for_each_peer_name_that_peers_audience(monkeypatch, tmp_pat
     monkeypatch.setattr("sys.argv", ["main"])
     for name in ("GATEWAY_URL", "LLM_GATEWAY_URL", "DISPATCHER_URL"):
         monkeypatch.setenv(name, "http://x.test")
-    monkeypatch.setattr(agent_main.config, "load", lambda: type("S", (), {"vulnerable": False, "caller_auth": "k8s"})())
+    monkeypatch.setattr(agent_main.config, "load", lambda: type("S", (), {"caller_auth": "k8s"})())
     monkeypatch.setattr(calls, "TOKEN_DIR", tmp_path)
     monkeypatch.setattr(agent_main, "auth_headers", lambda audience, mode: calls.auth_headers(audience, mode, tmp_path))
     monkeypatch.setattr(agent_main, "DispatcherClient", lambda url, headers=None: seen.setdefault("dispatcher", headers()) and SpyDispatcher())
@@ -387,10 +386,10 @@ def test_the_headers_for_each_peer_name_that_peers_audience(monkeypatch, tmp_pat
 class Stack:
     """Dispatcher + tool gateway + tools + LLM gateway, all real, in this process."""
 
-    def __init__(self, settings, as_role, *, vulnerable=False, backend=None, limit=20000):
-        self.settings = dataclasses.replace(settings, vulnerable=vulnerable)
+    def __init__(self, settings, as_role, *, backend=None, limit=20000):
+        self.settings = settings
         self.dispatcher = DispatcherHarness(settings, as_role)
-        self.tool_gateway = AppGatewayClient(build(self.settings, as_role, vulnerable=vulnerable))
+        self.tool_gateway = AppGatewayClient(build(self.settings, as_role))
         self.llm_gateway, self.llm_app = llm_stack(backend, limit)
 
     def run(self):
@@ -398,7 +397,6 @@ class Stack:
             InMemoryDispatcher(self.dispatcher.app),
             lambda lease: InMemoryLlm(self.llm_app, lease),
             self.tool_gateway,
-            vulnerable=self.settings.vulnerable,
         )
 
 
@@ -481,15 +479,6 @@ def test_a_model_that_cannot_be_reached_ends_the_run_with_the_give_up_text(setti
     assert stored(settings, 1) == GIVE_UP
 
 
-def test_the_demo_build_leaks_to_the_log_and_not_to_the_customer(settings, as_role, admin, demo_vulnerable):
-    only_ticket(admin, 4)
-    stack = Stack(settings, as_role, vulnerable=True)
-    assert stack.run() == 0
-    row = admin.execute("SELECT arg_names, dropped_args FROM tool_calls WHERE tool = 'lookup_account'").fetchone()
-    assert row == {"arg_names": ["customer_id"], "dropped_args": []}
-    assert stored(settings, 4) == SAFE_REPLY
-
-
 def test_the_agent_gets_its_lease_from_the_claim_and_no_model_key_anywhere(settings, as_role):
     stack = Stack(settings, as_role)
     sent = []
@@ -503,7 +492,6 @@ def test_the_agent_gets_its_lease_from_the_claim_and_no_model_key_anywhere(setti
         InMemoryDispatcher(stack.dispatcher.app),
         lambda lease: Watching(stack.llm_app, lease),
         stack.tool_gateway,
-        vulnerable=False,
     )
     assert len(sent) == 2 and len(set(sent)) == 1 and len(sent[0]) == 64   # one lease, from the claim
     text = "\n".join(p.read_text(encoding="utf-8") for p in (Path(agent_main.__file__).parent).glob("*.py"))

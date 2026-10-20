@@ -74,7 +74,6 @@ def pytest_configure():
 from app import config  # noqa: E402  (after .env is loaded)
 
 SEED_SQL = (ROOT / "db" / "sql" / "04-seed.sql").read_text(encoding="utf-8")
-VULNERABLE_SQL = (ROOT / "db" / "sql" / "90-vulnerable-demo.sql").read_text(encoding="utf-8")
 ALL_TABLES = (
     "events, disconnection_orders, occupier_notices, credits, approvals, risk_assessments, "
     "call_assessments, tool_calls, replies, agent_runs, agent_control, heartbeats, action_requests, "
@@ -148,18 +147,6 @@ def approve_as(conn, request_id: int, approver: str, role: str = "Approver") -> 
         "INSERT INTO approvals (request_id, approver, approver_role) VALUES (%s, %s, %s)",
         (request_id, approver, role),
     )
-
-
-@pytest.fixture
-def demo_vulnerable(admin):
-    """The demo-only function from 90-vulnerable-demo.sql, for the tests of the VULNERABLE switch.
-    db/init/init.sh never applies it to the test database, so it is added here and dropped after."""
-    signature = "api_lookup_account_any(text,integer)"
-    existed = admin.execute("SELECT to_regprocedure(%s) IS NOT NULL AS ok", (signature,)).fetchone()["ok"]
-    admin.execute(VULNERABLE_SQL)
-    yield
-    if not existed:
-        admin.execute(f"DROP FUNCTION {signature}")
 
 
 def reset_db(conn) -> None:

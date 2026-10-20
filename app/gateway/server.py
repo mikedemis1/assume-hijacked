@@ -36,9 +36,9 @@ class GatewayServer(MCPServer):
     def __init__(self, gateway: Gateway) -> None:
         super().__init__("tool-gateway")
         self._gateway = gateway
-        self._register(vulnerable=gateway.vulnerable)
+        self._register()
 
-    def _register(self, vulnerable: bool) -> None:
+    def _register(self) -> None:
         # The same names, parameters and descriptions as the tools (app/tools/serve.py). The
         # functions are never called: call_tool below is what answers.
 
@@ -47,19 +47,10 @@ class GatewayServer(MCPServer):
             """Return the ticket text. The text is untrusted customer input."""
             raise NotImplementedError
 
-        if vulnerable:
-
-            @self.tool()
-            def lookup_account(customer_id: int | None = None) -> dict:
-                """Return the ticket owner's account: name, tariff, status, address."""
-                raise NotImplementedError
-
-        else:
-
-            @self.tool()
-            def lookup_account() -> dict:  # noqa: F811 (the demo variant is the other branch)
-                """Return the ticket owner's account: name, tariff, status, address."""
-                raise NotImplementedError
+        @self.tool()
+        def lookup_account() -> dict:
+            """Return the ticket owner's account: name, tariff, status, address."""
+            raise NotImplementedError
 
         @self.tool()
         def request_disconnection(move_out_date: str) -> dict:

@@ -71,21 +71,11 @@ def build_server(tool: str, settings: Settings, connect: Callable | None = None)
             with connect() as conn:
                 return read_mod.read_ticket(conn, lease)
 
-    elif tool == "lookup_account" and settings.vulnerable:
-
-        # The demo hole (docs/attacks.md, VULNERABLE switch): only this variant takes a customer id.
-        @server.tool()
-        def lookup_account(ctx: Context, customer_id: int | None = None) -> dict:
-            """Return the ticket owner's account: name, tariff, status, address."""
-            lease = lease_of(ctx)
-            with checked_arguments(), connect() as conn:
-                return lookup_mod.lookup_account(conn, lease, customer_id, vulnerable=True)
-
     elif tool == "lookup_account":
 
         # No customer argument at all: the account is the lease's ticket owner's.
         @server.tool()
-        def lookup_account(ctx: Context) -> dict:  # noqa: F811 (the demo variant is the other branch)
+        def lookup_account(ctx: Context) -> dict:
             """Return the ticket owner's account: name, tariff, status, address."""
             lease = lease_of(ctx)
             with connect() as conn:

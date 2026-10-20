@@ -324,14 +324,12 @@ class Gateway:
         tools: ToolClient,
         specs: dict[str, ToolSpec],
         metrics: Metrics,
-        vulnerable: bool = False,
     ) -> None:
         self._db = db
         self._risk = risk
         self._tools = tools
         self._specs = specs
         self._metrics = metrics
-        self.vulnerable = vulnerable
 
     async def call(self, tool: str, arguments: object, lease: str, caller: CallerIdentity) -> Answer:
         spec = self._specs.get(tool) if isinstance(tool, str) else None
@@ -376,7 +374,7 @@ class Gateway:
         # engine's count before it is refused. That fails safe: the call is not made, the agent
         # may not try a second effect on this ticket, and the denial is recorded.
         try:
-            reply = await self._tools.invoke(tool, forwarded, lease, spec.expected_sha256(self.vulnerable))
+            reply = await self._tools.invoke(tool, forwarded, lease, spec.descriptor_sha256)
         except DescriptorChanged:
             return await self._refuse(record, "descriptor_changed", toolerrors.DENIED)
         except ToolUnavailable as err:
@@ -396,7 +394,7 @@ class Gateway:
         dropped them; this is the wall for a caller that is not the agent's code."""
         if spec is None or not isinstance(arguments, dict):
             return {}, []
-        allowed = spec.allowed_args(self.vulnerable)
+        allowed = spec.args
         kept = {key: value for key, value in arguments.items() if key in allowed}
         dropped = sorted(_name(key) for key in arguments if key not in allowed)[:NAMES_LIMIT]
         return kept, dropped

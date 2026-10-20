@@ -6,13 +6,12 @@ lists the tool. The database keeps only the sha256 of a lease.
 """
 
 import hashlib
-import os
 import time
 
 import psycopg
 import pytest
 
-from tests.conftest import ROOT, TOOLS, open_lease
+from tests.conftest import TOOLS, open_lease
 
 TOOL_ROLES = [f"tool_{tool}" for tool in TOOLS]
 
@@ -385,33 +384,3 @@ def test_rls_backstop_hides_rows_from_tool_roles(admin, table, role):
         assert admin.execute(
             "SELECT has_table_privilege(%s, %s, 'SELECT') AS ok", (role, table)
         ).fetchone()["ok"] is False
-
-
-VULNERABLE_SQL = (ROOT / "db" / "sql" / "90-vulnerable-demo.sql").read_text(encoding="utf-8")
-ANY_FUNCTION = "api_lookup_account_any(text,integer)"
-
-
-def test_vulnerable_function_absent_unless_demo(admin, settings):
-    # The test database is always built without the demo file (db/init/init.sh); the stack database
-    # has it only when DEMO_VULNERABLE=1.
-    exists = "SELECT to_regprocedure(%s) IS NOT NULL AS ok"
-    assert admin.execute(exists, (ANY_FUNCTION,)).fetchone()["ok"] is False
-    with psycopg.connect(
-        host=settings.db_host, port=settings.db_port, dbname="supplier", user="postgres",
-        password=os.environ["POSTGRES_PASSWORD"], autocommit=True,
-    ) as stack:
-        present = stack.execute(exists, (ANY_FUNCTION,)).fetchone()[0]
-    assert present is (os.environ.get("DEMO_VULNERABLE", "0") == "1")
-
-
-def test_vulnerable_demo_function_leaks_only_to_lookup_and_only_with_a_lease(admin, as_role, demo_vulnerable):
-    lease = open_lease(admin, 1, ["lookup_account"])
-    conn = as_role("tool_lookup_account")
-    row = conn.execute("SELECT name FROM api_lookup_account_any(%s, 1002)", (lease,)).fetchone()
-    assert row == {"name": "Nikos Georgiou"}  # the hole the demo shows
-    with pytest.raises(psycopg.errors.RaiseException, match="lease invalid"):
-        conn.execute("SELECT * FROM api_lookup_account_any(%s, 1002)", ("0" * 64,))
-    for role in [r for r in TOOL_ROLES if r != "tool_lookup_account"]:
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            as_role(role).execute("SELECT * FROM api_lookup_account_any(%s, 1002)", (lease,))
-    assert "api_lookup_account_any" in VULNERABLE_SQL

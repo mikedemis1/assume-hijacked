@@ -50,17 +50,6 @@ def test_lookup_ignores_foreign_customer_id_and_logs_it(as_role, admin, caplog):
     assert "1002" not in caplog.text
 
 
-def test_lookup_vulnerable_mode_trusts_customer_id(as_role, admin, demo_vulnerable):
-    result = lookup_account(as_role("tool_lookup_account"), open_lease(admin, 1), customer_id=1002, vulnerable=True)
-    assert result["name"] == "Nikos Georgiou"
-
-
-def test_lookup_vulnerable_mode_needs_the_demo_database(as_role, admin):
-    # Without 90-vulnerable-demo.sql the switch in the code alone leaks nothing.
-    with pytest.raises(Exception, match="api_lookup_account_any"):
-        lookup_account(as_role("tool_lookup_account"), open_lease(admin, 1), customer_id=1002, vulnerable=True)
-
-
 def _utc_day(offset_days):
     return (datetime.now(timezone.utc).date() + timedelta(days=offset_days)).isoformat()
 

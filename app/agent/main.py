@@ -33,7 +33,7 @@ from app.agent.llm_client import LlmGatewayClient
 from app.common.calls import auth_headers
 
 
-def run(dispatcher, llm_for: Callable[[str], object], tools, vulnerable: bool) -> int:
+def run(dispatcher, llm_for: Callable[[str], object], tools) -> int:
     """One run. `dispatcher` has claim() and reply(lease, text); `llm_for(lease)` builds the model
     client for the lease just handed out; `tools` has call(name, args)."""
     try:
@@ -44,7 +44,7 @@ def run(dispatcher, llm_for: Callable[[str], object], tools, vulnerable: bool) -
     if claim is None:
         security_event("no_ticket")
         return 0
-    agent = Agent(llm_for(claim.lease), tools, vulnerable=vulnerable)
+    agent = Agent(llm_for(claim.lease), tools)
     text = agent.handle_ticket(claim.ticket_id, claim.lease)
     try:
         dispatcher.reply(claim.lease, text)
@@ -81,7 +81,7 @@ def main() -> None:
     def llm_for(lease: str) -> LlmGatewayClient:
         return LlmGatewayClient(llm_url, lease, lambda: auth_headers("llm-gateway", mode))
 
-    sys.exit(run(dispatcher, llm_for, tools, settings.vulnerable))
+    sys.exit(run(dispatcher, llm_for, tools))
 
 
 if __name__ == "__main__":

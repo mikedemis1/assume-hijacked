@@ -74,7 +74,6 @@ def build(
     as_role,
     *,
     risk=None,
-    vulnerable: bool = False,
     apps: dict[str, Callable] | None = None,
     transports: dict[str, Callable] | None = None,
     tools: tuple[str, ...] | None = None,
@@ -82,22 +81,15 @@ def build(
     clock: Callable[[], float] = time.time,
 ) -> Built:
     private, public = KEYS
-    tool_settings = _replace_vulnerable(settings, vulnerable)
     kwargs = {"tools": tools} if tools else {}
-    client = AppToolClient(tool_settings, private, public, clock=clock, apps=apps, transports=transports, **kwargs)
+    client = AppToolClient(settings, private, public, clock=clock, apps=apps, transports=transports, **kwargs)
     metrics = Metrics()
     specs = specs or manifest.load_manifests()
     init_metrics(metrics, specs)
     db = GatewayDb(lambda: as_role("gateway"))
     risk = risk or FakeRisk()
-    gateway = Gateway(db=db, risk=risk, tools=client, specs=specs, metrics=metrics, vulnerable=vulnerable)
+    gateway = Gateway(db=db, risk=risk, tools=client, specs=specs, metrics=metrics)
     return Built(gateway, client, risk, metrics, db, specs)
-
-
-def _replace_vulnerable(settings, vulnerable: bool):
-    import dataclasses
-
-    return dataclasses.replace(settings, vulnerable=vulnerable)
 
 
 # --- the MCP edge: what the agent talks to ---

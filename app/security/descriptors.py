@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import dataclasses
 import hashlib
 import json
 import sys
@@ -46,13 +45,8 @@ def wire_entry(tool) -> dict:
     return tool.model_dump(by_alias=True, exclude_none=True, mode="json")
 
 
-def safe_settings() -> config.Settings:
-    """The settings the manifests describe: the build without the VULNERABLE demo switch."""
-    return dataclasses.replace(config.load(), vulnerable=False)
-
-
 def tool_entries(tool_name: str, settings: config.Settings | None = None) -> list[dict]:
-    server = serve.build_server(tool_name, settings or safe_settings())
+    server = serve.build_server(tool_name, settings or config.load())
     return [wire_entry(tool) for tool in asyncio.run(server.list_tools())]
 
 
@@ -77,19 +71,6 @@ def manifest_tools(tool_name: str, settings: config.Settings | None = None) -> l
     return out
 
 
-def reviewed_tools(tool_name: str) -> list[dict]:
-    """What the manifest of this tool holds: the entry for the reviewed build, and for a tool the
-    VULNERABLE demo build changes (lookup_account takes a customer id there) a `demo` object with
-    the arguments and fingerprint of that build. The gateway uses the demo one only in demo mode
-    (app/gateway/manifest.py)."""
-    reviewed = manifest_tools(tool_name)
-    demo = manifest_tools(tool_name, dataclasses.replace(config.load(), vulnerable=True))
-    if demo != reviewed:
-        # Only the tool's own entry: its name is the same.
-        reviewed[0]["demo"] = {"args": demo[0]["args"], "descriptor_sha256": demo[0]["descriptor_sha256"]}
-    return reviewed
-
-
 def manifest_path(tool_name: str, directory: Path = MANIFESTS) -> Path:
     return directory / f"tool-{tool_name.replace('_', '-')}.json"
 
@@ -103,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     status = 0
     for tool_name in serve.TOOLS:
-        wanted = reviewed_tools(tool_name)
+        wanted = manifest_tools(tool_name)
         path = manifest_path(tool_name, args.manifests)
         if not (args.write or args.check):
             print(f"{tool_name}: {wanted[0]['descriptor_sha256']}")

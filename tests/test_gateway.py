@@ -10,7 +10,6 @@ this process (tests/gatewayharness.py). The risk engine is a stand-in unless a t
 """
 
 import asyncio
-import dataclasses
 import json
 import logging
 import time
@@ -599,68 +598,15 @@ def test_a_tool_that_no_longer_lists_its_tool_or_lists_it_changed_in_the_schema_
     assert built.tools.forwarded() == []
 
 
-# --- the VULNERABLE demo build ---
+# --- a customer id from the caller ---
 
-def test_vulnerable_gateway_forwards_customer_id_to_lookup_account(settings, admin, as_role, demo_vulnerable):
+def test_the_gateway_does_not_forward_customer_id_to_lookup_account(settings, admin, as_role):
     lease = open_lease(admin, 1)
-    built = build(settings, as_role, vulnerable=True)
-    answer = built.call("lookup_account", {"customer_id": 1002, "ticket_id": 2}, lease)
-    assert json.loads(answer.text)["name"] == "Nikos Georgiou"          # the hole, on purpose
-    assert built.tools.forwarded() == [("lookup_account", {"customer_id": 1002})]   # only that one extra
-    assert calls(admin)[0]["dropped_args"] == ["ticket_id"]
-
-
-def test_the_demo_extra_argument_is_for_lookup_account_only(settings, admin, as_role, demo_vulnerable):
-    lease = open_lease(admin, 1)
-    built = build(settings, as_role, vulnerable=True)
-    built.call("read_ticket", {"customer_id": 1002}, lease)
-    assert built.tools.forwarded() == [("read_ticket", {})]
-
-
-def test_normal_gateway_does_not_forward_customer_id_even_when_the_database_has_the_demo_function(
-    settings, admin, as_role, demo_vulnerable
-):
-    lease = open_lease(admin, 1)
-    built = build(settings, as_role, vulnerable=False)
+    built = build(settings, as_role)
     answer = built.call("lookup_account", {"customer_id": 1002}, lease)
     assert json.loads(answer.text)["name"] == "Eleni Papadopoulou"
     assert built.tools.forwarded() == [("lookup_account", {})]
-
-
-def test_the_demo_descriptor_is_accepted_only_in_demo_mode(settings, admin, as_role, demo_vulnerable):
-    # The demo lookup_account tells the model about customer_id, so its description hash is not the
-    # reviewed one. The gateway in demo mode expects exactly that hash; in normal mode it expects the
-    # reviewed one, so a demo-shaped (or hijacked) lookup_account behind a normal gateway is refused.
-    lease = open_lease(admin, 1)
-    demo_tool = lambda: serve.build_app(  # noqa: E731
-        "lookup_account", dataclasses.replace(settings, vulnerable=True), KEYS[1]
-    )
-    normal_gateway_demo_tool = build(settings, as_role, vulnerable=False, apps={"lookup_account": demo_tool})
-    answer = normal_gateway_demo_tool.call("lookup_account", {}, lease)
-    assert answer.text == "ERROR: denied"
-    assert [(r["outcome"], r["reason"]) for r in calls(admin)] == [("denied", "descriptor_changed")]
-    # Demo mode against the reviewed (safe) tool: it does not match the demo hash either, so the
-    # demo is not a way to run a tool nobody reviewed.
-    demo_gateway_safe_tool = build(settings, as_role, vulnerable=True, apps={
-        "lookup_account": lambda: serve.build_app("lookup_account", settings, KEYS[1])
-    })
-    assert demo_gateway_safe_tool.call("lookup_account", {}, lease).text == "ERROR: denied"
-    # The controls: each build with its own tool is let through.
-    assert build(settings, as_role, vulnerable=False).call("lookup_account", {}, lease).is_error is False
-    assert build(settings, as_role, vulnerable=True).call("lookup_account", {}, lease).is_error is False
-
-
-def test_the_manifest_holds_both_hashes_of_lookup_account_and_the_demo_one_is_different():
-    spec = manifest.load_manifests()["lookup_account"]
-    demo = descriptors.manifest_tools("lookup_account", dataclasses.replace(descriptors.safe_settings(), vulnerable=True))[0]
-    assert spec.demo_descriptor_sha256 == demo["descriptor_sha256"] != spec.descriptor_sha256
-    assert spec.demo_args == frozenset({"customer_id"})
-    assert spec.expected_sha256(vulnerable=True) == spec.demo_descriptor_sha256
-    assert spec.expected_sha256(vulnerable=False) == spec.descriptor_sha256
-    for tool, other in manifest.load_manifests().items():
-        if tool != "lookup_account":
-            assert other.demo_descriptor_sha256 is None
-            assert other.expected_sha256(vulnerable=True) == other.descriptor_sha256
+    assert calls(admin)[0]["dropped_args"] == ["customer_id"]
 
 
 # --- 6. what the agent is told ---
@@ -911,17 +857,16 @@ def test_the_gateway_without_the_caller_check_denies_everything(settings, admin,
 
 def test_the_gateway_lists_the_reviewed_descriptors_to_the_agent(settings, as_role):
     # What the model is told about a tool is the description in the manifest, hash for hash.
-    for vulnerable in (False, True):
-        built = build(settings, as_role, vulnerable=vulnerable)
+    built = build(settings, as_role)
 
-        async def listing():
-            async with agent_session(build_app(built.gateway, compose_auth()), {}) as client:
-                return (await client.list_tools()).tools
+    async def listing():
+        async with agent_session(build_app(built.gateway, compose_auth()), {}) as client:
+            return (await client.list_tools()).tools
 
-        listed = {tool.name: descriptors.descriptor_sha256(descriptors.wire_entry(tool)) for tool in run(listing())}
-        assert set(listed) == set(serve.TOOLS)
-        for tool, spec in built.specs.items():
-            assert listed[tool] == spec.expected_sha256(vulnerable=vulnerable), (tool, vulnerable)
+    listed = {tool.name: descriptors.descriptor_sha256(descriptors.wire_entry(tool)) for tool in run(listing())}
+    assert set(listed) == set(serve.TOOLS)
+    for tool, spec in built.specs.items():
+        assert listed[tool] == spec.descriptor_sha256, tool
 
 
 def test_a_body_over_64_kib_is_refused_and_the_gateway_stays_healthy(settings, admin, as_role):

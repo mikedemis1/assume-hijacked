@@ -5,11 +5,7 @@ description the tool must still have (app/security/descriptors.py).
 The gateway reads the files at start and fails if one is missing or wrong, so it never runs
 with a tool it has no reviewed fingerprint for.
 
-The VULNERABLE demo build (docs/attacks.md) is the one exception to "no argument except the
-manifest's": its lookup_account takes a customer id, which changes the tool's description and so
-its fingerprint. The manifest lists that second fingerprint as `demo`, next to the reviewed one, and the
-gateway uses it only when it runs in demo mode. In normal mode the demo hash is never accepted and
-`customer_id` is dropped like any other unknown argument.
+An argument that is not in the manifest, `customer_id` included, is dropped.
 """
 
 from __future__ import annotations
@@ -34,19 +30,6 @@ class ToolSpec:
     name: str
     args: frozenset[str]
     descriptor_sha256: str
-    demo_args: frozenset[str] = frozenset()
-    demo_descriptor_sha256: str | None = None
-
-    def allowed_args(self, vulnerable: bool) -> frozenset[str]:
-        return self.args | self.demo_args if vulnerable else self.args
-
-    def expected_sha256(self, vulnerable: bool) -> str:
-        """The fingerprint the tool's live description must have. In demo mode a tool with a demo
-        variant must match that variant, not the reviewed one: the demo is not a way to run
-        something nobody reviewed."""
-        if vulnerable and self.demo_descriptor_sha256 is not None:
-            return self.demo_descriptor_sha256
-        return self.descriptor_sha256
 
 
 def _sha(where: str, value: object) -> str:
@@ -70,17 +53,7 @@ def _spec(path: Path, tool: str) -> ToolSpec:
     if not isinstance(listed, list) or len(listed) != 1 or listed[0].get("name") != tool:
         raise ManifestError(f"{path.name}: expected exactly one tool, {tool}")
     entry = listed[0]
-    demo = entry.get("demo")
-    if demo is None:
-        return ToolSpec(tool, _args(path.name, entry.get("args")), _sha(path.name, entry.get("descriptor_sha256")))
-    return ToolSpec(
-        tool,
-        _args(path.name, entry.get("args")),
-        _sha(path.name, entry.get("descriptor_sha256")),
-        # What the demo build adds to the reviewed arguments, and the fingerprint it then has.
-        _args(path.name, demo.get("args")) - _args(path.name, entry.get("args")),
-        _sha(path.name, demo.get("descriptor_sha256")),
-    )
+    return ToolSpec(tool, _args(path.name, entry.get("args")), _sha(path.name, entry.get("descriptor_sha256")))
 
 
 def load_manifests(directory: Path | None = None) -> dict[str, ToolSpec]:

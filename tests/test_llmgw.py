@@ -719,7 +719,7 @@ def test_the_tools_offered_match_the_reviewed_manifests():
     from app.security import descriptors
 
     for tool in core.ALLOWED_ARGS:
-        reviewed = descriptors.reviewed_tools(tool)
+        reviewed = descriptors.manifest_tools(tool)
         assert {a for t in reviewed for a in t["args"]} == set(core.ALLOWED_ARGS[tool]), tool
 
 

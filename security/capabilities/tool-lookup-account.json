@@ -45,13 +45,7 @@
       {
         "name": "lookup_account",
         "args": {},
-        "descriptor_sha256": "ba03c60e1516e2135aeb53dbc30b06b662733ff23bb84e423472b455320be795",
-        "demo": {
-          "args": {
-            "customer_id": "integer"
-          },
-          "descriptor_sha256": "46d35927274c6b58ded34a5749f841b43041c8d429b36d3874c42945506efaf3"
-        }
+        "descriptor_sha256": "ba03c60e1516e2135aeb53dbc30b06b662733ff23bb84e423472b455320be795"
       }
     ]
   }

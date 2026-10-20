@@ -8,7 +8,6 @@ argument.
 
 import asyncio
 import base64
-import dataclasses
 import hashlib
 import hmac
 import json
@@ -342,7 +341,7 @@ def test_lease_in_the_token_is_what_the_database_checks(settings, admin, keypair
 def test_the_tool_has_no_lease_or_ticket_parameter():
     # The schema the model's calls are checked against: no way to name a lease or a ticket.
     for tool in serve.TOOLS:
-        server = serve.build_server(tool, dataclasses.replace(config.load(), vulnerable=False))
+        server = serve.build_server(tool, config.load())
         (descriptor,) = asyncio.run(server.list_tools())
         properties = set(descriptor.input_schema.get("properties", {}))
         assert not properties & {"lease", "ticket_id", "ticket", "customer_id", "account_id"}, tool

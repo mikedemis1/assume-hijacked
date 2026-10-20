@@ -5,7 +5,7 @@
 
 Environment: GATEWAY_SIGNING_KEY_FILE (EC P-256 private key, PEM: the only copy of the key the
 tools check), RISK_URL (http://risk-engine:8082), TOOL_URL_<TOOL> for each of the five tools,
-DB_PASSWORD_GATEWAY, CALLER_AUTH (compose|k8s), CALLER_SUBNET (compose only: the agent's edge network), VULNERABLE (the demo build), CAPABILITIES_DIR (the
+DB_PASSWORD_GATEWAY, CALLER_AUTH (compose|k8s), CALLER_SUBNET (compose only: the agent's edge network), CAPABILITIES_DIR (the
 reviewed manifests; default: security/capabilities next to the code).
 
 It does not start without any of these: a gateway that cannot sign, cannot ask the risk engine or
@@ -100,7 +100,6 @@ def main() -> None:
         tools=ToolClient(urls, signing_key),
         specs=specs,
         metrics=metrics,
-        vulnerable=settings.vulnerable,
     )
     app = build_app(gateway, auth)
     # All interfaces of the container: the agent reaches it from another container or pod. The
