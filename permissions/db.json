@@ -385,6 +385,15 @@
             ],
             "using": "true",
             "check": "true"
+          },
+          {
+            "name": "demo_ops_read",
+            "command": "SELECT",
+            "roles": [
+              "demo_ops"
+            ],
+            "using": "true",
+            "check": null
           }
         ]
       },

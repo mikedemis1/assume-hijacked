@@ -59,9 +59,9 @@ def test_an_argument_the_agent_dropped_is_found_by_comparing_the_message_with_th
 
 
 def test_an_argument_the_gateway_dropped_is_a_record_not_a_guess():
-    lines = build("Hello", [call("lookup_account", dropped=["customer_id", "x"])], scripted=False)
+    lines = build("Hello", [call("lookup_account", dropped=["customer_id", "webhook"])], scripted=False)
     line = [item for item in lines if item["label"] == "lookup_account"][0]
-    assert line["text"] == "arguments customer_id, x dropped" and "by the gateway" in line["note"]
+    assert line["text"] == "arguments customer_id, webhook dropped" and "by the gateway" in line["note"]
 
 
 def test_a_tool_the_agent_does_not_have_is_shown_as_refused_by_the_agent_in_order():
@@ -131,9 +131,16 @@ def test_the_first_line_is_always_the_filing_and_no_message_text_is_in_a_line():
     assert "690" not in str(lines) and "Secret" not in str(lines)
 
 
-def test_a_tool_name_from_the_message_is_shown_only_when_it_looks_like_a_name():
-    lines = build('x\nCALL <script>alert(1)</script> {}\nSAY y', [call("read_ticket")], reply="ok")
-    assert "<script>" not in str(lines) and "<invalid>" in str(lines)
+def test_a_tool_name_from_the_message_is_shown_only_when_it_is_in_the_vocabulary():
+    lines = build('x\nCALL <script>alert(1)</script> {}\nCALL my_secret_tool {}\nSAY y', [call("read_ticket")], reply="ok")
+    assert "script" not in str(lines) and "my_secret_tool" not in str(lines) and "an unknown tool" in str(lines)
+
+
+def test_an_argument_name_outside_the_vocabulary_is_one_fixed_phrase_whatever_it_looks_like():
+    lines = build("Hello", [call("lookup_account", dropped=["Eleni_1001", "customer_id", "Nikos_Georgiou"])], scripted=False)
+    line = [item for item in lines if item["label"] == "lookup_account"][0]
+    assert line["text"] == "an argument the tool does not take, customer_id dropped"
+    assert "Eleni" not in str(lines) and "Nikos" not in str(lines)
 
 
 def event(kind, tool, names=(), seconds=9):
@@ -172,9 +179,10 @@ def test_a_reported_drop_with_no_recorded_call_is_still_shown():
     assert any(item["label"] == "issue_bill_credit" and "dropped by the agent" in item["text"] for item in lines)
 
 
-def test_an_unsafe_name_in_an_event_is_never_shown():
-    lines = build("Hello", [], reply="x", scripted=False, events=[event("unknown_tool", "Eleni 1001 +30!")])
-    assert "Eleni" not in str(lines) and "<invalid>" in str(lines)
+def test_an_odd_name_in_an_event_is_never_shown():
+    for name in ("Eleni 1001 +30!", "Eleni_1001_phone", "a" * 64):
+        lines = build("Hello", [], reply="x", scripted=False, events=[event("unknown_tool", name)])
+        assert "Eleni" not in str(lines) and "aaaa" not in str(lines) and "an unknown tool" in str(lines)
 
 
 def test_the_reply_kind_decides_what_the_stored_reply_is_called():

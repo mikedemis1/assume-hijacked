@@ -22,8 +22,10 @@ MESSAGES_PER_MINUTE = 30  # all visitors together
 @dataclass
 class Ticket:
     id: int
-    text: str
+    text: str  # the customer's own words
     filed_at: str
+    body: str = ""  # what was filed: the words, then the plan's lines when an attack was armed
+    attack: str | None = None  # the armed attack's id, when the ticket carries its plan
 
 
 @dataclass
@@ -32,6 +34,7 @@ class Session:
     csrf: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     started: float = field(default_factory=time.monotonic)
     tickets: list[Ticket] = field(default_factory=list)
+    armed: str | None = None  # the attack for this session's next message only (one shot)
     sending: bool = False  # one message at a time per session, so the caps below cannot be raced
 
 

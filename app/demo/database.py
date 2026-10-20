@@ -38,6 +38,13 @@ def replies(customer: int, tickets: list[int]) -> dict[int, str]:
     return found
 
 
+def kill_switch_on() -> bool:
+    """Whether the agents are paused (the one flag of agent_control; demo_ops reads nothing else of it)."""
+    with _connect("demo_ops") as conn:
+        row = conn.execute("SELECT paused FROM agent_control").fetchone()
+    return bool(row and row["paused"])
+
+
 def audit(tickets: list[int]) -> dict[int, dict]:
     """For each ticket: its run, the gateway's calls, the risk engine's verdicts on them, the effect
     requests with their risk tier, approvals and outcome, the agent's own report of what it dropped

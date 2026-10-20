@@ -131,7 +131,9 @@ def test_a_customer_reads_the_reply_to_their_own_ticket_and_nobody_else_does(adm
     "SELECT reason FROM action_requests",
     "SELECT evidence_ref, move_out_date, account_id FROM action_requests",
     "SELECT score, engine_version, actor FROM risk_assessments",
-    "SELECT paused FROM agent_control",
+    "SELECT reason FROM agent_control",
+    "SELECT changed_at FROM agent_control",
+    "SELECT * FROM agent_control",
     "SELECT * FROM heartbeats",
 ])
 def test_the_ops_role_cannot_read_text_customer_data_flags_or_other_columns(as_role, statement):
@@ -149,10 +151,12 @@ def test_the_ops_role_reads_the_audit_columns_and_writes_nothing(as_role):
         "SELECT ticket_id, created_at FROM replies", "SELECT request_id, created_at FROM credits",
         "SELECT request_id, created_at FROM disconnection_orders",
         "SELECT request_id, approver_role, created_at FROM approvals",
+        "SELECT paused FROM agent_control",
     ):
         conn.execute(statement).fetchall()
     refused(conn, "INSERT INTO tool_calls (lease_hash, tool, arg_names, dropped_args, outcome) "
                   "VALUES ('\\x00', 'x', '{}', '{}', 'ok')")
+    refused(conn, "UPDATE agent_control SET paused = true")
     refused(conn, "UPDATE tickets SET status = 'closed'")
     refused(conn, "DELETE FROM replies")
     refused(conn, "SELECT portal_open_ticket(1001, 'x')")

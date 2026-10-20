@@ -37,6 +37,9 @@
           "agent_runs": [
             "SELECT (created_at, lease_hash, status, ticket_id)"
           ],
+          "agent_control": [
+            "SELECT (paused)"
+          ],
           "approvals": [
             "SELECT (approver_role, created_at, request_id)"
           ],

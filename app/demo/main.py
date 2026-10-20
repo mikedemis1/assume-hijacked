@@ -1,14 +1,22 @@
 """The demo UI on 8085, with operational probes on 9000.
 
-A customer chat in front of the agent, and next to it what the walls did for the visitor's own
-tickets. Optional: the chart renders it only with demo.enabled, and the security story does not
-depend on it. It is a front door, so it is treated as untrusted like the others:
+Two pages of one small service. `/` is a fictional supplier's website with a support chat in the
+corner: the customer sees their own words and the replies, and nothing else. `/security` is the
+security console: what the walls decided for the tickets of this session, read-only, plus one
+presenter control. Optional: the chart renders it only with demo.enabled, and the security story
+does not depend on it. It is a front door, so it is treated as untrusted like the others:
 
 - The customer comes from the visitor's session, never from a request body. The session cookie is
   HttpOnly and SameSite=Strict; every POST needs application/json, the same origin and, once
   signed in, the session's CSRF token.
 - It logs in to PostgreSQL as demo_portal (three functions, no table) and demo_ops (audit columns
-  only); db/sql/09-demo.sql. The panel reads only the ticket numbers this session created.
+  only); db/sql/09-demo.sql. The console reads only the ticket numbers this session created.
+- The customer endpoints return the visitor's own messages and replies and no backstage field
+  (ruling R14). Everything about the walls is under /api/console.
+- Names from the records (tools, arguments) are printed only when they are in the known vocabulary.
+- Arming an attack is per session, needs the CSRF token and works once: the next message of that
+  session is filed with the attack's CALL/SAY lines after the customer's words. That is only more
+  ticket text; the ticket is untrusted input as always and no wall is told anything new.
 - Pages and scripts are its own files, with a Content-Security-Policy that allows nothing else.
 - The Host header must be a local name: it is reached with kubectl port-forward only
   (scripts/demo-ui.sh), and this stops a DNS-rebinding page from talking to it.
@@ -16,12 +24,15 @@ depend on it. It is a front door, so it is treated as untrusted like the others:
 Dev sign-in: whoever opens the page picks a fictional customer. That is the point of a demo and
 the reason it is never exposed.
 
-    GET  /                    the page (static/index.html)
-    GET  /static/app.css, /static/app.js
-    GET  /api/state           customers, the session, its tickets with replies and timelines
+    GET  /                    the website and chat (static/index.html)
+    GET  /security            the console (static/security.html)
+    GET  /static/...          css, js, the robot, the three portraits
+    GET  /api/state           customers, the session, its messages and replies
     POST /api/signin          {"customer": 1001}
     POST /api/signout
     POST /api/message         {"text": "..."} with X-CSRF-Token
+    GET  /api/console         counters, the flow, the feed, the attacks to arm
+    POST /api/arm             {"attack": "neighbour"} or {"attack": null} with X-CSRF-Token
 """
 
 from __future__ import annotations
@@ -45,7 +56,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.common.ops import Heartbeat, Metrics, start_ops_server
-from app.demo import database, timeline
+from app.demo import attacks, console, database, timeline
 from app.demo.sessions import MAX_TICKETS, MAX_WAITING, Sessions, Ticket
 
 PORT = 8085
@@ -54,6 +65,12 @@ COOKIE = "ah_demo"
 MAX_BODY = 8192
 MAX_TEXT = 2000
 STATIC = Path(__file__).parent / "static"
+PAGES = {"/": "index.html", "/security": "security.html"}
+TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+         ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".jpg": "image/jpeg"}
+# The three fictional customers and their portraits (AI-generated people who do not exist, see
+# static/avatars/NOTICE).
+AVATARS = {1001: "eleni", 1002: "nikos", 1003: "maria"}
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
 SECURITY_HEADERS = {
@@ -141,52 +158,87 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
               hosts: set[str] | None = None) -> Starlette:
     sessions = sessions or Sessions()
     hosts = hosts if hosts is not None else allowed_hosts()
-    files = {name: (STATIC / name).read_bytes() for name in ("index.html", "app.css", "app.js")}
-    types = {"index.html": "text/html; charset=utf-8", "app.css": "text/css; charset=utf-8",
-             "app.js": "text/javascript; charset=utf-8"}
+    files = {path.relative_to(STATIC).as_posix(): path.read_bytes()
+             for path in STATIC.rglob("*") if path.is_file() and path.suffix in TYPES}
     backend = backend_info()
 
     def current(request: Request):
         return sessions.get(request.cookies.get(COOKIE))
 
     async def asset(request: Request):
-        name = request.path_params.get("name", "index.html")
-        if name not in files:
+        # Only a name in the table is served, so no path can leave the static folder.
+        name = PAGES.get(request.url.path) or request.path_params.get("name", "")
+        if name not in files or (name.endswith(".html") and request.url.path not in PAGES):
             return Response(status_code=404)
-        return Response(files[name], media_type=types[name])
+        return Response(files[name], media_type=TYPES[Path(name).suffix])
 
     async def nothing(request: Request):
         return Response(status_code=204)
 
+    def avatar(customer: int) -> str | None:
+        return f"/static/avatars/{AVATARS[customer]}.jpg" if customer in AVATARS else None
+
+    def person(people: list[dict], customer: int) -> dict:
+        me = next((c for c in people if c["id"] == customer), None)
+        return {"id": customer, "name": me["name"] if me else str(customer), "avatar": avatar(customer)}
+
     async def state(request: Request):
+        """The customer page's data: the visitor's own words and the replies, and nothing about the walls."""
         session = current(request)
         try:
             people = await run_in_threadpool(database.customers)
-            body = {"customers": people, "backend": backend, "limits": {"tickets": MAX_TICKETS}, "customer": None}
+            body = {"customers": [{"id": p["id"], "name": p["name"], "avatar": avatar(p["id"])} for p in people],
+                    "customer": None}
             if session is not None:
-                body.update(customer=session.customer, csrf=session.csrf, tickets=await tickets_of(session))
+                ids = [t.id for t in session.tickets]
+                texts = await run_in_threadpool(database.replies, session.customer, ids)
+                body.update(customer=session.customer, csrf=session.csrf, messages=[
+                    {"id": t.id, "text": t.text, "reply": texts.get(t.id)} for t in session.tickets])
         except psycopg.Error:
             return error(503, "database")
         return JSONResponse(body)
 
-    async def tickets_of(session) -> list[dict]:
-        ids = [t.id for t in session.tickets]
-        texts = await run_in_threadpool(database.replies, session.customer, ids)
-        audit = await run_in_threadpool(database.audit, ids)
-        out = []
-        for ticket in session.tickets:
-            data = audit[ticket.id]
-            reply = texts.get(ticket.id)
-            out.append({
-                "id": ticket.id, "text": ticket.text, "filedAt": ticket.filed_at, "reply": reply,
-                "replyState": timeline.reply_state(reply),
-                "timeline": timeline.build(
-                    filed_at=ticket.filed_at, message=ticket.text, run=data["run"], calls=data["calls"],
-                    assessments=data["assessments"], requests=data["requests"], reply_at=data["reply_at"],
-                    reply_text=reply, scripted=backend["scripted"], events=data["events"],
-                    reply_kind=data["reply_kind"]),
-            })
-        return out
+    async def console_state(request: Request):
+        """The console's data for this session's tickets, newest first."""
+        session = current(request)
+        if session is None:
+            return error(401, "signin")
+        try:
+            people = await run_in_threadpool(database.customers)
+            ids = [t.id for t in session.tickets]
+            texts = await run_in_threadpool(database.replies, session.customer, ids)
+            audit = await run_in_threadpool(database.audit, ids)
+            paused = await run_in_threadpool(database.kill_switch_on)
+        except psycopg.Error:
+            return error(503, "database")
+        views = [console.view(
+            ticket_id=t.id, filed_at=t.filed_at, body=t.body or t.text, attack=attacks.BY_ID.get(t.attack or ""),
+            data=audit[t.id], reply=texts.get(t.id), scripted=backend["scripted"])
+            for t in reversed(session.tickets)]
+        return JSONResponse({
+            "customer": person(people, session.customer), "csrf": session.csrf, "backend": backend,
+            "summary": console.summary(views, paused), "armed": session.armed, "tickets": views,
+            "attacks": [{"id": a.id, "label": a.label, "asi": list(a.asi), "customer": a.customer}
+                        for a in attacks.ATTACKS],
+        })
+
+    async def arm(request: Request):
+        if not same_origin(request):
+            return error(403, "origin")
+        session = current(request)
+        if session is None:
+            return error(401, "signin")
+        if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
+            return error(403, "csrf")
+        try:
+            data = await read_json(request)
+        except BadBody as bad:
+            return bad.response
+        choice = data.get("attack")
+        if choice is not None and (not isinstance(choice, str) or choice not in attacks.BY_ID):
+            return error(400, "bad_request")
+        session.armed = choice
+        return JSONResponse({"armed": session.armed})
 
     async def signin(request: Request):
         if not same_origin(request):
@@ -245,10 +297,15 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
             answered = await run_in_threadpool(database.replies, session.customer, waiting)
             if len(waiting) - len(answered) >= MAX_WAITING:
                 return error(429, "busy")
+            armed = attacks.BY_ID.get(session.armed or "")
+            body = attacks.filed_body(text, armed)
+            if len(body) > MAX_TEXT:
+                return error(400, "length")
             if not sessions.allow_message():
                 return error(429, "rate")
-            ticket_id = await run_in_threadpool(database.open_ticket, session.customer, text)
-            session.tickets.append(Ticket(ticket_id, text, timeline.now_iso()))
+            ticket_id = await run_in_threadpool(database.open_ticket, session.customer, body)
+            session.tickets.append(Ticket(ticket_id, text, timeline.now_iso(), body, armed.id if armed else None))
+            session.armed = None  # one shot: only the message that was just filed carries the plan
         except psycopg.Error:
             return error(503, "database")
         finally:
@@ -272,9 +329,12 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
     return Starlette(
         routes=[
             Route("/", asset, name="index"),
-            Route("/static/{name}", asset),
+            Route("/security", asset, name="security"),
+            Route("/static/{name:path}", asset),
             Route("/favicon.ico", nothing),
             Route("/api/state", state),
+            Route("/api/console", console_state),
+            Route("/api/arm", arm, methods=["POST"]),
             Route("/api/signin", signin, methods=["POST"]),
             Route("/api/signout", signout, methods=["POST"]),
             Route("/api/message", message, methods=["POST"]),

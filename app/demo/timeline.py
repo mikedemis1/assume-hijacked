@@ -18,8 +18,8 @@ Two things need care, and this module says where each line comes from instead of
   (replies.kind: agent, safe or template). Without a kind the module recognises the guard's fixed
   text instead.
 
-No ticket text goes into a line. Tool and argument names that come from the message are shown only
-when they look like identifiers.
+No ticket text goes into a line. A tool or argument name is printed only when it is in the known
+vocabulary (app/demo/vocabulary.py); any other is a fixed phrase (ruling R14).
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.agent.core import ALLOWED_ARGS
+from app.demo import vocabulary
 from app.agent.guard import SAFE_REPLY
 from app.agent.llm import Reply, ToolCall
 from app.agent.llm import parse_plan
@@ -112,12 +113,10 @@ def now_iso() -> str:
     return _iso(datetime.now(timezone.utc))
 
 
-def _shown(name: object) -> str:
-    return name if isinstance(name, str) and SAFE_NAME.fullmatch(name) else "<invalid>"
-
-
-def _names(names: Iterable[object]) -> str:
-    return ", ".join(_shown(n) for n in names)
+def _drop_text(names: Iterable[object]) -> str:
+    """'argument customer_id' / 'arguments a, b'; names outside the vocabulary become one fixed phrase."""
+    shown = vocabulary.args(names).split(", ")
+    return f"{_plural(len(shown), 'argument', 'arguments')} {', '.join(shown)}" if vocabulary.UNKNOWN_ARG not in shown         else ", ".join(shown)
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -125,7 +124,7 @@ def _plural(count: int, one: str, many: str) -> str:
 
 
 def _reason(code: str) -> str:
-    return REASONS.get(code, code.replace("_", " ") if SAFE_NAME.fullmatch(code or "") else "refused")
+    return REASONS.get(code, "refused")
 
 
 def reply_state(text: str | None) -> dict[str, object]:
@@ -162,7 +161,7 @@ def _event_lines(events: list[dict]) -> tuple[dict[str, list[tuple[list[str], da
         if event["kind"] == "dropped_argument":
             dropped.setdefault(event["tool"], []).append((sorted(event["arg_names"]), event["reported_at"]))
         elif event["kind"] == "unknown_tool":
-            lines.append(Line(_iso(event["reported_at"]), "bad", _shown(event["tool"]),
+            lines.append(Line(_iso(event["reported_at"]), "bad", vocabulary.tool(event["tool"]),
                               "refused: the agent has no such tool", f"by the agent ({FROM_EVENTS})"))
     return dropped, lines
 
@@ -204,8 +203,8 @@ def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall]
         lines.append(_gateway_line(call, by_agent, verdict_of(call), source))
     for tool, leftovers in reported.items():  # reported drops with no recorded call to hang them on
         for names, reported_at in leftovers:
-            lines.append(Line(_iso(reported_at), "warn", _shown(tool),
-                              f"{_plural(len(names), 'argument', 'arguments')} {_names(names)} dropped by the agent",
+            lines.append(Line(_iso(reported_at), "warn", vocabulary.tool(tool),
+                              f"{_drop_text(names)} dropped by the agent",
                               f"no call reached the gateway ({FROM_EVENTS})"))
     lines += extra
     if finished:  # until the reply is stored the agent may simply not have got that far
@@ -217,9 +216,9 @@ def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall]
 def _agent_refusal(step: ToolCall, before) -> Line:
     at = _iso(before) if before is not None else ""
     if step.name in ALLOWED_ARGS:
-        return Line(at, "neutral", _shown(step.name), "asked for, but the run ended before the call",
+        return Line(at, "neutral", vocabulary.tool(step.name), "asked for, but the run ended before the call",
                     FROM_PLAN)
-    return Line(at, "bad", _shown(step.name), "refused: the agent has no such tool", f"by the agent ({FROM_PLAN})")
+    return Line(at, "bad", vocabulary.tool(step.name), "refused: the agent has no such tool", f"by the agent ({FROM_PLAN})")
 
 
 def _gateway_line(call: dict, by_agent: list[str], verdict: str, source: str = FROM_PLAN) -> Line:
@@ -228,8 +227,7 @@ def _gateway_line(call: dict, by_agent: list[str], verdict: str, source: str = F
     comparing the message with the record."""
     at = _iso(call["created_at"])
     tool, outcome, reason = call["tool"], call["outcome"], call["reason"]
-    if tool == "unknown":
-        tool = "unknown tool"
+    tool = vocabulary.tool(tool)
     by_gateway = list(call["dropped_args"])
     dropped = by_agent + by_gateway
     facts = []
@@ -239,7 +237,7 @@ def _gateway_line(call: dict, by_agent: list[str], verdict: str, source: str = F
         facts.append("dropped by the gateway")
     if verdict:
         facts.append(f"risk engine: {verdict}")
-    drop_text = f"{_plural(len(dropped), 'argument', 'arguments')} {_names(dropped)} dropped"
+    drop_text = f"{_drop_text(dropped)} dropped"
     if outcome == "ok":
         if dropped:
             return Line(at, "warn", tool, drop_text, " · ".join([*facts, "call allowed"]))
@@ -263,7 +261,7 @@ def _request_lines(request: dict, filed_by_call_at=None) -> list[Line]:
         tone, meaning = TIERS.get(risk["tier"], ("warn", "unknown tier"))
         rules = ", ".join(RISK_RULES.get(r, r.replace("_", " ")) for r in risk["reasons"])
         lines.append(Line(_iso(risk["created_at"]), tone, "risk engine",
-                          f"tier {_shown(risk['tier'])}: {meaning}", rules))
+                          f"tier {risk['tier'] if risk['tier'] in TIERS else 'unknown'}: {meaning}", rules))
     status = request["status"]
     if status == "pending":
         if risk is not None and request["approvals"]:
@@ -274,7 +272,7 @@ def _request_lines(request: dict, filed_by_call_at=None) -> list[Line]:
         else:
             lines.append(Line("", "neutral", f"{kind} request #{number}", "waiting for the risk engine", ""))
     else:
-        tone, words = REQUEST_STATUS.get(status, ("neutral", status.replace("_", " ") if SAFE_NAME.fullmatch(status) else "closed"))
+        tone, words = REQUEST_STATUS.get(status, ("neutral", "closed"))
         why = request["decision_reason"] or ""
         done = request["credit_paid"] if request["kind"] == "credit" else request["order_written"]
         if status == "executed" and done:
@@ -282,7 +280,7 @@ def _request_lines(request: dict, filed_by_call_at=None) -> list[Line]:
         lines.append(Line("", tone, f"{kind} request #{number}", words, why if SAFE_TEXT.fullmatch(why) else ""))
     for error in request["errors"]:
         lines.append(Line(_iso(error["created_at"]), "bad", "database",
-                          f"refused the write: {_shown(error['error'])}", "a database rule stopped it"))
+                          f"refused the write: {error['error'] if SAFE_NAME.fullmatch(error['error'] or '') else 'an error'}", "a database rule stopped it"))
     return lines
 
 

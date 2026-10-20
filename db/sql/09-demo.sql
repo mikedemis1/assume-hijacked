@@ -95,12 +95,14 @@ GRANT SELECT (id, ticket_id, kind, tool, arg_names, reported_at) ON agent_events
 GRANT SELECT (request_id, created_at) ON credits TO demo_ops;
 GRANT SELECT (request_id, created_at) ON disconnection_orders TO demo_ops;
 GRANT SELECT (request_id, approver_role, created_at) ON approvals TO demo_ops;
+-- The security console shows whether the kill switch is on: the one flag, not the reason.
+GRANT SELECT (paused) ON agent_control TO demo_ops;
 DO $$
 DECLARE
     t text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['agent_runs', 'tool_calls', 'call_assessments', 'action_requests',
-                            'risk_assessments', 'replies', 'agent_events']
+                            'risk_assessments', 'replies', 'agent_events', 'agent_control']
     LOOP
         EXECUTE format('CREATE POLICY demo_ops_read ON %I FOR SELECT TO demo_ops USING (true)', t);
     END LOOP;
