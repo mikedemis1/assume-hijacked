@@ -134,6 +134,16 @@ def test_the_attack_ticket_in_memory_leaks_nothing_and_is_logged(settings, as_ro
     assert "customer_id" in kinds["dropped_argument"]["args"]
 
 
+def test_the_attack_ticket_leaves_an_agent_event_with_names_only(settings, as_role, admin):
+    only_ticket(admin, 4)                                            # ticket 4 sets customer_id, the agent drops it
+    stack = Stack(settings, as_role)
+    assert stack.run() == 0
+    rows = admin.execute("SELECT ticket_id, kind, tool, arg_names, source FROM agent_events").fetchall()
+    assert rows == [{"ticket_id": 4, "kind": "dropped_argument", "tool": "lookup_account",
+                     "arg_names": ["customer_id"], "source": "agent"}]
+    assert "1002" not in json.dumps(admin.execute("SELECT * FROM agent_events").fetchall(), default=str)
+
+
 @pytest.fixture(autouse=True)
 def nothing_left_over(fresh_db, admin):
     """The claim tests name ticket numbers, so they start from no runs, replies or leases at all."""

@@ -19,9 +19,16 @@ POST /claim
     the lease is bound to that pod.
 
 POST /reply
-    Request   header `X-Lease: <the lease>` (exactly one); body JSON {"text": "<reply>"}, at most
-              16 KiB, text 1 to 4000 characters. Nothing else in the body is read. In Kubernetes also
-              the Authorization header as above.
+    Request   header `X-Lease: <the lease>` (exactly one); body JSON {"text": "<reply>"} and optionally
+              {"events": [{"kind", "tool", "args": [names]}]}, at most 64 KiB, text 1 to 4000
+              characters. Nothing else in the body is read. In Kubernetes also the Authorization
+              header as above.
+              The events are what the agent dropped or refused before the gateway (app/dispatcher/
+              events.py): names only, at most 32 events of 16 names, identifiers only. They are
+              stored in agent_events for the ticket of the lease, never for one named in the body. A
+              list that breaks any rule is rejected whole (reply stored all the same, a security
+              event, dispatcher_agent_events_rejected_total). Reported by the agent: a best-effort
+              audit, the gateway's own records stay the authority.
     200       {"stored": true}    the reply guard was run again here, the notices added, the reply
                                   stored, the run marked replied and the lease revoked. The answer does
                                   not say whether the agent's text was replaced.
@@ -64,6 +71,7 @@ from app import config, db
 from app.agent import templates
 from app.common.events import security_event
 from app.common.ops import Heartbeat, Metrics, start_ops_server
+from app.dispatcher import events as agent_events
 from app.dispatcher import k8s, replies
 from app.dispatcher.store import DispatcherDb
 from app.gateway.auth import CallerAuth, CallerError, CallerIdentity
@@ -81,8 +89,9 @@ AUDIENCE = "dispatcher"
 CALLER_SCOPE_KEY = "ah.caller"  # not a header name, so a client cannot set it
 LEASE_HEADER = "x-lease"
 LEASE_FORMAT = re.compile(r"[0-9a-f]{64}")
-MAX_REPLY_BODY_BYTES = 16 * 1024
+MAX_REPLY_BODY_BYTES = 64 * 1024  # 4000 characters of text and 32 events of 16 names
 UNAUTHORIZED = {"error": "unauthorized"}
+NO_EVENTS = object()  # `events` was not in the body (a null is something sent, and is rejected)
 
 CLAIM_OUTCOMES = ("issued", "none")
 REPLY_OUTCOMES = ("stored", "lease", "duplicate", "bad_request", "too_large")
@@ -109,6 +118,9 @@ def init_metrics(metrics: Metrics) -> None:
     for outcome in JOB_OUTCOMES:
         metrics.inc("dispatcher_jobs_total", {"outcome": outcome}, by=0)
     metrics.inc("dispatcher_errors_total", {"stage": "database"}, by=0)
+    for kind in agent_events.KINDS:
+        metrics.inc("dispatcher_agent_events_total", {"kind": kind}, by=0)
+    metrics.inc("dispatcher_agent_events_rejected_total", by=0)
 
 
 @dataclass(frozen=True)
@@ -143,19 +155,28 @@ class Dispatcher:
 
     # --- POST /reply ---
 
-    def reply(self, caller: CallerIdentity, lease: str, text: str) -> str:
-        """'stored', 'lease' (refused: the lease is not live for this caller) or 'duplicate'."""
-        outcome = self._reply(caller, lease, text)
+    def reply(self, caller: CallerIdentity, lease: str, text: str, events: object = NO_EVENTS) -> str:
+        """'stored', 'lease' (refused: the lease is not live for this caller) or 'duplicate'.
+        `events` is the agent's list as it came in (NO_EVENTS: none sent); it is checked here."""
+        outcome = self._reply(caller, lease, text, events)
         self._metrics.inc("dispatcher_replies_total", {"outcome": outcome})
         return outcome
 
-    def _reply(self, caller: CallerIdentity, lease: str, text: str) -> str:
+    def _reply(self, caller: CallerIdentity, lease: str, text: str, events: object) -> str:
         if not LEASE_FORMAT.fullmatch(lease):
             return "lease"
-        outcome, ticket_id, blocked, kind = self._store.finish_reply(lease, caller.pod, text)
+        listed = None if events is NO_EVENTS else agent_events.checked(events)
+        outcome, ticket_id, blocked, kind, written = self._store.finish_reply(lease, caller.pod, text, listed or None)
         if outcome == "lease":
             security_event("reply_refused", reason="lease")
             return "lease"
+        if events is not NO_EVENTS and (listed is None or (listed and written is None)):
+            self._metrics.inc("dispatcher_agent_events_rejected_total")
+            security_event("agent_events_rejected", ticket_id=ticket_id)
+        elif written:
+            for event in listed:
+                self._metrics.inc("dispatcher_agent_events_total", {"kind": event["kind"]})
+            security_event("agent_events_stored", ticket_id=ticket_id, count=written)
         if kind == "template":
             self._metrics.inc("dispatcher_replies_templated_total", {"reason": "effect_ticket"})
             security_event("reply_templated", ticket_id=ticket_id, reason="effect_ticket")
@@ -277,7 +298,7 @@ def build_app(dispatcher: Dispatcher, auth: CallerAuth, metrics: Metrics | None 
         if text is None:
             metrics.inc("dispatcher_replies_total", {"outcome": "bad_request"})
             return _error(400, "bad_request")
-        outcome = await guarded(dispatcher.reply, caller, lease, text)
+        outcome = await guarded(dispatcher.reply, caller, lease, text, _events_of(body))
         if outcome is FAILED:
             return _error(503, "unavailable")
         if outcome == "stored":
@@ -299,6 +320,12 @@ def _text_of(body: bytes) -> str | None:
     if not isinstance(text, str) or not 1 <= len(text) <= replies.MAX_TEXT_CHARS:
         return None
     return text
+
+
+def _events_of(body: bytes) -> object:
+    """The `events` member as sent (checked later), or NO_EVENTS. _text_of has already shown that the
+    body is a JSON object."""
+    return json.loads(body).get("events", NO_EVENTS)
 
 
 # --- the process ---

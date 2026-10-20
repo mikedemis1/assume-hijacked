@@ -12,6 +12,8 @@ The checks, in this order. The first one that says no ends the call, and the age
                                                            risk_timeout
     7. the tool still has the description that was reviewed  descriptor_changed
     8. the tool gets a token that works once, for it alone, and answers
+                                                           (a second effect the database refuses:
+                                                           effect_already_requested, a tool pod misbehaving)
 
 Every call that reaches step 2 leaves one row in tool_calls (names, categories and sha256(lease);
 db/sql/05-lease.sql) and moves two counters (gateway_calls_total, gateway_denials_total). Neither
@@ -59,7 +61,8 @@ OUTCOMES = ("ok", "tool_error", "denied", "unavailable", "risk_timeout")
 RISK_REASONS = ("paused", "lease", "tool_not_in_lease", "repeated_denials", "call_budget", "one_effect_per_ticket")
 DENIAL_REASONS = (
     "lease", "pod_mismatch", "paused", "unknown_tool", "descriptor_changed", "db_unavailable",
-    "risk_unavailable", "risk_timeout", "risk_other", *(r for r in RISK_REASONS if r not in ("lease", "paused")),
+    "risk_unavailable", "risk_timeout", "risk_other", "effect_already_requested",
+    *(r for r in RISK_REASONS if r not in ("lease", "paused")),
 )
 ERROR_STAGES = ("db", "record", "heartbeat")
 UNKNOWN_TOOL = "unknown"  # the metric label for any tool name that is not one of the five
@@ -223,6 +226,13 @@ class ToolClient:
         return reply
 
 
+def effect_already_requested(reply: ToolReply) -> bool:
+    """The database refused a second effect request on one lease. The engine allows one effect per
+    lease, so the tool was only asked again if a tool pod called its function itself."""
+    found = _TOOL_ERROR.match(reply.text)
+    return bool(found and found.group("effect"))
+
+
 def reply_category(reply: ToolReply) -> str:
     """The category of a tool's error answer. Decided from the shape of the text and then thrown
     away: the text itself can repeat the arguments and never reaches the agent."""
@@ -383,6 +393,10 @@ class Gateway:
             return await self._finish(
                 record, "unavailable", "tool_unreachable", Answer(True, toolerrors.error_text(toolerrors.UNAVAILABLE))
             )
+        if reply.is_error and effect_already_requested(reply):
+            # The one signal of a compromised tool pod: counted as a denial of its own, and the agent
+            # is told the same as for any wall ("denied").
+            return await self._refuse(record, "effect_already_requested", toolerrors.DENIED, outcome="tool_error")
         if reply.is_error:
             category = reply_category(reply)
             security_event("gateway_tool_error", tool=label, category=category)

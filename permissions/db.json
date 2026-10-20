@@ -30,6 +30,12 @@
           "action_requests_id_seq": [
             "USAGE"
           ],
+          "agent_events": [
+            "INSERT (arg_names, kind, lease_hash, ticket_id, tool)"
+          ],
+          "agent_events_id_seq": [
+            "USAGE"
+          ],
           "call_assessments": [
             "SELECT (lease_hash, tool)"
           ],
@@ -85,7 +91,8 @@
           "FUNCTION api_request_moveout(text, date) SECURITY DEFINER",
           "FUNCTION api_set_temp_protection(text) SECURITY DEFINER",
           "FUNCTION lease_ticket_for_tool(text, text)",
-          "FUNCTION finish_reply_facts(text, text) SECURITY DEFINER"
+          "FUNCTION finish_reply_facts(text, text) SECURITY DEFINER",
+          "FUNCTION record_agent_events(text, text, jsonb) SECURITY DEFINER"
         ],
         "default_privileges": [
           "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
@@ -291,6 +298,29 @@
         ]
       },
       "agent_control": {
+        "enabled": true,
+        "forced": true,
+        "policies": [
+          {
+            "name": "trusted_all",
+            "command": "ALL",
+            "roles": [
+              "api_owner",
+              "approver",
+              "dispatcher",
+              "executor",
+              "flags_writer",
+              "gateway",
+              "lease_owner",
+              "risk_engine",
+              "risk_owner"
+            ],
+            "using": "true",
+            "check": "true"
+          }
+        ]
+      },
+      "agent_events": {
         "enabled": true,
         "forced": true,
         "policies": [

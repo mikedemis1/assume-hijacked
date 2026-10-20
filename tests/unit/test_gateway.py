@@ -465,3 +465,29 @@ def test_m1_effect_already_requested_reaches_the_agent_as_denied():
 
     reply = ToolReply(True, "Error executing tool issue_bill_credit: effect already requested", None)
     assert reply_category(reply) == toolerrors.DENIED
+
+
+def test_f4_a_second_effect_the_database_refuses_is_counted_as_its_own_denial(settings, admin, as_role):
+    # The engine is a stand-in that allows everything, so the second request reaches the tool and the
+    # database says no. That only happens when a tool pod calls its function again on a lease that
+    # already filed a request: the one signal of a compromised tool pod.
+    lease = open_lease(admin, 1, tools=("issue_bill_credit", "request_disconnection"))
+    built = build(settings, as_role)
+    first = built.call("issue_bill_credit", {"amount_eur": 5, "reason": "outage", "evidence_ref": 1}, lease)
+    assert first.is_error is False
+    second = built.call("request_disconnection", {"move_out_date": tomorrow()}, lease)
+    assert (second.is_error, second.text) == (True, "ERROR: denied")           # the agent is told the same as before
+    assert metric(built, "gateway_denials_total", tool="request_disconnection", reason="effect_already_requested") == 1
+    assert metric(built, "gateway_calls_total", tool="request_disconnection", outcome="tool_error") == 1
+    assert [(r["tool"], r["outcome"], r["reason"]) for r in calls(admin)][-1] == (
+        "request_disconnection", "tool_error", "effect_already_requested")
+    # A tool error of another kind is not counted as this one.
+    fresh = open_lease(admin, 1, tools=("request_disconnection",))
+    other = built.call("request_disconnection", {"move_out_date": "2001-01-01"}, fresh)
+    assert other.is_error is True
+    assert metric(built, "gateway_denials_total", tool="request_disconnection", reason="effect_already_requested") == 1
+
+
+def test_f4_the_new_denial_reason_is_a_series_from_the_start(settings, as_role):
+    built = build(settings, as_role)
+    assert metric(built, "gateway_denials_total", tool="issue_bill_credit", reason="effect_already_requested") == 0

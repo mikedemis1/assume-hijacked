@@ -19,7 +19,7 @@
 -- And tool_calls (05-lease.sql), the gateway's record of every call: a tool must not be able to
 -- read what was refused or write a row that makes a refusal look like an answer.
 -- And the dispatcher's agent_runs and replies (05-lease.sql): a tool must not be able to write the
--- reply a customer gets, or mark a run replied.
+-- reply a customer gets, or mark a run replied. And agent_events, the agent's report of its own drops.
 DO $$
 DECLARE
     t text;
@@ -27,7 +27,7 @@ BEGIN
     FOREACH t IN ARRAY ARRAY['tickets', 'customers', 'accounts', 'supply_points', 'action_requests', 'leases',
                             'risk_assessments', 'call_assessments', 'agent_control', 'heartbeats',
                             'flags',
-                            'tool_calls', 'agent_runs', 'replies']
+                            'tool_calls', 'agent_runs', 'replies', 'agent_events']
     LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);

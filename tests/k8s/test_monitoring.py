@@ -192,7 +192,8 @@ def test_there_are_exactly_two_alerts_and_each_has_a_promtool_test():
 
 def test_the_walls_board_has_the_panels_the_design_names():
     titles = [p["title"] for p in dashboard()["panels"]]
-    for needed in ("Kill switch", "Approvals waiting", "Risk tiers", "Tool calls by outcome", "Packets dropped"):
+    for needed in ("Kill switch", "Approvals waiting", "Risk tiers", "Tool calls by outcome", "Packets dropped",
+                   "Agent-side drops by kind", "Second effect on one lease"):
         assert any(needed in t for t in titles), needed
     ids = [p["id"] for p in dashboard()["panels"]]
     assert len(ids) == len(set(ids))

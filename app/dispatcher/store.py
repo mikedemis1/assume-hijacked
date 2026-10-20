@@ -12,6 +12,7 @@ connection fails the call in hand and the next call opens a new one.
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -107,12 +108,19 @@ class DispatcherDb:
 
         return self._use(work)
 
-    def finish_reply(self, lease: str, pod: str | None, text: str):
-        """Close the lease, read final facts, guard and store the reply in one transaction."""
+    def finish_reply(self, lease: str, pod: str | None, text: str, events: list[dict] | None = None):
+        """Close the lease, read final facts, guard and store the reply in one transaction.
+
+        `events` is the agent's list of drops, already checked by app/dispatcher/events.py. It is
+        written first, while the lease is still live, in a savepoint of its own: should the database
+        refuse it, the reply is still stored. The last item of the answer says what happened to the
+        events: how many were stored, or None (none sent, the lease is not live, or the database
+        refused the list)."""
         def work(conn):
+            written = self._write_events(conn, lease, pod, events) if events else None
             facts = conn.execute("SELECT * FROM finish_reply_facts(%s, %s)", (lease, pod)).fetchone()
             if facts is None:
-                return "lease", None, None, None
+                return "lease", None, None, None, None
             done = replies.finish(
                 text, facts["account_text"], facts["credit_asked"], facts["moveout_submitted"],
                 facts["effect_attempted"], tuple(facts["request_ids"]),
@@ -125,8 +133,18 @@ class DispatcherDb:
             if stored:
                 conn.execute("UPDATE agent_runs SET status = 'replied' WHERE ticket_id = %s AND status = 'claimed'",
                              (facts["ticket_id"],))
-            return "stored" if stored else "duplicate", facts["ticket_id"], done.blocked, done.kind
+            return "stored" if stored else "duplicate", facts["ticket_id"], done.blocked, done.kind, written
         return self._use(work)
+
+    @staticmethod
+    def _write_events(conn, lease: str, pod: str | None, events: list[dict]) -> int | None:
+        try:
+            with conn.transaction():
+                return conn.execute(
+                    "SELECT record_agent_events(%s, %s, %s::jsonb) AS n", (lease, pod, json.dumps(events))
+                ).fetchone()["n"]
+        except psycopg.errors.RaiseException:
+            return None
 
     # --- Jobs (Kubernetes) ---
 

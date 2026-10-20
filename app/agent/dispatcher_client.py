@@ -1,8 +1,8 @@
 """The agent's side of the dispatcher (app/dispatcher/main.py): ask for a ticket, send the reply.
 
 POST /claim answers {"ticket_id", "lease"}, or 204 when there is nothing for this caller. POST /reply
-takes the lease in the header `X-Lease` and the text in the body, and nothing else: the dispatcher
-takes the ticket from the lease. In Kubernetes both calls carry the agent's projected service account
+takes the lease in the header `X-Lease` and the text in the body, and with it the names of what the
+agent dropped (never a value): the dispatcher takes the ticket from the lease. In Kubernetes both calls carry the agent's projected service account
 token for the audience `dispatcher`.
 
 A failure is a `DispatcherError` with a category (unauthorized, unavailable, bad_answer, lease,
@@ -63,9 +63,14 @@ class DispatcherClient:
             raise DispatcherError("bad_answer")
         return Claim(ticket, lease)
 
-    def reply(self, lease: str, text: str) -> None:
-        """Send the reply. Returns when the dispatcher has stored it; raises DispatcherError otherwise."""
-        response = self._call("/reply", lease, {"text": text})
+    def reply(self, lease: str, text: str, events: list[dict] | None = None) -> None:
+        """Send the reply, and with it the events (names of what the agent dropped, see
+        app/agent/core.py event_list), if there are any. Returns when the dispatcher has stored the
+        reply; raises DispatcherError otherwise."""
+        body: dict = {"text": text}
+        if events:
+            body["events"] = events
+        response = self._call("/reply", lease, body)
         if response.status_code != 200:
             raise DispatcherError(_category(response.status_code))
         try:

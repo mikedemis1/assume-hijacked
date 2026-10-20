@@ -1,6 +1,6 @@
 {
   "component": "dispatcher",
-  "description": "Hands a ticket and a lease to an agent, takes the agent's reply, runs the reply guard again, stores the reply and ends the lease. It also starts the agent's Job, one per ticket, from a fixed template. Its database role reads only ticket id and status, keeps the run records, adds replies, opens and revokes leases and closes a lease with finish_reply_facts; it cannot read a ticket's text or any customer data.",
+  "description": "Hands a ticket and a lease to an agent, takes the agent's reply, runs the reply guard again, stores the reply and ends the lease. It also starts the agent's Job, one per ticket, from a fixed template. Its database role reads only ticket id and status, keeps the run records, adds replies, opens and revokes leases, closes a lease with finish_reply_facts and files the agent's report of its own drops with record_agent_events (the table itself it cannot touch); it cannot read a ticket's text or any customer data.",
   "db": {
     "role": "dispatcher",
     "login": true,
@@ -32,6 +32,7 @@
       "finish_reply_facts(text, text)",
       "lease_scope(text)",
       "open_lease(integer, text[], text)",
+      "record_agent_events(text, text, jsonb)",
       "revoke_lease(text)"
     ]
   },

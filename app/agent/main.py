@@ -34,7 +34,7 @@ from app.common.calls import auth_headers
 
 
 def run(dispatcher, llm_for: Callable[[str], object], tools) -> int:
-    """One run. `dispatcher` has claim() and reply(lease, text); `llm_for(lease)` builds the model
+    """One run. `dispatcher` has claim() and reply(lease, text, events); `llm_for(lease)` builds the model
     client for the lease just handed out; `tools` has call(name, args)."""
     try:
         claim = dispatcher.claim()
@@ -47,7 +47,7 @@ def run(dispatcher, llm_for: Callable[[str], object], tools) -> int:
     agent = Agent(llm_for(claim.lease), tools)
     text = agent.handle_ticket(claim.ticket_id, claim.lease)
     try:
-        dispatcher.reply(claim.lease, text)
+        dispatcher.reply(claim.lease, text, agent.events)
     except DispatcherError as err:
         security_event("reply_failed", ticket_id=claim.ticket_id, category=err.category)
         return 1

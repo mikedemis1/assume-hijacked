@@ -89,7 +89,7 @@ TEST_STAFF = (
 )
 ALL_TABLES = (
     "events, disconnection_orders, credits, approvals, staff, risk_assessments, "
-    "call_assessments, tool_calls, replies, agent_runs, agent_control, heartbeats, action_requests, "
+    "call_assessments, tool_calls, agent_events, replies, agent_runs, agent_control, heartbeats, action_requests, "
     "leases, flags, charges, tickets, "
     "accounts, supply_points, customers"
 )

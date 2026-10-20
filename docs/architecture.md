@@ -57,6 +57,8 @@ flowchart LR
 
 The tools are five processes on purpose. A hijacked tool then holds one database role and one function, and the per-call token names the tool it is for.
 
+The agent also reports, with its reply, which arguments it dropped and which unknown tools it refused: names only, never a value. The dispatcher validates the list (identifier names, at most 32 events of 16 names, anything else rejects the whole list), and writes it to the append-only `agent_events` table for the ticket of the lease it resolved itself. This is reported by the agent and best effort: a compromised agent pod could lie or leave events out, and the gateway's own records (`tool_calls`) remain the authority.
+
 The five: `read_ticket` returns the text of the lease's ticket. `lookup_account` returns the lease's customer only. `issue_bill_credit` files a credit request. `request_disconnection` files a move-out request. `set_temp_protection` marks a home protected and only adds.
 
 ## Namespaces and edges
@@ -94,7 +96,7 @@ One JSON file per part in `permissions/` declares its database role and grants, 
 
 | Part | Namespace | DB role | What the role may touch in the database | Receives from | Calls |
 |---|---|---|---|---|---|
-| dispatcher | ah-intake | `dispatcher` | tables: agent_runs (select/insert/update), replies (select/insert), tickets (select); runs: beat, finish_reply_facts, lease_scope, open_lease, revoke_lease | agent | db |
+| dispatcher | ah-intake | `dispatcher` | tables: agent_runs (select/insert/update), replies (select/insert), tickets (select); runs: beat, finish_reply_facts, lease_scope, open_lease, record_agent_events, revoke_lease | agent | db |
 | agent | ah-agent | `none` | nothing | - | dispatcher, llm-gateway, tool-gateway |
 | llm-gateway | ah-agent | `none` | nothing | agent | - |
 | tool-gateway | ah-gateway | `gateway` | tables: agent_control (select), tool_calls (insert); runs: beat, lease_scope | agent | db, risk-engine, tool-read-ticket, tool-lookup-account, tool-request-disconnection, tool-issue-bill-credit, tool-set-temp-protection |

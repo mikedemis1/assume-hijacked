@@ -408,3 +408,93 @@ GRANT SELECT (lease_hash, tool, outcome) ON tool_calls TO api_owner;
 ALTER FUNCTION finish_reply_facts(text, text) OWNER TO api_owner;
 REVOKE ALL ON FUNCTION finish_reply_facts(text, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION finish_reply_facts(text, text) TO dispatcher;
+
+
+-- ---------------------------------------------------------------------------------------------
+-- What the agent reports about its own drops (app/agent/core.py, app/dispatcher/main.py).
+--
+-- The agent has no database access. When it drops an argument the model may not set, or refuses an
+-- unknown tool before the gateway, it sends that to the dispatcher with its reply, as names only: the
+-- kind, the tool name and the argument names, never a value. The dispatcher checks the list again and
+-- writes it with record_agent_events for the lease it resolved itself.
+--
+-- This is "reported by the agent": a hijacked agent pod could lie or leave events out. It is a
+-- best-effort audit; the gateway's own records (tool_calls) stay the authority.
+--
+-- Append only: nobody holds a table grant (the dispatcher reaches the table only through the
+-- function), and the trigger refuses UPDATE and DELETE even from the superuser.
+CREATE TABLE agent_events (
+    id          bigserial PRIMARY KEY,
+    ticket_id   int NOT NULL REFERENCES tickets,
+    lease_hash  bytea NOT NULL,
+    kind        text NOT NULL CHECK (kind IN ('dropped_argument', 'unknown_tool')),
+    tool        text NOT NULL CHECK (tool ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$'),
+    arg_names   text[] NOT NULL CHECK (cardinality(arg_names) <= 16),
+    reported_at timestamptz NOT NULL DEFAULT now(),
+    source      text NOT NULL DEFAULT 'agent' CHECK (source = 'agent')
+);
+
+CREATE FUNCTION refuse_agent_event_change() RETURNS trigger
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+    RAISE EXCEPTION 'agent_events is append only';
+END $$;
+
+CREATE TRIGGER agent_events_append_only BEFORE UPDATE OR DELETE ON agent_events
+    FOR EACH STATEMENT EXECUTE FUNCTION refuse_agent_event_change();
+REVOKE ALL ON FUNCTION refuse_agent_event_change() FROM PUBLIC;
+
+-- p_events is a JSON array of at most 32 objects {"kind", "tool", "args"} (exactly those keys); kind
+-- is one of the two above, tool and every name in args match the identifier shape, and args has at
+-- most 16 names. Anything else raises 'agent events invalid' and nothing is written. The ticket is
+-- the live lease's, bound to p_pod, as in finish_reply_facts; for any other lease the function
+-- returns NULL and writes nothing. Returns how many events were written. Call it before
+-- finish_reply_facts, which revokes the lease.
+CREATE FUNCTION record_agent_events(p_lease text, p_pod text, p_events jsonb) RETURNS int
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+    v_hash   bytea := sha256(convert_to(p_lease, 'UTF8'));
+    v_ticket int;
+    v_event  jsonb;
+    v_name   jsonb;
+    v_shape  text := '^[A-Za-z_][A-Za-z0-9_]{0,63}$';
+BEGIN
+    IF session_user <> 'dispatcher' OR current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'lease invalid';
+    END IF;
+    IF p_events IS NULL OR jsonb_typeof(p_events) <> 'array' OR jsonb_array_length(p_events) > 32 THEN
+        RAISE EXCEPTION 'agent events invalid';
+    END IF;
+    FOR v_event IN SELECT e FROM jsonb_array_elements(p_events) AS e LOOP
+        IF jsonb_typeof(v_event) <> 'object'
+           OR (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(v_event) AS k) IS DISTINCT FROM ARRAY['args', 'kind', 'tool']
+           OR jsonb_typeof(v_event -> 'kind') <> 'string'
+           OR (v_event ->> 'kind') NOT IN ('dropped_argument', 'unknown_tool')
+           OR jsonb_typeof(v_event -> 'tool') <> 'string'
+           OR (v_event ->> 'tool') !~ v_shape
+           OR jsonb_typeof(v_event -> 'args') <> 'array'
+           OR jsonb_array_length(v_event -> 'args') > 16 THEN
+            RAISE EXCEPTION 'agent events invalid';
+        END IF;
+        FOR v_name IN SELECT n FROM jsonb_array_elements(v_event -> 'args') AS n LOOP
+            IF jsonb_typeof(v_name) <> 'string' OR (v_name #>> '{}') !~ v_shape THEN
+                RAISE EXCEPTION 'agent events invalid';
+            END IF;
+        END LOOP;
+    END LOOP;
+    SELECT l.ticket_id INTO v_ticket FROM public.leases l
+    WHERE l.token_hash = v_hash AND NOT l.revoked AND l.expires_at > clock_timestamp()
+      AND l.bound_pod IS NOT DISTINCT FROM p_pod;
+    IF v_ticket IS NULL THEN RETURN NULL; END IF;
+    INSERT INTO public.agent_events (ticket_id, lease_hash, kind, tool, arg_names)
+    SELECT v_ticket, v_hash, e ->> 'kind', e ->> 'tool',
+           ARRAY(SELECT n #>> '{}' FROM jsonb_array_elements(e -> 'args') AS n)
+    FROM jsonb_array_elements(p_events) AS e;
+    RETURN jsonb_array_length(p_events);
+END $$;
+
+GRANT INSERT (ticket_id, lease_hash, kind, tool, arg_names) ON agent_events TO api_owner;
+GRANT USAGE ON SEQUENCE agent_events_id_seq TO api_owner;
+ALTER FUNCTION record_agent_events(text, text, jsonb) OWNER TO api_owner;
+REVOKE ALL ON FUNCTION record_agent_events(text, text, jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION record_agent_events(text, text, jsonb) TO dispatcher;

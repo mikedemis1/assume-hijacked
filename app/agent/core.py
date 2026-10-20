@@ -43,10 +43,32 @@ def _names(names) -> list[str]:
     return [_name(name) for name in list(names)[:NAMES_LIMIT]]
 
 
+# What the agent reports to the dispatcher about its own drops (the dispatcher checks it again,
+# app/dispatcher/events.py, and the limits are the same). Names only, never a value. A name that is
+# not an identifier is sent as PLACEHOLDER so the list stays valid and the drop is still counted.
+REPORT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+PLACEHOLDER = "invalid_name"
+REPORT_EVENTS_LIMIT = 32
+REPORT_NAMES_LIMIT = 16
+
+
+def _report_name(value) -> str:
+    return value if isinstance(value, str) and REPORT_NAME.fullmatch(value) else PLACEHOLDER
+
+
+def event_list(drops) -> list[dict]:
+    """The events to send, from (kind, tool, argument names) tuples, within the dispatcher's limits."""
+    return [
+        {"kind": kind, "tool": _report_name(tool), "args": [_report_name(n) for n in list(names)[:REPORT_NAMES_LIMIT]]}
+        for kind, tool, names in list(drops)[:REPORT_EVENTS_LIMIT]
+    ]
+
+
 class Agent:
     def __init__(self, llm, gateway):
         self.llm = llm
         self.gateway = gateway
+        self.events: list[dict] = []  # for the dispatcher, see event_list; set by handle_ticket
 
     def handle_ticket(self, ticket_id: int, lease: str) -> str:
         """The text to send as the reply to one ticket. `lease` is the lease the dispatcher handed
@@ -56,7 +78,16 @@ class Agent:
         The text is the model's reply, the safe text when the reply guard blocks it, or the give-up
         text. It carries no notice: the dispatcher adds the credit notice and the medical question
         itself, from the gateway's record of calls (app/dispatcher/replies.py), after it has run the
-        guard again."""
+        guard again.
+
+        `events` holds, afterwards, the drops of this run to send with the reply."""
+        drops: list[tuple[str, object, list]] = []
+        try:
+            return self._run(ticket_id, lease, drops)
+        finally:
+            self.events = event_list(drops)
+
+    def _run(self, ticket_id: int, lease: str, drops: list) -> str:
         body = _ticket_body(_scrub(self.gateway.call("read_ticket", {"lease": lease}), lease))
         if body is None:
             security_event("ticket_unreadable", ticket_id=ticket_id)
@@ -80,9 +111,11 @@ class Agent:
             args, dropped = self._safe_args(action.name, action.args, lease)
             if args is None:
                 security_event("unknown_tool", ticket_id=ticket_id, name=_name(action.name))
+                drops.append(("unknown_tool", action.name, []))
                 result = f"ERROR: unknown tool {action.name}"
             else:
                 if dropped:
+                    drops.append(("dropped_argument", action.name, dropped))
                     security_event(
                         "dropped_argument", ticket_id=ticket_id, tool=action.name, args=_names(dropped)
                     )
