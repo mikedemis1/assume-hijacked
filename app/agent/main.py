@@ -10,7 +10,7 @@
 
 GATEWAY_URL is the tool gateway's MCP endpoint, LLM_GATEWAY_URL the LLM gateway, DISPATCHER_URL the
 dispatcher. Those are the agent's three edges and the only addresses it knows. The agent holds no
-database password, no signing key and no model key; in Kubernetes it proves who it is to each of the
+database password, no signing key and no model key; it proves who it is to each of the
 three with its own projected service account token for that peer's audience (CALLER_AUTH=k8s).
 
 Exit code 0: the reply was stored, or there was nothing to claim. 1: the claim or the reply failed

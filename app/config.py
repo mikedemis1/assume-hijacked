@@ -23,7 +23,7 @@ class Settings:
     dso_url: str
     sms_url: str
     register_url: str
-    caller_auth: str  # compose or k8s: how a call says who is calling (app/common/calls.py)
+    caller_auth: str  # k8s, the only mode: how a call says who is calling (app/common/calls.py)
 
 
 def load() -> Settings:

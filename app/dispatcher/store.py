@@ -74,28 +74,6 @@ class DispatcherDb:
 
     # --- claim ---
 
-    def claim_next_open_ticket(self) -> tuple[int, str] | None:
-        """Compose: the lowest open ticket without a run gets one, and a lease. Returns
-        (ticket id, lease) or None. Two claims at once cannot get the same ticket: the run's
-        ticket_id is unique, so the second insert finds the row taken and moves on."""
-
-        def work(conn):
-            for row in conn.execute(
-                "SELECT t.id FROM tickets t WHERE t.status = 'open' "
-                "AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.ticket_id = t.id) ORDER BY t.id LIMIT %s",
-                (CANDIDATES,),
-            ).fetchall():
-                taken = conn.execute(
-                    "INSERT INTO agent_runs (ticket_id, status) VALUES (%s, 'started') "
-                    "ON CONFLICT (ticket_id) DO NOTHING RETURNING id",
-                    (row["id"],),
-                ).fetchone()
-                if taken is not None:
-                    return row["id"], self._lease_for_run(conn, taken["id"], row["id"], None)
-            return None
-
-        return self._use(work)
-
     def claim_job(self, job_name: str, pod: str) -> tuple[int, str] | None:
         """Kubernetes: the run of this Job, if it has not been claimed yet, is claimed by this pod:
         the lease is bound to the pod, which the gateway then compares with the pod that calls it.

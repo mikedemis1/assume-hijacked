@@ -31,7 +31,7 @@ class OutsideCalls:
         self,
         dso_url: str,
         sms_url: str,
-        caller_auth: str = "compose",
+        caller_auth: str = "k8s",
         timeout_s: float = TIMEOUT_S,
         token_dir: Path | str = calls.TOKEN_DIR,
         post: Callable[..., int] = calls.post_json,

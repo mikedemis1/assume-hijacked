@@ -6,8 +6,8 @@ SMS provider. Each records the calls it gets in memory (GET /calls) and accepts 
   dso         executor        POST /orders     a disconnection order
   sms         executor        POST /messages   an occupier notice
 
-With CALLER_AUTH=compose the network is the wall (one internal edge network per caller). With CALLER_AUTH=k8s every request carries the caller's projected
-service account token, audience fake-<name>, checked with a TokenReview. Here the TokenReview is an
+A fake can also run in a token-less mode on loopback (tests only; the callers themselves have only the
+token, app/common/calls.py). In the stack every request carries the caller's projected service account token, audience fake-<name>, checked with a TokenReview. Here the TokenReview is an
 injected verifier, so no cluster is needed.
 """
 
@@ -250,7 +250,7 @@ def test_every_fake_serves_ops(monkeypatch):
     # The chart probes /healthz on 9000 for every pod, fakes included.
     from app import fakes
 
-    monkeypatch.setenv("CALLER_AUTH", "compose")
+    monkeypatch.delenv("CALLER_AUTH", raising=False)
     for name in FAKES:
         server, ops = fakes.run(FAKES[name], port=0, ops_port=0, block=False)
         try:
@@ -346,24 +346,25 @@ def test_token_review_never_sends_an_empty_token():
 
 # --- the caller side: which token goes with a call ---
 
-def test_caller_auth_follows_the_environment(monkeypatch):
+def test_caller_auth_is_the_token_whatever_the_environment_says(monkeypatch):
     monkeypatch.delenv("CALLER_AUTH", raising=False)
-    for app_env, mode in [("local", "compose"), ("", "compose"), ("kind", "k8s"), ("azure", "k8s")]:
+    for app_env in ("local", "", "kind", "azure"):
         monkeypatch.setenv("APP_ENV", app_env)
-        assert calls.caller_auth_mode() == mode
-    monkeypatch.setenv("APP_ENV", "kind")
-    monkeypatch.setenv("CALLER_AUTH", "compose")
-    assert calls.caller_auth_mode() == "compose"
-    monkeypatch.setenv("CALLER_AUTH", "none")
-    with pytest.raises(ValueError, match="CALLER_AUTH"):
-        calls.caller_auth_mode()
+        assert calls.caller_auth_mode() == "k8s"
+    monkeypatch.setenv("CALLER_AUTH", "k8s")
+    assert calls.caller_auth_mode() == "k8s"
+    for other in ("compose", "none"):
+        monkeypatch.setenv("CALLER_AUTH", other)
+        with pytest.raises(ValueError, match="CALLER_AUTH"):
+            calls.caller_auth_mode()
 
 
 def test_k8s_caller_sends_the_projected_token_for_the_audience(tmp_path):
     (tmp_path / "fake-dso").mkdir()
     (tmp_path / "fake-dso" / "token").write_text("projected-token\n", encoding="utf-8")
     assert calls.auth_headers("fake-dso", "k8s", token_dir=tmp_path) == {"Authorization": "Bearer projected-token"}
-    assert calls.auth_headers("fake-dso", "compose", token_dir=tmp_path) == {}
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
+        calls.auth_headers("fake-dso", "compose", token_dir=tmp_path)
     with pytest.raises(OSError):
         calls.auth_headers("fake-sms", "k8s", token_dir=tmp_path)
 

@@ -25,7 +25,7 @@ tool gateway and the dispatcher do that). So a lease alone cannot be trusted as 
 a caller that sends a new random lease with every request would get a new budget each time. Every call
 is therefore charged to four keys at once, and has to fit all of them:
     lease    LLM_TOKEN_BUDGET_PER_LEASE (default 20000)
-    pod      the same limit, Kubernetes only (a pod has one lease for its life)
+    pod      the same limit (a pod has one lease for its life)
     address  the caller's source address, 5 times the per-lease limit
     total    LLM_TOKEN_BUDGET_TOTAL (default 500000), all callers together
 Each key is a window of 15 minutes (the life of a lease) from its first spend; then it is forgotten. A
@@ -34,11 +34,10 @@ Even a provider reporting a tiny usage cannot reduce that charge. A flood of new
 one address therefore stops after at most a thousand keys, leaving room for other addresses. The table
 has a hard size limit as well and refuses a key it does not know when it is full.
 
-Who may call. Compose: the connection's source address must be inside CALLER_SUBNET, the subnet
-pinned on the agent's edge network (the same check as the tool gateway's and the dispatcher's).
-Kubernetes: the projected token is checked with a TokenReview for the audience `llm-gateway`; it must
-belong to the service account ah-agent/agent and name a pod. Anything else, or any failure of the
-check, is a 401 before the request is read.
+Who may call. The projected token is checked with a TokenReview for the audience `llm-gateway`; it
+must belong to the service account ah-agent/agent and name a pod (the same check as the tool
+gateway's and the dispatcher's). Anything else, or any failure of the check, is a 401 before the
+request is read.
 
 The caller's credentials never travel on: the request to the provider is built in
 app/llmgw/backends.py from the gateway's own key, and a header of the agent's (x-api-key,
@@ -46,7 +45,7 @@ authorization, or any other) is not copied into it.
 
 Environment: LLM_BACKEND (scripted|anthropic, default scripted), LLM_MODEL (default
 claude-haiku-5-5), LLM_TOKEN_BUDGET_PER_LEASE (default 20000), LLM_TOKEN_BUDGET_TOTAL (default 500000), ANTHROPIC_API_KEY_FILE,
-CALLER_AUTH (compose|k8s), CALLER_SUBNET (compose).
+CALLER_AUTH (k8s, the only mode).
 """
 
 from __future__ import annotations
@@ -97,7 +96,7 @@ UNAUTHORIZED = {"error": "unauthorized"}
 
 REQUEST_OUTCOMES = ("ok", "budget", "bad_request", "too_large", "upstream")
 REFUSAL_REASONS = (
-    "wrong_network", "missing", "malformed", "review_failed", "not_authenticated", "wrong_service_account", "no_pod",
+    "missing", "malformed", "review_failed", "not_authenticated", "wrong_service_account", "no_pod",
 )
 UPSTREAM_CATEGORIES = ("status_2xx", "status_3xx", "status_4xx", "status_5xx", "unreachable", "too_large", "bad_answer", "no_credential",
                        "token_unreachable", "token_refused", "token_bad_answer", "other")
@@ -344,11 +343,10 @@ def build_app(gateway: LlmGateway, auth: CallerAuth, metrics: Metrics | None = N
 # --- the process ---
 
 
-def caller_auth(mode: str, subnet: str | None, reviewer=None) -> CallerAuth:
-    """Who may call: the service account ah-agent/agent with a token for the audience `llm-gateway`
-    (Kubernetes), or an address in the agent's subnet (Compose). Raises ValueError, in Compose, if
-    there is no valid subnet: a gateway that would accept every caller does not start."""
-    return CallerAuth(mode=mode, audience=AUDIENCE, allowed_subnet=subnet, reviewer=reviewer)
+def caller_auth(mode: str, reviewer=None) -> CallerAuth:
+    """Who may call: the service account ah-agent/agent with a token for the audience `llm-gateway`.
+    Raises ValueError for any mode but k8s: a gateway that would trust anything else does not start."""
+    return CallerAuth(mode=mode, audience=AUDIENCE, reviewer=reviewer)
 
 
 def _budget_limit(env: Mapping[str, str]) -> int:
@@ -374,7 +372,7 @@ def prepare(env: Mapping[str, str], *, transport=None, reviewer=None) -> tuple[L
     its model, or would let every caller in, does not start."""
     mode = calls.caller_auth_mode(env)
     try:
-        auth = caller_auth(mode, env.get("CALLER_SUBNET") or None, reviewer)
+        auth = caller_auth(mode, reviewer)
     except ValueError as err:
         raise SystemExit(str(err)) from None
     limit, total = _budget_limit(env), _total_limit(env)
@@ -394,9 +392,8 @@ def main() -> None:
     threading.Thread(target=_beat, args=(heartbeat,), name="beat", daemon=True).start()
     app = build_app(gateway, auth, gateway.metrics)
     # All interfaces of the container: the agent reaches it from another container or pod. The
-    # network and the caller check are the wall (edge_agent_llmgw in compose.yaml, NetworkPolicy and
-    # TokenReview in Kubernetes); no access log: a request is a ticket and a conversation.
-    # proxy_headers off: the caller check reads the peer address of the connection, never a header.
+    # network and the caller check are the wall (NetworkPolicy and TokenReview); no access log: a
+    # request is a ticket and a conversation. proxy_headers off: no header is trusted.
     uvicorn.run(app, host=BIND_ALL, port=PORT, access_log=False, log_level="warning", proxy_headers=False)
 
 

@@ -1,5 +1,7 @@
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -600,14 +602,35 @@ def test_rejected_move_out_is_rejected(admin, as_role, settings, now):
 
 # --- the outside world: the grid operator (DSO) gets each order, the SMS provider each notice ---
 
+# The executor's projected tokens, one per audience, as the kubelet would mount them; the fakes' TokenReview
+# is a function that knows that one token.
+TOKEN_DIR = Path(tempfile.mkdtemp(prefix="ah-tokens-"))
+for _audience in ("fake-dso", "fake-sms"):
+    (TOKEN_DIR / _audience).mkdir()
+    (TOKEN_DIR / _audience / "token").write_text("executor-token", encoding="utf-8")
+
+
+def executor_token_review(token, audience):
+    from app.fakes import FAKES
+
+    callers = {"fake-dso": FAKES["dso"].caller, "fake-sms": FAKES["sms"].caller}
+    return callers.get(audience) if token == "executor-token" else None
+
+
+def local_outside(*args, **kwargs):
+    """The executor's outside calls, sending the executor's token as in Kubernetes."""
+    from app.executor.outside import OutsideCalls
+
+    return OutsideCalls(*args, token_dir=TOKEN_DIR, **kwargs)
+
+
 @pytest.fixture
 def outside_world():
-    from app.executor.outside import OutsideCalls
     from app.fakes import FAKES, start_fake
 
-    dso = start_fake(FAKES["dso"], port=0, mode="compose", host="127.0.0.1")
-    sms = start_fake(FAKES["sms"], port=0, mode="compose", host="127.0.0.1")
-    outside = OutsideCalls(f"http://127.0.0.1:{dso.port}/orders", f"http://127.0.0.1:{sms.port}/messages")
+    dso = start_fake(FAKES["dso"], port=0, mode="k8s", verifier=executor_token_review, host="127.0.0.1")
+    sms = start_fake(FAKES["sms"], port=0, mode="k8s", verifier=executor_token_review, host="127.0.0.1")
+    outside = local_outside(f"http://127.0.0.1:{dso.port}/orders", f"http://127.0.0.1:{sms.port}/messages")
     yield dso, sms, outside
     dso.shutdown()
     sms.shutdown()
@@ -659,10 +682,9 @@ def outside_failures(admin):
 
 def test_failed_dso_call_is_logged_counted_and_never_becomes_a_second_order(admin, as_role, settings, now):
     from app.common.ops import Metrics
-    from app.executor.outside import OutsideCalls
 
     down = f"http://127.0.0.1:{closed_port()}"
-    outside = OutsideCalls(f"{down}/orders", f"{down}/messages", timeout_s=2)
+    outside = local_outside(f"{down}/orders", f"{down}/messages", timeout_s=2)
     metrics = Metrics()
     ex = as_role("executor")
     rid = ready_for_order(admin, as_role("approver"))
@@ -681,12 +703,11 @@ def test_failed_dso_call_is_logged_counted_and_never_becomes_a_second_order(admi
 
 def test_failed_sms_call_leaves_the_notice_in_place(admin, as_role, settings, now):
     from app.common.ops import Metrics
-    from app.executor.outside import OutsideCalls
 
     down = f"http://127.0.0.1:{closed_port()}"
     metrics = Metrics()
     rid = add_moveout(admin)
-    outside = OutsideCalls(f"{down}/orders", f"{down}/messages", timeout_s=2)
+    outside = local_outside(f"{down}/orders", f"{down}/messages", timeout_s=2)
     process_moveouts(as_role("executor"), settings, now, metrics, outside=outside)
     assert status(admin, rid) == "notice_sent" and notices(admin) == 1
     assert outside_failures(admin) == [f"sms move_out request={rid}: URLError"]
@@ -706,12 +727,11 @@ def test_successful_outside_calls_are_counted(admin, as_role, settings, now, out
 
 def test_a_refused_outside_call_counts_as_a_failure(admin, as_role, settings, now):
     # The fake refuses a call without its caller token (Kubernetes mode): logged, not retried.
-    from app.executor.outside import OutsideCalls
     from app.fakes import FAKES, start_fake
 
     dso = start_fake(FAKES["dso"], port=0, mode="k8s", verifier=lambda token, audience: None, host="127.0.0.1")
     try:
-        outside = OutsideCalls(f"http://127.0.0.1:{dso.port}/orders", "")
+        outside = local_outside(f"http://127.0.0.1:{dso.port}/orders", "")
         rid = ready_for_order(admin, as_role("approver"))
         process_moveouts(as_role("executor"), settings, now, outside=outside)
     finally:
@@ -721,10 +741,9 @@ def test_a_refused_outside_call_counts_as_a_failure(admin, as_role, settings, no
 
 
 def test_without_a_url_the_call_is_skipped(admin, as_role, settings, now):
-    from app.executor.outside import OutsideCalls
 
     rid = add_moveout(admin)
-    process_moveouts(as_role("executor"), settings, now, outside=OutsideCalls("", ""))
+    process_moveouts(as_role("executor"), settings, now, outside=local_outside("", ""))
     assert status(admin, rid) == "notice_sent" and outside_failures(admin) == []
 
 
@@ -758,7 +777,6 @@ def test_outside_call_sends_the_caller_token_in_kubernetes_mode(tmp_path):
 def test_a_failed_outside_call_is_attempted_exactly_once(admin, as_role, settings, now):
     # A retry is how one order becomes two at the grid operator: a call that timed out may still
     # have arrived. So one attempt, whatever happens, on this round and every later one.
-    from app.executor.outside import OutsideCalls
 
     attempts = []
 
@@ -766,7 +784,7 @@ def test_a_failed_outside_call_is_attempted_exactly_once(admin, as_role, setting
         attempts.append(payload["request_id"])
         raise TimeoutError("no answer")
 
-    outside = OutsideCalls("http://dso/orders", "http://sms/messages", post=unreachable)
+    outside = local_outside("http://dso/orders", "http://sms/messages", post=unreachable)
     ex = as_role("executor")
     rid = ready_for_order(admin, as_role("approver"))
     for _ in range(3):
@@ -791,35 +809,32 @@ def test_each_outside_call_is_due_before_it_is_sent(admin, as_role, settings, no
 
 
 def test_a_failed_outside_call_is_due_then_failed(admin, as_role, settings, now):
-    from app.executor.outside import OutsideCalls
 
     down = f"http://127.0.0.1:{closed_port()}"
     rid = add_moveout(admin)
-    process_moveouts(as_role("executor"), settings, now, outside=OutsideCalls(f"{down}/orders", f"{down}/messages",
+    process_moveouts(as_role("executor"), settings, now, outside=local_outside(f"{down}/orders", f"{down}/messages",
                                                                                  timeout_s=2))
     assert outside_events(admin) == [("outside_call_due", f"sms move_out request={rid}"),
                                      ("outside_call_failed", f"sms move_out request={rid}: URLError")]
 
 
 def test_a_call_lost_to_a_crash_leaves_its_due_event(admin, as_role, settings, now):
-    from app.executor.outside import OutsideCalls
 
     def crash(url, payload, headers, timeout_s):
         raise SystemExit("the executor process dies here")
 
     rid = add_moveout(admin)
     with pytest.raises(SystemExit):
-        process_moveouts(as_role("executor"), settings, now, outside=OutsideCalls("", "http://sms/messages", post=crash))
+        process_moveouts(as_role("executor"), settings, now, outside=local_outside("", "http://sms/messages", post=crash))
     assert status(admin, rid) == "notice_sent"
     assert outside_events(admin) == [("outside_call_due", f"sms move_out request={rid}")]
 
 
 def test_no_due_event_when_there_is_nobody_to_call(admin, as_role, settings, now):
-    from app.executor.outside import OutsideCalls
 
     add_moveout(admin)
     add_moveout(admin, ticket_id=2)
     ex = as_role("executor")
     process_moveouts(ex, settings, now)  # no outside world at all
-    process_moveouts(ex, settings, now, outside=OutsideCalls("http://dso/orders", ""))  # no SMS URL
+    process_moveouts(ex, settings, now, outside=local_outside("http://dso/orders", ""))  # no SMS URL
     assert outside_events(admin) == []

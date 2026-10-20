@@ -11,14 +11,12 @@ POST /claim
     Request   no body (a body is ignored). In Kubernetes the header `Authorization: Bearer <projected
               service account token, audience dispatcher>`.
     200       {"ticket_id": <int>, "lease": "<64 hex>"}   the agent's ticket and its lease. Given once.
-    204       no body: nothing for this caller (no open ticket without a run in Compose; in Kubernetes an
-              unknown pod, or a pod that has already claimed).
+    204       no body: nothing for this caller (an unknown pod, or a pod that has already claimed).
     401       {"error": "unauthorized"}                    the caller is not an agent (see below)
     503       {"error": "unavailable"}                     the database did not answer
-    Compose: the next open ticket without a run goes to whoever asks, and the lease is not bound to a
-    pod. Kubernetes: the run was made when the dispatcher created the agent's Job; the pod that asks
-    is matched to it by its name (the TokenReview names the pod, the Job controller names the pod
-    after the Job), and the lease is bound to that pod.
+    The run was made when the dispatcher created the agent's Job; the pod that asks is matched to it
+    by its name (the TokenReview names the pod, the Job controller names the pod after the Job), and
+    the lease is bound to that pod.
 
 POST /reply
     Request   header `X-Lease: <the lease>` (exactly one); body JSON {"text": "<reply>"}, at most
@@ -35,16 +33,12 @@ POST /reply
     413       {"error": "too_large"}
     503       {"error": "unavailable"}
 
-Who may call. Compose: the connection's source address must be inside CALLER_SUBNET, the subnet pinned
-on the agent's edge network, where only the agent is (the same check as the tool gateway's). The
-dispatcher also shares a network with the database only. Kubernetes: the projected token is checked
-with a TokenReview; it must belong to the service account ah-agent/agent and name a pod (the same
-check as the tool gateway's). Anything else, or any failure of the check, is a 401 before the request
-is read.
+Who may call. The projected token is checked with a TokenReview; it must belong to the service
+account ah-agent/agent and name a pod (the same check as the tool gateway's). Anything else, or any
+failure of the check, is a 401 before the request is read.
 
-Environment: DB_PASSWORD_DISPATCHER, DISPATCH_MODE (compose|k8s; must agree with CALLER_AUTH),
-CALLER_SUBNET (compose), AGENT_JOB_TEMPLATE_FILE (k8s; default /etc/ah/agent-job-template/job.json),
-DISPATCH_MAX_ACTIVE (k8s; Jobs running at once, default 3).
+Environment: DB_PASSWORD_DISPATCHER, DISPATCH_MODE (k8s, the only mode), AGENT_JOB_TEMPLATE_FILE
+(default /etc/ah/agent-job-template/job.json), DISPATCH_MAX_ACTIVE (Jobs running at once, default 3).
 """
 
 from __future__ import annotations
@@ -82,7 +76,7 @@ DISPATCH_SECONDS = 5
 DEFAULT_MAX_ACTIVE = 3
 DB_CONNECT_TIMEOUT_S = 3
 DB_STATEMENT_TIMEOUT_MS = 5000
-MODES = ("compose", "k8s")
+MODES = ("k8s",)
 AUDIENCE = "dispatcher"
 CALLER_SCOPE_KEY = "ah.caller"  # not a header name, so a client cannot set it
 LEASE_HEADER = "x-lease"
@@ -94,7 +88,7 @@ CLAIM_OUTCOMES = ("issued", "none")
 REPLY_OUTCOMES = ("stored", "lease", "duplicate", "bad_request", "too_large")
 BLOCK_REASONS = ("script_mix", "currency", "number_word", "money_wording", "unapproved_number")
 REFUSAL_REASONS = (
-    "wrong_network", "missing", "malformed", "review_failed", "not_authenticated", "wrong_service_account", "no_pod",
+    "missing", "malformed", "review_failed", "not_authenticated", "wrong_service_account", "no_pod",
 )
 JOB_OUTCOMES = ("created", "failed", "full")
 
@@ -121,13 +115,13 @@ class Claim:
 
 
 class Dispatcher:
-    """The rules, without HTTP. `mode` is compose or k8s."""
+    """The rules, without HTTP. `mode` is k8s, the only mode."""
 
     def __init__(self, store: DispatcherDb, mode: str, metrics: Metrics, *, template: dict | None = None, api=None,
                  max_active: int = DEFAULT_MAX_ACTIVE) -> None:
         if mode not in MODES:
             raise ValueError(f"DISPATCH_MODE must be one of {MODES}, got {mode!r}")
-        if mode == "k8s" and (template is None or api is None):
+        if template is None or api is None:
             raise ValueError("DISPATCH_MODE=k8s needs the agent Job template and the Kubernetes API client")
         self._store, self._mode, self._metrics = store, mode, metrics
         self._template, self._api, self._max_active = template, api, max_active
@@ -135,11 +129,8 @@ class Dispatcher:
     # --- POST /claim ---
 
     def claim(self, caller: CallerIdentity) -> Claim | None:
-        if self._mode == "compose":
-            found = self._store.claim_next_open_ticket()
-        else:
-            job = k8s.run_name_of_pod(caller.pod)
-            found = self._store.claim_job(job, caller.pod) if job else None
+        job = k8s.run_name_of_pod(caller.pod)
+        found = self._store.claim_job(job, caller.pod) if job else None
         if found is None:
             self._metrics.inc("dispatcher_claims_total", {"outcome": "none"})
             return None
@@ -312,21 +303,19 @@ def dispatch_mode(env: Mapping[str, str], caller_auth: str) -> str:
     if mode not in MODES:
         raise SystemExit(f"DISPATCH_MODE must be one of {MODES}, got {mode!r}")
     if mode != caller_auth:
-        # A Compose claim hands out a lease bound to no pod, which the gateway would refuse from a
-        # Kubernetes agent; a Kubernetes claim needs the pod name from a TokenReview. Mixing is a mistake.
+        # A claim needs the pod name from a TokenReview; any other caller mode is a mistake.
         raise SystemExit(f"DISPATCH_MODE={mode} does not match CALLER_AUTH={caller_auth}")
     return mode
 
 
-def caller_auth(mode: str, subnet: str | None, reviewer=None) -> CallerAuth:
-    """Who may call: the service account ah-agent/agent with a token for the audience `dispatcher`
-    (Kubernetes), or an address in the agent's subnet (Compose). Raises ValueError, in Compose, if
-    there is no valid subnet: a dispatcher that would accept every caller does not start."""
-    return CallerAuth(mode=mode, audience=AUDIENCE, allowed_subnet=subnet, reviewer=reviewer)
+def caller_auth(mode: str, reviewer=None) -> CallerAuth:
+    """Who may call: the service account ah-agent/agent with a token for the audience `dispatcher`.
+    Raises ValueError for any mode but k8s: a dispatcher that would trust anything else does not start."""
+    return CallerAuth(mode=mode, audience=AUDIENCE, reviewer=reviewer)
 
 
 def background(dispatcher: Dispatcher, store: DispatcherDb, heartbeat: Heartbeat, metrics: Metrics) -> None:
-    """The database heartbeat and the ops one every BEAT_SECONDS, and in Kubernetes the start of
+    """The database heartbeat and the ops one every BEAT_SECONDS, and the start of
     Jobs every DISPATCH_SECONDS. A database that does not answer leaves both beats to age: /healthz
     turns 503 after 60 s."""
     last_beat = 0.0
@@ -349,16 +338,14 @@ def main() -> None:
     settings = config.load()
     mode = dispatch_mode(os.environ, settings.caller_auth)
     try:
-        auth = caller_auth(settings.caller_auth, os.environ.get("CALLER_SUBNET") or None)
+        auth = caller_auth(settings.caller_auth)
     except ValueError as err:
         raise SystemExit(str(err)) from None
-    template = api = None
-    if mode == "k8s":
-        try:
-            template = templates.load_template(os.environ.get("AGENT_JOB_TEMPLATE_FILE") or templates.DEFAULT_TEMPLATE_FILE)
-        except templates.TemplateError as err:
-            raise SystemExit(f"the agent Job template is not usable: {err}") from None
-        api = k8s.KubeApi()
+    try:
+        template = templates.load_template(os.environ.get("AGENT_JOB_TEMPLATE_FILE") or templates.DEFAULT_TEMPLATE_FILE)
+    except templates.TemplateError as err:
+        raise SystemExit(f"the agent Job template is not usable: {err}") from None
+    api = k8s.KubeApi()
     metrics = Metrics()
     init_metrics(metrics)
     heartbeat = Heartbeat()
@@ -375,9 +362,8 @@ def main() -> None:
     threading.Thread(target=background, args=(dispatcher, store, heartbeat, metrics), name="background", daemon=True).start()
     app = build_app(dispatcher, auth, metrics)
     # All interfaces of the container: the agent reaches it from another container or pod. The
-    # network and the caller check are the wall (edge_agent_dispatcher in compose.yaml, NetworkPolicy
-    # and TokenReview in Kubernetes); no access log: a request is a lease and a reply text.
-    # proxy_headers off: the caller check reads the peer address of the connection, never a header.
+    # network and the caller check are the wall (NetworkPolicy and TokenReview); no access log: a
+    # request is a lease and a reply text. proxy_headers off: no header is trusted.
     uvicorn.run(app, host=BIND_ALL, port=PORT, access_log=False, log_level="warning", proxy_headers=False)
 
 

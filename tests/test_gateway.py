@@ -1,7 +1,7 @@
 """The tool gateway (app/gateway): the only way from the agent to a tool.
 
 Every call is checked in this order, and the first wall that says no ends it:
-the caller (Kubernetes only), the lease, the bound pod, the stop switch, the arguments the manifest
+the caller (Kubernetes token), the lease, the bound pod, the stop switch, the arguments the manifest
 allows, the risk engine, the tool's description, and then the tool itself, which gets a token that
 works once. The agent is told `ERROR: <category>` and never why.
 
@@ -29,13 +29,16 @@ from app.security import descriptors
 from app.tools import serve
 from tests.conftest import open_lease
 from tests.gatewayharness import (
+    AGENT_HEADERS,
     AGENT_IP,
+    AGENT_RAW_HEADERS,
     AppGatewayClient,
     FakeRisk,
     RealRisk,
+    agent_auth,
+    agent_lease,
     agent_session,
     build,
-    compose_auth,
     from_agent,
 )
 from tests.toolhttp import KEYS, URL, running
@@ -261,8 +264,6 @@ def test_the_bound_pod_must_match_exactly(settings, admin, as_role, bound, pod):
     built = build(settings, as_role)
     assert built.call("read_ticket", {}, lease, pod=pod).text == "ERROR: denied"
     assert built.tools.forwarded() == []
-    # And two nones are the Compose case: no pod on either side.
-    assert build(settings, as_role).call("read_ticket", {}, open_lease(admin, 1), pod=None).is_error is False
 
 
 AGENT_USER = "system:serviceaccount:ah-agent:agent"
@@ -384,64 +385,57 @@ def test_k8s_mode_refuses_two_authorization_headers_and_fails_closed_when_the_re
     assert run(post_raw(app, {**MCP_HEADERS, "Authorization": "Bearer tok-a"})).status_code == 401
 
 
-# The tools and the risk engine share an edge network with the gateway, so they can open its port;
-# what tells them from the agent is the address they come from (CALLER_SUBNET, compose.yaml).
-OTHER_ADDRESSES = {
-    "a-tool": "192.168.128.3",             # on edge_gateway_read_ticket
-    "the-risk-engine": "192.168.224.2",    # on edge_gateway_risk
-    "the-database-network": "192.168.176.2",
-    "just-outside-the-subnet": "10.250.2.5",
-    "the-subnet-below": "10.250.0.255",
-    "localhost": "127.0.0.1",
-    "ipv6": "fd00::5",
-    "no-address": "",
-}
-
-
-def test_compose_mode_serves_the_agents_subnet_and_nothing_else(settings, as_role):
+def test_call_without_token_is_refused(settings, admin, as_role):
+    # Nothing but the caller check says "the agent": a request with a lease and no token is a 401
+    # before the lease, the risk engine or any tool is looked at.
+    lease = agent_lease(admin, 1)
     built = build(settings, as_role)
-    for name, address in {"first": "10.250.1.1", "agent": AGENT_IP, "last": "10.250.1.254", "mapped": "::ffff:10.250.1.7"}.items():
-        ok = run(post_raw(build_app(built.gateway, compose_auth()), MCP_HEADERS, client=(address, 50000)))
-        assert ok.status_code == 200, name                          # the control: the agent's side
-    for name, address in OTHER_ADDRESSES.items():
-        refused = run(post_raw(build_app(built.gateway, compose_auth()), MCP_HEADERS, client=(address, 50000)))
-        assert (refused.status_code, refused.json()) == (401, {"error": "unauthorized"}), name
-    # No address at all (a transport that does not know the peer) is no agent either.
-    refused = run(post_raw(build_app(built.gateway, compose_auth()), MCP_HEADERS, client=None))
-    assert refused.status_code == 401
-    assert built.risk.asked == [] and built.tools.forwarded() == []
+    call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "read_ticket", "arguments": {}}}
+    lease_only = [(b"x-lease", lease.encode())]
+    refused = run(asgi_post(build_app(built.gateway, agent_auth()), lease_only, call))
+    assert refused[0] == 401 and json.loads(refused[1]) == {"error": "unauthorized"}
+    assert built.risk.asked == [] and built.tools.forwarded() == [] and calls(admin) == []
+    # The control: the same call with the agent's token goes through every wall.
+    served = run(asgi_post(build_app(built.gateway, agent_auth()), lease_only + AGENT_RAW_HEADERS, call))
+    assert served[0] == 200 and json.loads(served[1])["result"]["isError"] is False
 
 
-def test_a_call_from_outside_the_agents_subnet_is_refused_before_anything_runs(settings, admin, as_role):
+def test_a_call_from_a_tool_is_refused_before_anything_runs(settings, admin, as_role):
     # What a hijacked tool would try: the lease of the call it is serving, sent to the gateway as if
-    # it were the agent, for another tool of its choice.
-    lease = open_lease(admin, 1)
+    # it were the agent, for another tool of its choice. It has no token of the agent's, only (at
+    # most) its own service account's.
+    lease = agent_lease(admin, 1)
+    tool_token = "tok-tool"
     built = build(settings, as_role)
+    auth = agent_auth({tool_token: ("system:serviceaccount:ah-tools:tool-read-ticket", "tool-read-ticket-abc")})
     call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "issue_bill_credit", "arguments": {"amount_eur": 5, "reason": "outage", "evidence_ref": 1}}}
-    headers = [(b"x-lease", lease.encode())]
-    from_tool = run(asgi_post(build_app(built.gateway, compose_auth()), headers, call, client="192.168.128.3"))
-    assert from_tool[0] == 401
+    lease_header = (b"x-lease", lease.encode())
+    for name, extra in {"no token": [], "its own token": [(b"authorization", f"Bearer {tool_token}".encode())]}.items():
+        from_tool = run(asgi_post(build_app(built.gateway, auth), [lease_header, *extra], call, client="192.168.128.3"))
+        assert from_tool[0] == 401, name
     assert built.risk.asked == [] and built.tools.forwarded() == [] and calls(admin) == []
     assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 0
-    # The control: the same call from the agent's address goes through every wall.
-    from_agent_ = run(asgi_post(build_app(built.gateway, compose_auth()), headers, call, client=AGENT_IP))
+    # The control: the same call with the agent's token goes through every wall, from any address.
+    from_agent_ = run(asgi_post(build_app(built.gateway, auth), [lease_header, *AGENT_RAW_HEADERS], call, client="192.168.128.3"))
     assert from_agent_[0] == 200 and json.loads(from_agent_[1])["result"]["isError"] is False
     assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 1
 
 
-def test_compose_mode_does_not_start_without_the_subnet_and_trusts_no_forwarded_header(settings, as_role):
-    with pytest.raises(ValueError, match="CALLER_SUBNET"):
+def test_compose_caller_mode_is_refused(monkeypatch):
+    # The address of the caller is not an identity: the only mode is the Kubernetes token.
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
         CallerAuth(mode="compose")
-    with pytest.raises(ValueError):
-        CallerAuth(mode="compose", allowed_subnet="")
-    with pytest.raises(ValueError):
-        CallerAuth(mode="compose", allowed_subnet="not a subnet")
-    # A forged X-Forwarded-For / Forwarded from a neighbour does not move it into the subnet.
-    built = build(settings, as_role)
-    forged = {**MCP_HEADERS, "X-Forwarded-For": AGENT_IP, "X-Real-IP": AGENT_IP, "Forwarded": f"for={AGENT_IP}"}
-    refused = run(post_raw(build_app(built.gateway, compose_auth()), forged, client=("192.168.128.3", 5)))
-    assert refused.status_code == 401
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
+        CallerAuth(mode="compose", reviewer=lambda token, audience: None)
+    from app import config
+    from app.common import calls as common_calls
+
+    monkeypatch.setenv("CALLER_AUTH", "compose")
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
+        common_calls.caller_auth_mode()
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
+        config.load()
 
 
 def test_the_gateway_process_reads_the_peer_address_and_no_proxy_header():
@@ -453,16 +447,16 @@ def test_the_gateway_process_reads_the_peer_address_and_no_proxy_header():
     assert "proxy_headers=False" in inspect.getsource(gateway_main.main)
 
 
-def test_k8s_mode_ignores_the_source_address_and_compose_mode_ignores_tokens(settings, as_role):
+def test_k8s_mode_ignores_the_source_address_and_trusts_no_forwarded_header(settings, as_role):
     built = build(settings, as_role)
     review = reviewer({"tok-a": (AGENT_USER, "pod-a")})
-    # k8s: the token decides, from any address.
+    # The token decides, from any address.
     ok = run(post_raw(build_app(built.gateway, CallerAuth(mode="k8s", reviewer=review)),
                       {**MCP_HEADERS, "Authorization": "Bearer tok-a"}, client=("192.168.1.9", 1)))
     assert ok.status_code == 200
-    # compose: a token from the wrong address is still refused.
-    refused = run(post_raw(build_app(built.gateway, compose_auth()),
-                           {**MCP_HEADERS, "Authorization": "Bearer tok-a"}, client=("192.168.1.9", 1)))
+    # An address, even a forged one the agent would have, is no token.
+    forged = {**MCP_HEADERS, "X-Forwarded-For": AGENT_IP, "X-Real-IP": AGENT_IP, "Forwarded": f"for={AGENT_IP}"}
+    refused = run(post_raw(build_app(built.gateway, CallerAuth(mode="k8s", reviewer=review)), forged, client=(AGENT_IP, 5)))
     assert refused.status_code == 401
     with pytest.raises(ValueError, match="CALLER_AUTH"):
         CallerAuth(mode="nonsense")
@@ -769,7 +763,7 @@ def lease_headers(lease):
 
 @pytest.mark.parametrize("header", ["X-Lease", "x-lease", "x-LEASE"])
 def test_the_agent_replaces_callback_lease_headers_in_every_case(settings, admin, as_role, header):
-    lease = open_lease(admin, 1)
+    lease = agent_lease(admin, 1)
     built = build(settings, as_role)
     agent = AppGatewayClient(built, headers={header: "not-the-issued-lease"})
     text = agent.call("lookup_account", {"lease": lease})
@@ -781,13 +775,13 @@ def test_the_agent_replaces_callback_lease_headers_in_every_case(settings, admin
 
 @pytest.mark.parametrize("header", ["X-Lease", "x-lease", "x-LEASE"])
 def test_a_callback_cannot_supply_a_lease_when_the_agent_supplies_none(settings, admin, as_role, header):
-    lease = open_lease(admin, 1)
+    lease = agent_lease(admin, 1)
     agent = AppGatewayClient(build(settings, as_role), headers={header: lease})
     assert agent.call("read_ticket", {}) == "ERROR: lease"
 
 
 def test_the_agent_client_reaches_a_tool_through_the_gateway(settings, admin, as_role):
-    lease = open_lease(admin, 1)
+    lease = agent_lease(admin, 1)
     built = build(settings, as_role)
     agent = AppGatewayClient(built, headers=lease_headers(lease))
     out = json.loads(agent.call("lookup_account", {"lease": lease}))
@@ -803,17 +797,17 @@ def test_the_agent_client_says_what_the_gateway_says_and_no_more(settings, admin
     agent = AppGatewayClient(built)
     assert agent.call("read_ticket", {"lease": "0" * 64}) == "ERROR: lease"
     # No lease header at all: nothing to check, nothing to hash.
-    headerless = ToolGateway(URL)
+    headerless = ToolGateway(URL, headers=lambda: dict(AGENT_HEADERS))
     headerless._transport = AppGatewayClient(built)._transport
     assert headerless.call("read_ticket", {}) == "ERROR: lease"
 
 
 def test_the_lease_comes_from_one_header_only(settings, admin, as_role):
-    lease = open_lease(admin, 1)
+    lease = agent_lease(admin, 1)
     built = build(settings, as_role)
 
     async def go(headers):
-        app = build_app(built.gateway, compose_auth())
+        app = build_app(built.gateway, agent_auth())
         async with agent_session(app, headers) as client:
             result = await client.call_tool("read_ticket", {})
             return result.is_error, " ".join(b.text for b in result.content)
@@ -821,11 +815,11 @@ def test_the_lease_comes_from_one_header_only(settings, admin, as_role):
     assert run(go({"X-Lease": lease}))[0] is False                         # the control
     assert run(go({})) == (True, "ERROR: lease")
     assert run(go({"X-Lease": ""})) == (True, "ERROR: lease")
-    assert run(go({"Authorization": lease})) == (True, "ERROR: lease")       # not any other header
+    assert run(go({"X-Api-Key": lease})) == (True, "ERROR: lease")           # not any other header
     # Two headers that could disagree are refused.
     call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "read_ticket", "arguments": {}}}
-    app = build_app(built.gateway, compose_auth())
-    status, body = run(asgi_post(app, [(b"x-lease", lease.encode()), (b"x-lease", lease.encode())], call))
+    app = build_app(built.gateway, agent_auth())
+    status, body = run(asgi_post(app, [(b"x-lease", lease.encode()), (b"x-lease", lease.encode()), *AGENT_RAW_HEADERS], call))
     assert status == 200
     reply = json.loads(body)
     assert reply["result"]["isError"] is True and reply["result"]["content"][0]["text"] == "ERROR: lease"
@@ -842,7 +836,7 @@ def test_the_gateway_without_the_caller_check_denies_everything(settings, admin,
         async def __call__(self, scope, receive, send):
             await self.app(scope, receive, send)
 
-    lease = open_lease(admin, 1)
+    lease = agent_lease(admin, 1)
     built = build(settings, as_role)
 
     async def go():
@@ -860,7 +854,7 @@ def test_the_gateway_lists_the_reviewed_descriptors_to_the_agent(settings, as_ro
     built = build(settings, as_role)
 
     async def listing():
-        async with agent_session(build_app(built.gateway, compose_auth()), {}) as client:
+        async with agent_session(build_app(built.gateway, agent_auth()), {}) as client:
             return (await client.list_tools()).tools
 
     listed = {tool.name: descriptors.descriptor_sha256(descriptors.wire_entry(tool)) for tool in run(listing())}
@@ -870,16 +864,16 @@ def test_the_gateway_lists_the_reviewed_descriptors_to_the_agent(settings, as_ro
 
 
 def test_a_body_over_64_kib_is_refused_and_the_gateway_stays_healthy(settings, admin, as_role):
-    lease = open_lease(admin, 1)
+    lease = agent_lease(admin, 1)
     built = build(settings, as_role)
     call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "read_ticket", "arguments": {}}}
     big = {**call, "params": {**call["params"], "arguments": {"note": "x" * (100 * 1024)}}}
 
     async def go():
-        app = build_app(built.gateway, compose_auth())
+        app = build_app(built.gateway, agent_auth())
         async with running(app):
             async with httpx2.AsyncClient(transport=from_agent(app), base_url="http://g.test") as http:
-                headers = {**MCP_HEADERS, "X-Lease": lease}
+                headers = {**MCP_HEADERS, **AGENT_HEADERS, "X-Lease": lease}
 
                 async def chunks():  # no Content-Length: sent chunked
                     for _ in range(100):
@@ -902,10 +896,10 @@ def test_the_gateway_serves_nothing_but_the_mcp_endpoint(settings, as_role):
     built = build(settings, as_role)
 
     async def get(path, method="GET"):
-        app = build_app(built.gateway, compose_auth())
+        app = build_app(built.gateway, agent_auth())
         async with running(app):
             async with httpx2.AsyncClient(transport=from_agent(app), base_url="http://g.test") as http:
-                return (await http.request(method, path)).status_code
+                return (await http.request(method, path, headers=AGENT_HEADERS)).status_code
 
     assert run(get("/")) == 404 and run(get("/metrics")) == 404 and run(get("/healthz")) == 404
     assert run(get("/mcp/extra")) == 404
@@ -1104,11 +1098,10 @@ def test_the_gateway_does_not_start_without_what_it_needs(monkeypatch, tmp_path)
     monkeypatch.setenv("CAPABILITIES_DIR", str(tmp_path / "nowhere"))
     with pytest.raises(SystemExit, match="manifests"):
         gateway_main.main()
-    # Compose mode without the agent's subnet: no caller check would be left, so it does not start.
+    # Any caller mode but the Kubernetes token: no caller check would be left, so it does not start.
     monkeypatch.delenv("CAPABILITIES_DIR")
     monkeypatch.setenv("CALLER_AUTH", "compose")
-    monkeypatch.delenv("CALLER_SUBNET", raising=False)
-    with pytest.raises(SystemExit, match="CALLER_SUBNET"):
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
         gateway_main.main()
 
 

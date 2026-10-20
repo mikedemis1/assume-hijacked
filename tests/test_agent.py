@@ -9,7 +9,7 @@ from app.agent.guard import SAFE_REPLY, block_reason, guard_reply, numbers_in
 from app.agent.llm import DEFAULT_PLAN, Reply, ScriptedLLM, ToolCall, _parse
 from app.agent.llm_client import LlmError
 from app.dispatcher.replies import CREDIT_NOTICE, MEDICAL_QUESTION
-from tests.conftest import admin_connect, open_lease
+from tests.conftest import admin_connect
 from tests.dispatcherharness import Harness, post
 from tests.gatewayharness import AppGatewayClient, build
 
@@ -35,12 +35,12 @@ class LeasedAgent:
     def sent_text(self, ticket_id):
         """What the agent sends to the dispatcher for this ticket (no notices: those are added there)."""
         with admin_connect(self.settings) as admin:
-            self.lease = open_lease(admin, ticket_id)
+            self.lease = self.dispatcher.lease_for(admin, ticket_id)
         self.sent = self.agent.handle_ticket(ticket_id, self.lease)
         return self.sent
 
     def post_reply(self):
-        return post(self.dispatcher.app, "/reply", lease=self.lease, body={"text": self.sent})
+        return post(self.dispatcher.app, "/reply", lease=self.lease, headers=self.dispatcher.owner(self.lease), body={"text": self.sent})
 
     def handle_ticket(self, ticket_id):
         """What is stored and sent to the customer after the dispatcher has run its checks."""

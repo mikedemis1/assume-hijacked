@@ -26,12 +26,11 @@ from app.llmgw.backends import AnthropicBackend, BackendError, ScriptedBackend, 
 from app.llmgw.main import Budget, LlmGateway, build_app, init_metrics
 
 ROOT = Path(__file__).resolve().parent.parent
-# The subnet of the agent's edge to the LLM gateway (compose.yaml) and an address in it.
-AGENT_SUBNET = "10.250.3.0/24"
-AGENT_IP = "10.250.3.5"
-TOOL_IP = "10.250.9.7"  # a neighbour on some other edge
+AGENT_IP = "10.250.3.5"  # the address a request comes from (the budget's key; the caller check ignores it)
+TOOL_IP = "10.250.9.7"  # an address that is not the agent's
 LEASE = "ab" * 32
 OTHER_LEASE = "cd" * 32
+AUTH = {"Authorization": f"Bearer lease-{LEASE}"}  # what post_next sends for LEASE
 EVENTS = "assume_hijacked.security"
 TICKET = [{"role": "ticket", "text": "My bill looks wrong."}]
 
@@ -50,8 +49,11 @@ def request(app, method, path, *, headers=None, content=None, ip=AGENT_IP):
     return asyncio.run(go())
 
 
-def post_next(app, transcript=TICKET, *, lease=LEASE, headers=None, ip=AGENT_IP, body=None):
-    sent = dict(headers or {})
+def post_next(app, transcript=TICKET, *, lease=LEASE, headers=None, ip=AGENT_IP, body=None, auth=True):
+    """POST /next. By default with a token for a pod of its own per lease (a pod has one lease for
+    its life); `headers` are added to that and can replace it; `auth=False` sends no token at all."""
+    sent = {"Authorization": f"Bearer lease-{lease}"} if auth else {}
+    sent.update(headers or {})
     if lease is not None:
         sent["X-Lease"] = lease
     content = json.dumps({"transcript": transcript}) if body is None else body
@@ -70,13 +72,19 @@ class CountingBackend:
         return await self.inner.next(transcript)
 
 
+def agent_reviewer(token, audience):
+    """The default TokenReview stand-in: every token is the agent's, issued to a pod named after it."""
+    assert audience == "llm-gateway"
+    return Review(username=AGENT_USER, pod=f"agent-{token}")
+
+
 class Harness:
-    def __init__(self, backend=None, *, mode="compose", limit=20000, reviewer=None, total=None, **budget):
+    def __init__(self, backend=None, *, mode="k8s", limit=20000, reviewer=None, total=None, **budget):
         self.metrics = Metrics()
         init_metrics(self.metrics)
         self.backend = backend if backend is not None else CountingBackend()
         self.gateway = LlmGateway(self.backend, Budget(limit, **budget), self.metrics, total_limit=total)
-        self.auth = llmgw_main.caller_auth(mode, AGENT_SUBNET if mode == "compose" else None, reviewer)
+        self.auth = llmgw_main.caller_auth(mode, reviewer or agent_reviewer)
         self.app = build_app(self.gateway, self.auth, self.metrics)
 
     def post(self, *args, **kwargs):
@@ -304,7 +312,8 @@ def fresh_leases():
 
 def test_new_lease_strings_from_one_address_run_into_the_address_budget():
     # The gateway cannot tell a live lease from a made-up one, so a caller that sends a new random lease
-    # with every request must still be stopped. Compose has no pod, so it is the address that says no.
+    # with every request must still be stopped. Each lease comes from a pod of its own here, so it is
+    # the address that says no.
     h = Harness(limit=250)
     leases = fresh_leases()
     codes = [h.post(lease=next(leases)).status_code for _ in range(40)]
@@ -474,29 +483,28 @@ def test_a_gateway_keeps_serving_new_leases_after_thousands_of_tickets():
 # --- the caller check -------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("ip", [TOOL_IP, "10.250.2.5", "10.250.4.1", "10.250.2.255", "127.0.0.1", "::1", "", None])
-def test_a_caller_outside_the_agents_subnet_is_refused_before_the_backend_is_reached(h, ip):
-    answer = h.post(ip=ip)
+def test_call_without_token_is_refused(h):
+    answer = h.post(auth=False)
     assert answer.status_code == 401 and answer.json() == {"error": "unauthorized"}
     assert h.backend.calls == 0
-    assert h.post(ip=AGENT_IP).status_code == 200                  # the control: the agent's address is let in
+    assert h.post().status_code == 200                              # the control: the same call with a token is let in
     assert h.backend.calls == 1
 
 
-@pytest.mark.parametrize("ip", ["10.250.3.0", "10.250.3.255", "::ffff:10.250.3.9"])
-def test_the_subnet_includes_its_first_and_last_address(h, ip):
-    assert h.post(ip=ip).status_code == 200
-
-
-def test_forwarded_headers_do_not_replace_the_peer_address(h):
+def test_an_address_is_no_token_and_forwarded_headers_are_no_token(h):
     forged = {"X-Forwarded-For": AGENT_IP, "X-Real-IP": AGENT_IP, "Forwarded": f"for={AGENT_IP}"}
-    assert h.post(ip=TOOL_IP, headers=forged).status_code == 401
+    assert h.post(auth=False, ip=AGENT_IP, headers=forged).status_code == 401
     assert h.backend.calls == 0
 
 
-def test_compose_mode_does_not_start_without_the_subnet():
-    with pytest.raises(ValueError, match="CALLER_SUBNET"):
-        llmgw_main.caller_auth("compose", None)
+def test_compose_caller_mode_is_refused():
+    # The address of the caller is not an identity: the only mode is the Kubernetes token.
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
+        llmgw_main.caller_auth("compose")
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
+        Harness(mode="compose")
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
+        llmgw_main.prepare({"CALLER_AUTH": "compose"})
 
 
 def test_kubernetes_needs_the_agents_service_account_a_token_for_this_audience_and_a_pod():
@@ -509,7 +517,7 @@ def test_kubernetes_needs_the_agents_service_account_a_token_for_this_audience_a
     for headers in ({}, {"Authorization": "Bearer nope"}, {"Authorization": "Bearer other-sa"},
                     {"Authorization": "Bearer no-pod"}, {"Authorization": "Basic good"},
                     {"Authorization": "Bearer good extra"}):
-        assert h.post(headers=headers).status_code == 401, headers
+        assert h.post(headers=headers, auth=False).status_code == 401, headers
     assert h.backend.calls == 0
     assert h.post(headers={"Authorization": "Bearer good"}).status_code == 200   # the control
     assert h.backend.calls == 1
@@ -531,8 +539,8 @@ def test_kubernetes_mode_ignores_the_source_address():
 
 def test_a_refusal_is_counted_by_reason_and_logged_without_the_request(h, caplog):
     with caplog.at_level(logging.INFO, logger=EVENTS):
-        h.post(ip=TOOL_IP, transcript=[{"role": "ticket", "text": "oxygen for my mother"}])
-    assert metric(h, "llmgw_callers_refused_total", reason="wrong_network") == 1
+        h.post(auth=False, transcript=[{"role": "ticket", "text": "oxygen for my mother"}])
+    assert metric(h, "llmgw_callers_refused_total", reason="missing") == 1
     assert "oxygen" not in caplog.text
 
 
@@ -571,14 +579,14 @@ def test_a_request_that_is_not_a_conversation_is_a_400_and_the_backend_is_not_re
 
 def test_two_lease_headers_are_no_lease(h):
     answer = request(
-        h.app, "POST", "/next", headers=[("X-Lease", LEASE), ("X-Lease", OTHER_LEASE)], content=json.dumps({"transcript": TICKET})
+        h.app, "POST", "/next", headers=[("X-Lease", LEASE), ("X-Lease", OTHER_LEASE), *AUTH.items()], content=json.dumps({"transcript": TICKET})
     )
     assert answer.status_code == 400 and h.backend.calls == 0
 
 
 def test_a_body_over_the_cap_is_refused_declared_or_chunked(h):
     big = json.dumps({"transcript": [{"role": "ticket", "text": "x" * 400_000}]})
-    declared = request(h.app, "POST", "/next", headers={"X-Lease": LEASE}, content=big)
+    declared = request(h.app, "POST", "/next", headers={"X-Lease": LEASE, **AUTH}, content=big)
     assert declared.status_code == 413 and declared.json() == {"error": "too_large"}
 
     async def chunks():
@@ -588,7 +596,7 @@ def test_a_body_over_the_cap_is_refused_declared_or_chunked(h):
         async with httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=h.app, client=(AGENT_IP, 50000)), base_url="http://llm-gateway.test"
         ) as http:
-            return await http.post("/next", headers={"X-Lease": LEASE}, content=chunks())
+            return await http.post("/next", headers={"X-Lease": LEASE, **AUTH}, content=chunks())
 
     assert asyncio.run(go()).status_code == 413
     assert h.backend.calls == 0
@@ -611,8 +619,8 @@ def test_the_backend_sees_only_the_fields_it_needs(h):
 
 
 def test_only_post_next_is_served(h):
-    assert request(h.app, "GET", "/next").status_code == 405
-    assert request(h.app, "POST", "/other", headers={"X-Lease": LEASE}).status_code == 404
+    assert request(h.app, "GET", "/next", headers=AUTH).status_code == 405
+    assert request(h.app, "POST", "/other", headers={"X-Lease": LEASE, **AUTH}).status_code == 404
     assert h.backend.calls == 0
 
 
@@ -632,7 +640,7 @@ def test_the_metrics_start_at_zero_and_name_no_text():
     for outcome in ("ok", "budget", "bad_request", "too_large", "upstream"):
         assert f'llmgw_requests_total{{outcome="{outcome}"}} 0' in text
     assert "llmgw_tokens_total 0" in text
-    assert 'llmgw_callers_refused_total{reason="wrong_network"} 0' in text
+    assert 'llmgw_callers_refused_total{reason="missing"} 0' in text
 
 
 # --- the Anthropic backend against a fake upstream -------------------------------------------------
@@ -836,12 +844,12 @@ def test_the_agents_service_account_token_never_reaches_the_provider(key_file):
 
 
 def env(**more):
-    return {"CALLER_AUTH": "compose", "CALLER_SUBNET": AGENT_SUBNET, **more}
+    return {"CALLER_AUTH": "k8s", **more}
 
 
 def test_prepare_builds_the_scripted_gateway_by_default():
     gateway, auth = llmgw_main.prepare(env())
-    assert isinstance(gateway.backend, ScriptedBackend) and auth.mode == "compose"
+    assert isinstance(gateway.backend, ScriptedBackend) and auth.mode == "k8s"
 
 
 def test_the_budget_comes_from_the_environment():
@@ -863,7 +871,6 @@ def test_a_budget_that_makes_no_sense_stops_the_start(value):
         ({"LLM_BACKEND": "gpt"}, "LLM_BACKEND"),
         ({"LLM_BACKEND": "anthropic"}, "ANTHROPIC_API_KEY_FILE"),
         ({"LLM_BACKEND": "anthropic", "ANTHROPIC_API_KEY_FILE": "/no/such/file"}, "key"),
-        ({"CALLER_SUBNET": ""}, "CALLER_SUBNET"),
     ],
 )
 def test_the_process_does_not_start_when_a_backend_cannot_work(more, word):

@@ -5,8 +5,7 @@ The checks, in this order. The first one that says no ends the call, and the age
 
     1. the tool is one of the five                         unknown_tool
     2. the lease is well formed and live                   lease
-    3. the lease is bound to the calling pod               pod_mismatch   (Kubernetes; in Compose
-                                                                           neither side has a pod)
+    3. the lease is bound to the calling pod               pod_mismatch
     4. the stop switch is off                              paused
     5. arguments the manifest does not list are dropped    (logged by name, never a reason to refuse)
     6. the risk engine allows it (POST /decide, 2 s)       the engine's reason, risk_unavailable,
@@ -353,7 +352,7 @@ class Gateway:
             return await self._refuse(record, "db_unavailable", toolerrors.UNAVAILABLE, outcome="unavailable")
         if scope is None:
             return await self._refuse(record, "lease", toolerrors.LEASE)
-        # 3: the pod. Equal on both sides, including "no pod" on both (Compose).
+        # 3: the pod the token was issued to must be the pod the lease is bound to.
         if scope.bound_pod != caller.pod:
             return await self._refuse(record, "pod_mismatch", toolerrors.DENIED)
         # 4: the stop switch.

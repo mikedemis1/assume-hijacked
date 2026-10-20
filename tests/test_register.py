@@ -507,7 +507,10 @@ def test_poll_never_removes_a_flag_the_register_no_longer_lists(admin, syncer):
 
 def test_fetch_register_against_the_fake(run_register):
     url = f"http://127.0.0.1:{run_register.port}/protected"
-    assert sync.fetch_register(url, {}, timeout_s=5) == ["SP-1003"]
+    token = {"Authorization": "Bearer sync-token"}
+    assert sync.fetch_register(url, token, timeout_s=5) == ["SP-1003"]
+    with pytest.raises(OSError):                                       # the fake wants the caller's token
+        sync.fetch_register(url, {}, timeout_s=5)
 
 
 def test_fetch_register_refuses_a_huge_answer(monkeypatch):
@@ -522,7 +525,10 @@ def run_register(monkeypatch):
     from app.fakes import FAKES, start_fake
 
     monkeypatch.delenv("FAKE_REGISTER_PROTECTED", raising=False)
-    server = start_fake(FAKES["register"], port=0, mode="compose", host="127.0.0.1")
+    def review(token, audience):
+        return FAKES["register"].caller if (token, audience) == ("sync-token", "fake-register") else None
+
+    server = start_fake(FAKES["register"], port=0, mode="k8s", verifier=review, host="127.0.0.1")
     yield server
     server.shutdown()
 

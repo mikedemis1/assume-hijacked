@@ -21,7 +21,7 @@ from mcp.client.streamable_http import streamable_http_client
 from app.agent.gateway import ToolGateway
 from app.common.ops import Metrics
 from app.gateway import manifest
-from app.gateway.auth import CallerAuth
+from app.gateway.auth import AGENT_USER, AUDIENCE, CallerAuth, Review
 from app.gateway.proxy import Gateway, GatewayDb, Verdict, init_metrics
 from app.gateway.server import build_app
 from app.risk import service as risk_service
@@ -94,14 +94,45 @@ def build(
 
 # --- the MCP edge: what the agent talks to ---
 
-# The subnet of the agent's edge network (compose.yaml) and an address in it: the harness reaches the
-# gateway app as if from there.
-AGENT_SUBNET = "10.250.1.0/24"
-AGENT_IP = "10.250.1.5"
+# The agent as the gateway sees it: a projected token that the stand-in TokenReview knows, and the
+# pod it was issued to. A lease the agent uses over HTTP is bound to that pod (agent_lease).
+AGENT_IP = "10.250.1.5"  # the address a request comes from; the caller check does not read it
+AGENT_TOKEN = "token-of-the-agent"
+AGENT_POD = "agent-1-deadbeef-abcde"
+AGENT_HEADERS = {"Authorization": f"Bearer {AGENT_TOKEN}"}
+AGENT_RAW_HEADERS = [(b"authorization", f"Bearer {AGENT_TOKEN}".encode())]
 
 
-def compose_auth() -> CallerAuth:
-    return CallerAuth(mode="compose", allowed_subnet=AGENT_SUBNET)
+def token_reviewer(tokens: dict[str, tuple[str, str | None]]):
+    """A TokenReview stand-in: token -> (service account user, pod). Records what it was asked and
+    insists on the gateway's audience."""
+    asked: list[tuple[str, str]] = []
+
+    def review(token, audience):
+        asked.append((token, audience))
+        assert audience == AUDIENCE
+        found = tokens.get(token)
+        if not found:
+            return None
+        pod = found[1]() if callable(found[1]) else found[1]  # a test can say "the pod of the run now"
+        return Review(username=found[0], pod=pod)
+
+    review.asked = asked
+    return review
+
+
+def agent_auth(extra: dict[str, tuple[str, str | None]] | None = None, pod=AGENT_POD) -> CallerAuth:
+    """The caller check as the process builds it (mode k8s), with the stand-in TokenReview that knows
+    the agent's token (issued to `pod`, a name or a function giving it), and `extra` tokens when a test
+    needs another caller."""
+    return CallerAuth(mode="k8s", reviewer=token_reviewer({AGENT_TOKEN: (AGENT_USER, pod), **(extra or {})}))
+
+
+def agent_lease(admin, ticket: int, tools=None) -> str:
+    """A lease as the dispatcher's claim opens it: bound to the agent's pod."""
+    from tests.conftest import TOOLS, open_lease
+
+    return open_lease(admin, ticket, tools=tools or TOOLS, bound_pod=AGENT_POD)
 
 
 def from_agent(app) -> httpx2.ASGITransport:
@@ -111,9 +142,11 @@ def from_agent(app) -> httpx2.ASGITransport:
 
 @asynccontextmanager
 async def agent_session(app, headers: dict[str, str]):
-    """An MCP client of the gateway app, in process, sending `headers` on every request."""
+    """An MCP client of the gateway app, in process, sending the agent's token and then `headers` on
+    every request."""
     async with running(app):
-        async with httpx2.AsyncClient(transport=from_agent(app), base_url="http://gateway.test", headers=headers) as http:
+        sent = {**AGENT_HEADERS, **headers}
+        async with httpx2.AsyncClient(transport=from_agent(app), base_url="http://gateway.test", headers=sent) as http:
             async with Client(streamable_http_client(URL, http_client=http)) as client:
                 yield client
 
@@ -122,8 +155,9 @@ class AppGatewayClient(ToolGateway):
     """The agent's tool client (the production class) talking to the gateway app in this process."""
 
     def __init__(self, built: Built, auth: CallerAuth | None = None, headers: dict[str, str] | None = None):
-        super().__init__(URL, headers=(lambda: dict(headers)) if headers else None)
-        self._built, self._auth = built, auth or compose_auth()
+        sent = {**AGENT_HEADERS, **(headers or {})}
+        super().__init__(URL, headers=lambda: dict(sent))
+        self._built, self._auth = built, auth or agent_auth()
         self.sent: list = []
 
     @asynccontextmanager

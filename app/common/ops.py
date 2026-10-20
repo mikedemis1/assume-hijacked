@@ -120,8 +120,8 @@ def start_ops_server(
     request_timeout_s: float = 10,
 ) -> OpsServer:
     # All interfaces of the container, like app/tools/serve.py: Prometheus reaches /metrics from
-    # another container or pod. The network is the wall (internal edge networks in compose.yaml,
-    # NetworkPolicy in Kubernetes), and both endpoints carry no content beyond counts and names.
+    # another container or pod. The network is the wall (NetworkPolicy),
+    # and both endpoints carry no content beyond counts and names.
     class Handler(BaseHTTPRequestHandler):
         # A socket timeout per connection: a client that sends half a request and waits would
         # otherwise hold a server thread for good, and enough of them would starve the probes.

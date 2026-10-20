@@ -8,7 +8,7 @@
 
 Each records the calls it accepted, in memory (GET /calls), so tests can see what the system did
 to the outside world. Each accepts only its one caller:
-  compose  the network is the wall (one internal edge network per caller, compose.yaml).
+  compose  no token: the network is the wall (tests only; the stack runs the fakes in k8s mode).
   k8s      every request carries the caller's projected service account token with the audience
            fake-<name>; a TokenReview says whose it is, and only the expected service account
            passes. The token is checked from the headers, before the body is read.
@@ -34,10 +34,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from app.common.calls import MODES, caller_auth_mode
+from app.common.calls import caller_auth_mode
 from app.common.events import security_event
 from app.common.ops import Heartbeat, Metrics, start_ops_server
 
+# A fake is a test double of an outside system, not a caller check of ours: it keeps an open mode for
+# the tests that run it on loopback. The components themselves have only the token (app/common/calls.py).
+MODES = ("compose", "k8s")
 OPS_PORT = 9000
 MAX_BODY_BYTES = 16 * 1024
 DRAIN_BYTES = 64 * 1024  # a refused request's body is read and dropped up to this size

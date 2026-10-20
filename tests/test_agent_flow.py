@@ -29,10 +29,9 @@ from app.common.ops import Metrics
 from tests.conftest import admin_connect
 from tests.dispatcherharness import AGENT_IP as DISPATCHER_AGENT_IP
 from tests.dispatcherharness import Harness as DispatcherHarness
-from tests.gatewayharness import AppGatewayClient, build
+from tests.gatewayharness import AppGatewayClient, agent_auth, build
 from tests.test_llmgw import AGENT_IP as LLM_AGENT_IP
-from tests.test_llmgw import AGENT_SUBNET as LLM_SUBNET
-from tests.test_llmgw import LEASE, CountingBackend
+from tests.test_llmgw import LEASE, CountingBackend, agent_reviewer
 
 EVENTS = "assume_hijacked.security"
 
@@ -51,7 +50,7 @@ class InMemoryDispatcher(DispatcherClient):
 
 
 class InMemoryLlm(LlmGatewayClient):
-    def __init__(self, app, lease, headers=None, ip=LLM_AGENT_IP):
+    def __init__(self, app, lease, headers=lambda: {"Authorization": "Bearer llm-token"}, ip=LLM_AGENT_IP):
         super().__init__("http://llm-gateway:8083", lease, headers=headers)
         self._app, self._ip = app, ip
 
@@ -77,7 +76,7 @@ def llm_stack(backend=None, limit=20000):
     metrics = Metrics()
     llmgw_main.init_metrics(metrics)
     gateway = LlmGateway(backend or CountingBackend(), Budget(limit), metrics)
-    app = llmgw_main.build_app(gateway, llmgw_main.caller_auth("compose", LLM_SUBNET), metrics)
+    app = llmgw_main.build_app(gateway, llmgw_main.caller_auth("k8s", agent_reviewer), metrics)
     return gateway, app
 
 
@@ -159,7 +158,7 @@ def test_a_gateway_that_sends_junk_or_too_much_or_nothing_is_an_error():
 def test_a_caller_the_gateway_does_not_know_is_unauthorized():
     gateway, app = llm_stack()
     with pytest.raises(LlmError) as err:
-        InMemoryLlm(app, LEASE, ip="10.250.9.7").next_action(TICKET)
+        InMemoryLlm(app, LEASE, headers=lambda: {}).next_action(TICKET)       # no token
     assert err.value.category == "unauthorized"
     assert gateway.backend.calls == 0                                # refused before the model
 
@@ -178,15 +177,16 @@ def test_over_budget_is_a_budget_error():
 
 def test_claim_returns_the_ticket_and_the_lease_or_nothing(settings, as_role):
     h = DispatcherHarness(settings, as_role)
-    client = InMemoryDispatcher(h.app)
+    client = InMemoryDispatcher(h.app, headers=h.next_agent())
     claim = client.claim()
     assert claim == Claim(ticket_id=1, lease=claim.lease) and len(claim.lease) == 64
-    assert InMemoryDispatcher(h.app).claim().ticket_id == 2          # the control: the next one is a different ticket
+    assert InMemoryDispatcher(h.app, headers=h.next_agent()).claim().ticket_id == 2          # the control: the next pod gets a different ticket
 
 
 def test_claim_with_nothing_to_do_is_none(settings, as_role, admin):
     admin.execute("UPDATE tickets SET status = 'closed'")
-    assert InMemoryDispatcher(DispatcherHarness(settings, as_role).app).claim() is None
+    h = DispatcherHarness(settings, as_role)
+    assert InMemoryDispatcher(h.app, headers=h.next_agent()).claim() is None     # no Job was started, so no pod has a run
 
 
 @pytest.mark.parametrize(
@@ -222,7 +222,7 @@ def test_a_reply_that_is_not_stored_is_an_error(status, body, category):
 
 def test_the_reply_goes_with_the_lease_in_the_header_and_only_the_text_in_the_body(settings, as_role, admin):
     h = DispatcherHarness(settings, as_role)
-    client = InMemoryDispatcher(h.app)
+    client = InMemoryDispatcher(h.app, headers=h.next_agent())
     claim = client.claim()
     client.reply(claim.lease, "Thank you.")
     assert admin.execute("SELECT ticket_id, text FROM replies").fetchall() == [{"ticket_id": 1, "text": "Thank you."}]
@@ -340,7 +340,7 @@ def test_main_sends_security_events_to_stderr_and_nothing_to_stdout(monkeypatch,
     monkeypatch.setattr("sys.argv", ["main"])
     for name in ("GATEWAY_URL", "LLM_GATEWAY_URL", "DISPATCHER_URL"):
         monkeypatch.setenv(name, "http://x.test")
-    monkeypatch.setattr(agent_main.config, "load", lambda: type("S", (), {"caller_auth": "compose"})())
+    monkeypatch.setattr(agent_main.config, "load", lambda: type("S", (), {"caller_auth": "k8s"})())
     monkeypatch.setattr(agent_main, "DispatcherClient", lambda url, headers=None: SpyDispatcher(claim=Claim(7, LEASE)))
     monkeypatch.setattr(agent_main, "ToolGateway", lambda url, headers=None: SpyTools())
     monkeypatch.setattr(agent_main, "LlmGatewayClient", lambda url, lease, headers=None: ScriptedLLM())
@@ -389,12 +389,12 @@ class Stack:
     def __init__(self, settings, as_role, *, backend=None, limit=20000):
         self.settings = settings
         self.dispatcher = DispatcherHarness(settings, as_role)
-        self.tool_gateway = AppGatewayClient(build(self.settings, as_role))
+        self.tool_gateway = AppGatewayClient(build(self.settings, as_role), agent_auth(pod=lambda: self.dispatcher.last_pod))
         self.llm_gateway, self.llm_app = llm_stack(backend, limit)
 
     def run(self):
         return agent_main.run(
-            InMemoryDispatcher(self.dispatcher.app),
+            InMemoryDispatcher(self.dispatcher.app, headers=self.dispatcher.next_agent()),
             lambda lease: InMemoryLlm(self.llm_app, lease),
             self.tool_gateway,
         )
@@ -417,7 +417,9 @@ def test_agent_end_to_end_in_memory(settings, as_role, admin):
     assert "Eleni Papadopoulou" in reply and reply == stored(settings, 1)
     assert SAFE_REPLY not in reply and CREDIT_NOTICE not in reply and MEDICAL_QUESTION not in reply
     # The run is finished: replied, the lease has ended, and the two calls are on the record.
-    assert admin.execute("SELECT ticket_id, status FROM agent_runs").fetchall() == [{"ticket_id": 1, "status": "replied"}]
+    runs = admin.execute("SELECT ticket_id, status FROM agent_runs ORDER BY ticket_id").fetchall()
+    assert runs[0] == {"ticket_id": 1, "status": "replied"}           # the other Jobs the dispatcher started are not claimed
+    assert {r["status"] for r in runs[1:]} == {"started"}
     assert admin.execute("SELECT count(*) AS n FROM leases WHERE NOT revoked").fetchone()["n"] == 0
     assert [r["tool"] for r in admin.execute("SELECT tool FROM tool_calls ORDER BY id")] == ["read_ticket", "lookup_account"]
     # Every step really went through the LLM gateway: the model was asked twice (call, then reply).
@@ -489,7 +491,7 @@ def test_the_agent_gets_its_lease_from_the_claim_and_no_model_key_anywhere(setti
             return await super()._post(transcript)
 
     agent_main.run(
-        InMemoryDispatcher(stack.dispatcher.app),
+        InMemoryDispatcher(stack.dispatcher.app, headers=stack.dispatcher.next_agent()),
         lambda lease: Watching(stack.llm_app, lease),
         stack.tool_gateway,
     )

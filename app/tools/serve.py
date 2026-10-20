@@ -155,9 +155,8 @@ def main() -> None:
     # while this process serves, and if the server below stops the process ends, so the heartbeat
     # never goes stale on its own.
     start_ops_server(OPS_PORT, Metrics(), Heartbeat(max_age_s=float("inf")))
-    # All interfaces of the container: the gateway reaches the tool from another container. Each
-    # tool container is only on internal edge networks (compose.yaml), none with a route out; the
-    # network and the token, not the bind address, are the wall (tests/test_smoke.py).
+    # All interfaces of the container: the gateway reaches the tool from another container. The
+    # network (NetworkPolicy) and the token, not the bind address, are the wall.
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")  # nosec B104 - only reachable on the internal edge networks
 
 

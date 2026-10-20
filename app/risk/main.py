@@ -1,7 +1,7 @@
 """Risk engine process: POST /decide on port 8082, the effect loop, ops on port 9000.
 
-The loop runs in the main thread: if it dies, the process exits and Compose (restart:
-unless-stopped) or Kubernetes starts a new one. /decide runs in a daemon thread with its own
+The loop runs in the main thread: if it dies, the process exits and Kubernetes
+starts a new one. /decide runs in a daemon thread with its own
 database connection, so a slow assessment never holds up a tool call.
 """
 
@@ -33,7 +33,7 @@ def poll(conn, settings, now: datetime, metrics: Metrics, heartbeat: Heartbeat) 
 
 def serve_decide(app, port: int = DECIDE_PORT) -> threading.Thread:
     # All interfaces of the container: the gateway calls it from another container. The network is
-    # the wall (edge_gateway_risk in compose.yaml; NetworkPolicy in Kubernetes). No access log: the body
+    # the wall (NetworkPolicy). No access log: the body
     # carries the lease, and the path alone tells nobody anything.
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=port, access_log=False, log_level="warning")  # nosec B104

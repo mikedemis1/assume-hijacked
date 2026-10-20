@@ -30,11 +30,13 @@ from app.gateway.auth import AGENT_USER
 from tests.conftest import TOOLS, open_lease
 from tests.dispatcherharness import (  # the harness is shared with tests/test_agent.py
     AGENT_IP,
+    DEFAULT_POD,
     EVENTS,
     ROOT,
     TEMPLATE_FILE,
-    TOOL_IP,
+    FakeKube,
     Harness,
+    pod_of,
     post,
     request,
     reviewer_for,
@@ -42,7 +44,8 @@ from tests.dispatcherharness import (  # the harness is shared with tests/test_a
 
 
 @pytest.fixture
-def compose_dispatcher(settings, as_role):
+def kube_harness(settings, as_role):
+    """The dispatcher with a FakeKube; `h.agent(pod)` gives the headers of a caller in that pod."""
     return Harness(settings, as_role)
 
 
@@ -81,164 +84,141 @@ def live(admin, lease):
 
 
 def claimed(h):
-    answer = claim(h)
+    """The next Job's pod claims its ticket: (ticket id, lease). Jobs are started when none is free."""
+    headers = h.next_agent()()
+    answer = claim(h, headers=headers)
     assert answer.status_code == 200, answer.text
-    return answer.json()["ticket_id"], answer.json()["lease"]
+    lease = answer.json()["lease"]
+    h.pods[lease] = h.last_pod
+    return answer.json()["ticket_id"], lease
 
 
-# --- POST /claim in Compose ----------------------------------------------------------------------
+# --- POST /claim -----------------------------------------------------------------------------------
 
 
-def test_claim_opens_lease_for_one_ticket(compose_dispatcher, admin):
-    h = compose_dispatcher
-    answer = claim(h)
-    assert answer.status_code == 200
-    body = answer.json()
-    assert set(body) == {"ticket_id", "lease"}
-    assert body["ticket_id"] == 1                      # the lowest open ticket without a run
-    lease = body["lease"]
+def test_claim_opens_lease_for_one_ticket(kube_harness, admin):
+    h = kube_harness
+    ticket, lease = claimed(h)
+    assert ticket == 1                                 # the ticket of the Job the pod belongs to
     assert len(lease) == 64 and int(lease, 16) >= 0
-    # The lease is live, names that ticket, lists every tool and is bound to no pod (Compose).
+    # The lease is live, names that ticket, lists every tool and is bound to the pod that asked.
     scope = admin.execute("SELECT ticket_id, allowed_tools, bound_pod FROM lease_scope(%s)", (lease,)).fetchone()
-    assert scope == {"ticket_id": 1, "allowed_tools": list(TOOLS), "bound_pod": None}
-    # One run, claimed, holding the lease's hash and never the lease.
-    row = admin.execute("SELECT ticket_id, status, lease_hash, job_name FROM agent_runs").fetchone()
+    assert scope == {"ticket_id": 1, "allowed_tools": list(TOOLS), "bound_pod": h.pods[lease]}
+    # One run claimed, holding the lease's hash and never the lease.
+    row = admin.execute("SELECT ticket_id, status, lease_hash, job_name FROM agent_runs WHERE ticket_id = 1").fetchone()
     assert row == {"ticket_id": 1, "status": "claimed", "lease_hash": hashlib.sha256(lease.encode()).digest(),
-                   "job_name": None}
+                   "job_name": h.kube.created[0]["metadata"]["name"]}
     assert lease not in json.dumps(admin.execute("SELECT * FROM agent_runs").fetchall(), default=str)
     assert metric(h, "dispatcher_claims_total", outcome="issued") == 1
 
 
-def test_a_second_claim_gets_the_next_ticket_and_an_empty_queue_gets_204(compose_dispatcher, admin):
-    h = compose_dispatcher
-    assert [claimed(h)[0] for _ in range(4)] == [1, 2, 3, 4]
-    empty = claim(h)
-    assert empty.status_code == 204 and empty.content == b""
-    assert len(runs(admin)) == 4
-    assert metric(h, "dispatcher_claims_total", outcome="none") == 1
-
-
-def test_a_ticket_that_is_not_open_or_already_has_a_run_is_never_handed_out(compose_dispatcher, admin):
-    admin.execute("UPDATE tickets SET status = 'closed' WHERE id IN (1, 2)")
-    admin.execute("INSERT INTO agent_runs (ticket_id, status) VALUES (3, 'started')")
-    assert claimed(compose_dispatcher)[0] == 4
-    assert claim(compose_dispatcher).status_code == 204
-
-
-def test_claims_at_the_same_moment_never_share_a_ticket(settings, as_role, admin):
-    # Three dispatchers (three connections; the role is limited to five, and the stack's own
-    # dispatcher may hold one) claim at once over the four tickets. Nobody gets the same ticket.
-    harnesses = [Harness(settings, as_role) for _ in range(3)]
+def test_claims_at_the_same_moment_give_one_lease(settings, as_role, admin):
+    # The same pod's claim reaches three dispatchers (three connections; the role is limited to five,
+    # and the stack's own dispatcher may hold one) at once. One gets the lease, the others nothing.
+    first = Harness(settings, as_role)
+    first.dispatcher.dispatch_once()
+    pod = pod_of(first.kube.created[0]["metadata"]["name"])
+    harnesses = [first, Harness(settings, as_role), Harness(settings, as_role)]
     answers = [None] * 3
     gate = threading.Barrier(3)
 
     def go(i):
         gate.wait()
-        answers[i] = claim(harnesses[i])
+        answers[i] = claim(harnesses[i], headers=harnesses[i].agent(pod))
 
     threads = [threading.Thread(target=go, args=(i,)) for i in range(3)]
     [t.start() for t in threads]
     [t.join() for t in threads]
-    assert [a.status_code for a in answers] == [200, 200, 200]
-    tickets = [a.json()["ticket_id"] for a in answers]
-    assert len(set(tickets)) == 3 and set(tickets) <= {1, 2, 3, 4}
-    leases = {a.json()["lease"] for a in answers}
-    assert len(leases) == 3
-    # The one ticket left goes to the next claim, and then there is none.
-    last = claim(harnesses[0])
-    assert last.status_code == 200 and sorted([*tickets, last.json()["ticket_id"]]) == [1, 2, 3, 4]
-    assert claim(harnesses[1]).status_code == 204
-    assert sorted(r["ticket_id"] for r in runs(admin)) == [1, 2, 3, 4]
+    assert sorted(a.status_code for a in answers) == [200, 204, 204]
+    assert admin.execute("SELECT count(*) AS n FROM leases WHERE ticket_id = 1").fetchone()["n"] == 1
 
 
-def test_a_failed_claim_leaves_no_run_and_no_lease(settings, as_role, admin, monkeypatch):
-    h = Harness(settings, as_role)
+def test_a_failed_claim_leaves_the_run_unclaimed_and_no_lease(kube_harness, admin, monkeypatch):
+    h = kube_harness
+    h.dispatcher.dispatch_once()
+    headers = h.agent(pod_of(h.kube.created[0]["metadata"]["name"]))
     monkeypatch.setattr(DispatcherDb, "_lease_for_run", staticmethod(lambda *a: (_ for _ in ()).throw(RuntimeError("x"))))
-    assert claim(h).status_code == 503
-    assert runs(admin) == []
+    assert claim(h, headers=headers).status_code == 503
+    assert all(r["status"] == "started" for r in runs(admin))
     assert admin.execute("SELECT count(*) AS n FROM leases").fetchone()["n"] == 0
     monkeypatch.undo()
-    assert claim(h).status_code == 200                       # the control: the same ticket is still there
-    assert [r["ticket_id"] for r in runs(admin)] == [1]
+    assert claim(h, headers=headers).status_code == 200      # the control: the same run is still there
+    assert {r["ticket_id"]: r["status"] for r in runs(admin)}[1] == "claimed"
 
 
-def test_a_database_that_fails_is_a_503_without_details(settings, as_role, monkeypatch, caplog):
-    h = Harness(settings, as_role)
+def test_a_database_that_fails_is_a_503_without_details(kube_harness, monkeypatch, caplog):
+    h = kube_harness
+    headers = h.agent(DEFAULT_POD)
 
     def broken(work):
         raise psycopg.OperationalError("connection to server at 10.1.2.3 failed: password for dispatcher")
 
     monkeypatch.setattr(h.store, "_use", broken)
     with caplog.at_level(logging.INFO):
-        answer = claim(h)
-        replied = post(h.app, "/reply", lease="ab" * 32, body={"text": "hello"})
+        answer = claim(h, headers=headers)
+        replied = post(h.app, "/reply", lease="ab" * 32, body={"text": "hello"}, headers=headers)
     assert (answer.status_code, answer.json()) == (503, {"error": "unavailable"})
     assert (replied.status_code, replied.json()) == (503, {"error": "unavailable"})
     assert "10.1.2.3" not in caplog.text and "password" not in answer.text + replied.text
     assert metric(h, "dispatcher_errors_total", stage="database") == 2
 
 
-# --- the caller check in Compose -----------------------------------------------------------------
+# --- the caller check -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "ip", [TOOL_IP, "10.250.1.5", "10.250.3.1", "10.250.2.0".replace("2.0", "255.1"), "127.0.0.1", "::1", "", None]
-)
-def test_a_caller_outside_the_agents_subnet_is_refused_before_anything_runs(compose_dispatcher, admin, ip):
-    h = compose_dispatcher
-    lease = open_lease(admin, 1)
-    refused_claim = claim(h, ip=ip or None)
-    refused_reply = post(h.app, "/reply", lease=lease, body={"text": "hello"}, ip=ip or None)
-    assert (refused_claim.status_code, refused_claim.json()) == (401, {"error": "unauthorized"})
-    assert refused_reply.status_code == 401
-    assert refused_claim.headers["www-authenticate"] == "Bearer"
-    # Nothing ran: the store was never asked, no run or reply exists, the lease is still live.
-    assert h.store.used == 0
-    assert runs(admin) == [] and stored(admin, 1) is None and live(admin, lease)
-    # The control: the same two calls from the agent's own address are served.
-    assert claim(h).status_code == 200
-    assert post(h.app, "/reply", lease=lease, body={"text": "hello"}).status_code == 200
-    assert h.store.used > 0
-    assert metric(h, "dispatcher_callers_refused_total", reason="wrong_network") >= 2
+def test_call_without_token_is_refused(kube_harness, admin):
+    h = kube_harness
+    h.dispatcher.dispatch_once()
+    used = h.store.used
+    lease = open_lease(admin, 1, bound_pod=DEFAULT_POD)
+    h.tokens["t-llm"] = ("system:serviceaccount:ah-agent:llm-gateway", DEFAULT_POD)
+    for name, headers in {"no header": {}, "another service account": {"Authorization": "Bearer t-llm"}}.items():
+        refused_claim = claim(h, headers=headers)
+        refused_reply = post(h.app, "/reply", lease=lease, body={"text": "hello"}, headers=headers)
+        assert (refused_claim.status_code, refused_claim.json()) == (401, {"error": "unauthorized"}), name
+        assert refused_reply.status_code == 401, name
+        assert refused_claim.headers["www-authenticate"] == "Bearer"
+    # Nothing ran: the store was never asked, no run was claimed, no reply exists, the lease is still live.
+    assert h.store.used == used
+    assert all(r["status"] == "started" for r in runs(admin)) and stored(admin, 1) is None and live(admin, lease)
+    assert metric(h, "dispatcher_callers_refused_total", reason="missing") >= 2
+    assert metric(h, "dispatcher_callers_refused_total", reason="wrong_service_account") >= 2
+    # The control: the same two calls with the agent's token are served.
+    pod = pod_of(h.kube.created[0]["metadata"]["name"])
+    assert claim(h, headers=h.agent(pod)).status_code == 200
+    assert post(h.app, "/reply", lease=lease, body={"text": "hello"}, headers=h.agent(DEFAULT_POD)).status_code == 200
+    assert h.store.used > used
 
 
-def test_the_subnet_is_edge_to_edge_first_and_last_address(compose_dispatcher):
-    for ip in ("10.250.2.1", "10.250.2.254", "::ffff:10.250.2.9"):
-        assert claim(compose_dispatcher, ip=ip).status_code in (200, 204), ip
-    for ip in ("10.250.1.255", "10.250.3.0", "10.251.2.5", "192.168.2.5"):
-        assert claim(compose_dispatcher, ip=ip).status_code == 401, ip
-
-
-def test_forwarded_headers_do_not_replace_the_peer_address(compose_dispatcher):
+def test_forwarded_headers_are_no_token(kube_harness):
     forged = {"X-Forwarded-For": AGENT_IP, "X-Real-IP": AGENT_IP, "Forwarded": f"for={AGENT_IP}"}
-    assert claim(compose_dispatcher, ip=TOOL_IP, headers=forged).status_code == 401
+    assert claim(kube_harness, headers=forged).status_code == 401
 
 
-def test_compose_mode_does_not_start_without_the_subnet(monkeypatch):
-    for name in ("CALLER_SUBNET", "DISPATCH_MODE"):
-        monkeypatch.delenv(name, raising=False)
+def test_compose_caller_mode_is_refused(settings, as_role, monkeypatch):
+    # The address of the caller is not an identity: the only mode is the Kubernetes token.
+    store = DispatcherDb(lambda: as_role("dispatcher"))
+    with pytest.raises(ValueError, match="DISPATCH_MODE"):
+        Dispatcher(store, "compose", Metrics(), template={}, api=object())
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
+        dispatcher_main.caller_auth("compose")
+    with pytest.raises(ValueError, match="DISPATCH_MODE"):
+        Harness(settings, as_role, mode="compose")
     monkeypatch.setenv("DB_PASSWORD_DISPATCHER", "x")
     monkeypatch.setenv("CALLER_AUTH", "compose")
     monkeypatch.setattr(dispatcher_main, "start_ops_server", lambda *a: pytest.fail("started without a caller check"))
-    with pytest.raises(SystemExit, match="CALLER_SUBNET"):
-        dispatcher_main.main()
-    monkeypatch.setenv("CALLER_SUBNET", "not-a-subnet")
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError, match="CALLER_AUTH"):
         dispatcher_main.main()
 
 
-def test_the_process_does_not_start_without_its_password_or_with_mixed_modes(monkeypatch):
+def test_the_process_does_not_start_without_its_password_or_with_another_mode(monkeypatch):
     monkeypatch.delenv("DB_PASSWORD_DISPATCHER", raising=False)
     with pytest.raises(SystemExit, match="DB_PASSWORD_DISPATCHER"):
         dispatcher_main.main()
     monkeypatch.setenv("DB_PASSWORD_DISPATCHER", "x")
-    monkeypatch.setenv("CALLER_AUTH", "compose")
-    monkeypatch.setenv("DISPATCH_MODE", "k8s")
-    with pytest.raises(SystemExit, match="does not match"):
-        dispatcher_main.main()
     monkeypatch.setenv("CALLER_AUTH", "k8s")
     monkeypatch.setenv("DISPATCH_MODE", "compose")
-    with pytest.raises(SystemExit, match="does not match"):
+    with pytest.raises(SystemExit, match="DISPATCH_MODE"):
         dispatcher_main.main()
     monkeypatch.setenv("DISPATCH_MODE", "nonsense")
     with pytest.raises(SystemExit, match="DISPATCH_MODE"):
@@ -280,43 +260,43 @@ HIJACKED = [
 
 
 @pytest.mark.parametrize("name, text, reason", HIJACKED, ids=[h[0] for h in HIJACKED])
-def test_reply_runs_guard_again_outside_agent(compose_dispatcher, admin, name, text, reason):
+def test_reply_runs_guard_again_outside_agent(kube_harness, admin, name, text, reason):
     # The agent is taken over and sends what the model wrote without its own guard having run.
-    h = compose_dispatcher
+    h = kube_harness
     ticket, lease = claimed(h)
-    answer = post(h.app, "/reply", lease=lease, body={"text": text})
+    answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": text})
     assert (answer.status_code, answer.json()) == (200, {"stored": True})   # it does not say it replaced the text
     assert stored(admin, ticket) == SAFE_REPLY
     assert metric(h, "dispatcher_replies_blocked_total", reason=reason) == 1
 
 
-def test_an_honest_reply_goes_out_unchanged_and_the_account_numbers_are_allowed(compose_dispatcher, admin):
+def test_an_honest_reply_goes_out_unchanged_and_the_account_numbers_are_allowed(kube_harness, admin):
     # The control: the guard is not a wall that blocks everything. Ticket 1's account is at Patision 10
     # on tariff G1, so "10" and "1" are numbers a tool showed the model.
-    h = compose_dispatcher
+    h = kube_harness
     ticket, lease = claimed(h)
     text = "Your home at Patision 10 is on tariff G1 and the account is active."
-    assert post(h.app, "/reply", lease=lease, body={"text": text}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": text}).status_code == 200
     assert stored(admin, ticket) == text
     assert metric(h, "dispatcher_replies_blocked_total", reason="unapproved_number") == 0
 
 
-def test_the_numbers_allowed_are_the_ticket_owners_not_another_customers(compose_dispatcher, admin):
+def test_the_numbers_allowed_are_the_ticket_owners_not_another_customers(kube_harness, admin):
     # Customer 1002 lives at Egnatias 5. On ticket 1 (Patision 10) a reply with 5 is not allowed.
-    h = compose_dispatcher
+    h = kube_harness
     ticket, lease = claimed(h)
-    assert post(h.app, "/reply", lease=lease, body={"text": "You live at Egnatias 5."}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "You live at Egnatias 5."}).status_code == 200
     assert stored(admin, ticket) == SAFE_REPLY
 
 
-def test_the_notices_come_from_the_record_of_calls_not_from_the_agent(compose_dispatcher, admin):
-    h = compose_dispatcher
+def test_the_notices_come_from_the_record_of_calls_not_from_the_agent(kube_harness, admin):
+    h = kube_harness
     ticket, lease = claimed(h)
     tool_call(admin, lease, "read_ticket")
     tool_call(admin, lease, "issue_bill_credit", "denied")        # asked, and refused: the notice still goes on
     tool_call(admin, lease, "request_disconnection", "ok")
     # The agent says nothing about any of this.
-    assert post(h.app, "/reply", lease=lease, body={"text": "Thank you, we are checking."}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you, we are checking."}).status_code == 200
     assert stored(admin, ticket) == "\n\n".join(["Thank you, we are checking.", replies.CREDIT_NOTICE, replies.MEDICAL_QUESTION])
 
 
@@ -334,12 +314,12 @@ def test_the_notices_come_from_the_record_of_calls_not_from_the_agent(compose_di
         ([("lookup_account", "ok"), ("set_temp_protection", "ok")], False, False),
     ],
 )
-def test_the_dispatcher_adds_the_notices_by_the_agents_rules(compose_dispatcher, admin, calls, credit, moveout):
-    h = compose_dispatcher
+def test_the_dispatcher_adds_the_notices_by_the_agents_rules(kube_harness, admin, calls, credit, moveout):
+    h = kube_harness
     ticket, lease = claimed(h)
     for tool, outcome in calls:
         tool_call(admin, lease, tool, outcome)
-    assert post(h.app, "/reply", lease=lease, body={"text": "We are looking into it."}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "We are looking into it."}).status_code == 200
     # The reply, then the credit notice if a credit was asked for, then the medical question if a
     # move-out went in, each after a blank line.
     expected = "\n\n".join(
@@ -349,45 +329,45 @@ def test_the_dispatcher_adds_the_notices_by_the_agents_rules(compose_dispatcher,
     assert replies.finish("We are looking into it.", "", credit, moveout).text == expected
 
 
-def test_other_leases_calls_do_not_count(compose_dispatcher, admin):
-    h = compose_dispatcher
+def test_other_leases_calls_do_not_count(kube_harness, admin):
+    h = kube_harness
     ticket, lease = claimed(h)
     other = open_lease(admin, 2)
     tool_call(admin, other, "issue_bill_credit")
     tool_call(admin, other, "request_disconnection")
-    assert post(h.app, "/reply", lease=lease, body={"text": "Thank you."}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you."}).status_code == 200
     assert stored(admin, ticket) == "Thank you."
 
 
-def test_the_notices_that_name_a_credit_are_added_after_the_guard(compose_dispatcher, admin):
+def test_the_notices_that_name_a_credit_are_added_after_the_guard(kube_harness, admin):
     # The notice says "credit", which the guard blocks; it must not be blocked on its way out.
     from app.agent.guard import block_reason
 
     assert block_reason(replies.CREDIT_NOTICE, set())
-    h = compose_dispatcher
+    h = kube_harness
     ticket, lease = claimed(h)
     tool_call(admin, lease, "issue_bill_credit")
-    post(h.app, "/reply", lease=lease, body={"text": "Thank you."})
+    post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you."})
     assert replies.CREDIT_NOTICE in stored(admin, ticket) and SAFE_REPLY not in stored(admin, ticket)
 
 
-def test_an_agent_that_sends_the_notice_itself_is_blocked_like_any_money_text(compose_dispatcher, admin):
-    h = compose_dispatcher
+def test_an_agent_that_sends_the_notice_itself_is_blocked_like_any_money_text(kube_harness, admin):
+    h = kube_harness
     ticket, lease = claimed(h)
-    post(h.app, "/reply", lease=lease, body={"text": "Hello. " + replies.CREDIT_NOTICE})
+    post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Hello. " + replies.CREDIT_NOTICE})
     assert stored(admin, ticket) == SAFE_REPLY
 
 
-def test_the_gave_up_text_and_the_safe_text_pass_the_guard(compose_dispatcher, admin):
+def test_the_gave_up_text_and_the_safe_text_pass_the_guard(kube_harness, admin):
     for text in (core.GIVE_UP, SAFE_REPLY):
         assert replies.finish(text, "", False, False).blocked is None
 
 
-def test_the_ticket_comes_from_the_lease_not_from_the_body(compose_dispatcher, admin):
-    h = compose_dispatcher
+def test_the_ticket_comes_from_the_lease_not_from_the_body(kube_harness, admin):
+    h = kube_harness
     ticket, lease = claimed(h)
     assert ticket == 1
-    answer = post(h.app, "/reply", lease=lease, body={"text": "Thank you.", "ticket_id": 2, "lease": "x", "status": "replied"})
+    answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you.", "ticket_id": 2, "lease": "x", "status": "replied"})
     assert answer.status_code == 200
     assert stored(admin, 1) == "Thank you." and stored(admin, 2) is None
 
@@ -395,22 +375,22 @@ def test_the_ticket_comes_from_the_lease_not_from_the_body(compose_dispatcher, a
 # --- POST /reply: the lease ----------------------------------------------------------------------
 
 
-def test_reply_revokes_lease(compose_dispatcher, admin, as_role):
-    h = compose_dispatcher
+def test_reply_revokes_lease(kube_harness, admin, as_role):
+    h = kube_harness
     ticket, lease = claimed(h)
     assert live(admin, lease)                                         # the control: live before the reply
-    assert post(h.app, "/reply", lease=lease, body={"text": "Thank you."}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you."}).status_code == 200
     assert not live(admin, lease)
     assert admin.execute("SELECT revoked FROM leases").fetchone()["revoked"] is True
-    assert runs(admin) == [{"ticket_id": 1, "status": "replied", "job_name": None}]
+    assert [(r["ticket_id"], r["status"]) for r in runs(admin)] == [(1, "replied"), (2, "started"), (3, "started")]
     # The lease no longer works anywhere: not for a second reply, not for a tool.
-    again = post(h.app, "/reply", lease=lease, body={"text": "Another."})
+    again = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Another."})
     assert (again.status_code, again.json()) == (403, {"error": "lease"})
     assert stored(admin, ticket) == "Thank you."
 
 
-def test_reply_waits_for_an_inflight_effect_before_deciding_its_notice(compose_dispatcher, as_role, admin):
-    h = compose_dispatcher
+def test_reply_waits_for_an_inflight_effect_before_deciding_its_notice(kube_harness, as_role, admin):
+    h = kube_harness
     ticket, lease = claimed(h)
     entered, release = threading.Event(), threading.Event()
     def effect():
@@ -422,7 +402,7 @@ def test_reply_waits_for_an_inflight_effect_before_deciding_its_notice(compose_d
         pending = pool.submit(effect)
         try:
             assert entered.wait(5), "effect did not enter its transaction"
-            reply = pool.submit(post, h.app, "/reply", lease=lease, body={"text": "Thank you."})
+            reply = pool.submit(post, h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you."})
             deadline, blocked = time.monotonic() + 5, False
             while time.monotonic() < deadline and not reply.done():
                 blocked = admin.execute(
@@ -442,24 +422,25 @@ def test_reply_waits_for_an_inflight_effect_before_deciding_its_notice(compose_d
         as_role("tool_read_ticket").execute("SELECT * FROM api_read_ticket(%s)", (lease,))
 
 
-def test_reply_notices_ignore_requests_filed_before_the_lease_opened(compose_dispatcher, admin, as_role):
+def test_reply_notices_ignore_requests_filed_before_the_lease_opened(kube_harness, admin, as_role):
     # A request left on the same ticket by an earlier run is not this run's doing, so it adds no
     # notice. The control: the same two kinds of request filed by the tools during the lease do.
-    h = compose_dispatcher
+    h = kube_harness
     admin.execute(
         "INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref, move_out_date, created_at) "
         "VALUES ('move_out', 1, 1, NULL, NULL, NULL, current_date, now() - interval '1 hour'), "
         "('credit', 1, 1, 1.00, 'duplicate_charge', 2, NULL, now() - interval '1 hour')"
     )
     ticket, lease = claimed(h)
-    assert post(h.app, "/reply", lease=lease, body={"text": "Thank you."}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you."}).status_code == 200
     assert stored(admin, ticket) == "Thank you."
     admin.execute("DELETE FROM replies")
     admin.execute("DELETE FROM agent_runs")
+    h.kube.created.clear()                                            # the Jobs of the deleted runs are gone
     ticket, lease = claimed(h)
     as_role("tool_request_disconnection").execute("SELECT api_request_moveout(%s, current_date)", (lease,))
     as_role("tool_issue_bill_credit").execute("SELECT api_request_credit(%s, 1, 'duplicate_charge', 2)", (lease,))
-    assert post(h.app, "/reply", lease=lease, body={"text": "Thank you."}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you."}).status_code == 200
     assert replies.CREDIT_NOTICE in stored(admin, ticket) and replies.MEDICAL_QUESTION in stored(admin, ticket)
 
 
@@ -475,42 +456,44 @@ BAD_LEASES = {
 
 
 @pytest.mark.parametrize("name", list(BAD_LEASES))
-def test_a_reply_with_an_unknown_or_malformed_lease_is_refused_and_stores_nothing(compose_dispatcher, admin, name):
-    h = compose_dispatcher
+def test_a_reply_with_an_unknown_or_malformed_lease_is_refused_and_stores_nothing(kube_harness, admin, name):
+    h = kube_harness
     lease = BAD_LEASES[name]
-    answer = request(h.app, "POST", "/reply", headers={"X-Lease": lease} if lease else {}, content=json.dumps({"text": "Hi"}))
+    headers = {**h.agent(DEFAULT_POD), **({"X-Lease": lease} if lease else {})}
+    answer = request(h.app, "POST", "/reply", headers=headers, content=json.dumps({"text": "Hi"}))
     assert (answer.status_code, answer.json()) == (403, {"error": "lease"})
     assert admin.execute("SELECT count(*) AS n FROM replies").fetchone()["n"] == 0
     assert metric(h, "dispatcher_replies_total", outcome="lease") == 1
 
 
-def test_an_expired_or_revoked_lease_cannot_reply(compose_dispatcher, admin):
-    h = compose_dispatcher
+def test_an_expired_or_revoked_lease_cannot_reply(kube_harness, admin):
+    h = kube_harness
     _, lease = claimed(h)
     admin.execute("UPDATE leases SET expires_at = now() - interval '1 second'")
-    assert post(h.app, "/reply", lease=lease, body={"text": "Late."}).status_code == 403
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Late."}).status_code == 403
     admin.execute("UPDATE leases SET expires_at = now() + interval '1 hour', revoked = true")
-    assert post(h.app, "/reply", lease=lease, body={"text": "Revoked."}).status_code == 403
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Revoked."}).status_code == 403
     assert stored(admin, 1) is None
     admin.execute("UPDATE leases SET revoked = false")
-    assert post(h.app, "/reply", lease=lease, body={"text": "Fine."}).status_code == 200         # the control
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Fine."}).status_code == 200         # the control
 
 
-def test_two_lease_headers_are_no_lease(compose_dispatcher, admin):
-    h = compose_dispatcher
+def test_two_lease_headers_are_no_lease(kube_harness, admin):
+    h = kube_harness
     _, lease = claimed(h)
     two = request(
-        h.app, "POST", "/reply", headers=[("X-Lease", lease), ("X-Lease", lease)], content=json.dumps({"text": "Hi"})
+        h.app, "POST", "/reply", headers=[("X-Lease", lease), ("X-Lease", lease), *h.owner(lease).items()],
+        content=json.dumps({"text": "Hi"})
     )
     assert two.status_code == 403 and stored(admin, 1) is None
-    assert post(h.app, "/reply", lease=lease, body={"text": "Hi"}).status_code == 200
+    assert post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Hi"}).status_code == 200
 
 
-def test_a_ticket_that_has_a_reply_gets_409_and_the_lease_ends(compose_dispatcher, admin):
-    h = compose_dispatcher
+def test_a_ticket_that_has_a_reply_gets_409_and_the_lease_ends(kube_harness, admin):
+    h = kube_harness
     ticket, lease = claimed(h)
     admin.execute("INSERT INTO replies (ticket_id, text) VALUES (%s, 'Written by a colleague.')", (ticket,))
-    answer = post(h.app, "/reply", lease=lease, body={"text": "Thank you."})
+    answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Thank you."})
     assert (answer.status_code, answer.json()) == (409, {"error": "already_replied"})
     assert stored(admin, ticket) == "Written by a colleague."
     assert not live(admin, lease)
@@ -530,18 +513,18 @@ BAD_BODIES = {
 
 
 @pytest.mark.parametrize("name", list(BAD_BODIES))
-def test_a_reply_body_that_is_not_text_is_a_400_and_stores_nothing(compose_dispatcher, admin, name):
-    h = compose_dispatcher
+def test_a_reply_body_that_is_not_text_is_a_400_and_stores_nothing(kube_harness, admin, name):
+    h = kube_harness
     _, lease = claimed(h)
-    answer = post(h.app, "/reply", lease=lease, content=BAD_BODIES[name])
+    answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), content=BAD_BODIES[name])
     assert (answer.status_code, answer.json()) == (400, {"error": "bad_request"})
     assert stored(admin, 1) is None and live(admin, lease)
-    ok = post(h.app, "/reply", lease=lease, body={"text": "a" * replies.MAX_TEXT_CHARS})   # the control: the largest text
+    ok = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "a" * replies.MAX_TEXT_CHARS})   # the control: the largest text
     assert ok.status_code == 200
 
 
-def test_a_body_over_16_kib_is_refused_declared_or_chunked(compose_dispatcher, admin):
-    h = compose_dispatcher
+def test_a_body_over_16_kib_is_refused_declared_or_chunked(kube_harness, admin):
+    h = kube_harness
     _, lease = claimed(h)
     big = json.dumps({"text": "a" * (16 * 1024)})
 
@@ -549,27 +532,28 @@ def test_a_body_over_16_kib_is_refused_declared_or_chunked(compose_dispatcher, a
         for i in range(0, len(big), 1024):
             yield big[i:i + 1024].encode()
 
-    declared = post(h.app, "/reply", lease=lease, content=big)
-    chunked = request(h.app, "POST", "/reply", headers={"X-Lease": lease}, content=chunks())
+    declared = post(h.app, "/reply", lease=lease, headers=h.owner(lease), content=big)
+    chunked = request(h.app, "POST", "/reply", headers={"X-Lease": lease, **h.owner(lease)}, content=chunks())
     assert (declared.status_code, chunked.status_code) == (413, 413)
     assert stored(admin, 1) is None and live(admin, lease)
     assert metric(h, "dispatcher_replies_total", outcome="too_large") == 2
 
 
-def test_only_the_two_routes_and_post_are_served(compose_dispatcher):
-    h = compose_dispatcher
-    assert request(h.app, "GET", "/claim").status_code == 405
-    assert request(h.app, "GET", "/reply").status_code == 405
-    assert request(h.app, "POST", "/other").status_code == 404
-    assert request(h.app, "GET", "/healthz").status_code == 404
+def test_only_the_two_routes_and_post_are_served(kube_harness):
+    h = kube_harness
+    headers = h.agent(DEFAULT_POD)
+    assert request(h.app, "GET", "/claim", headers=headers).status_code == 405
+    assert request(h.app, "GET", "/reply", headers=headers).status_code == 405
+    assert request(h.app, "POST", "/other", headers=headers).status_code == 404
+    assert request(h.app, "GET", "/healthz", headers=headers).status_code == 404
 
 
-def test_events_and_answers_carry_no_reply_text_and_no_lease(compose_dispatcher, admin, caplog):
-    h = compose_dispatcher
+def test_events_and_answers_carry_no_reply_text_and_no_lease(kube_harness, admin, caplog):
+    h = kube_harness
     ticket, lease = claimed(h)
     secret = "Heart condition at Secret Street, SECRET-MARKER"
     with caplog.at_level(logging.INFO, logger=EVENTS):
-        answer = post(h.app, "/reply", lease=lease, body={"text": secret})
+        answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": secret})
     assert answer.status_code == 200
     kinds = [json.loads(r.getMessage())["kind"] for r in caplog.records if r.name == EVENTS]
     assert "reply_stored" in kinds                                  # the control: events were captured
@@ -578,11 +562,11 @@ def test_events_and_answers_carry_no_reply_text_and_no_lease(compose_dispatcher,
     assert "SECRET-MARKER" not in answer.text and lease not in answer.text
 
 
-def test_a_blocked_reply_is_logged_by_category_only(compose_dispatcher, caplog):
-    h = compose_dispatcher
+def test_a_blocked_reply_is_logged_by_category_only(kube_harness, caplog):
+    h = kube_harness
     _, lease = claimed(h)
     with caplog.at_level(logging.INFO, logger=EVENTS):
-        post(h.app, "/reply", lease=lease, body={"text": "Your credit of 49 EUR is approved"})
+        post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": "Your credit of 49 EUR is approved"})
     events = [json.loads(r.getMessage()) for r in caplog.records if r.name == EVENTS]
     blocked = [e for e in events if e["kind"] == "reply_blocked"]
     assert [(e["reason"], e["ticket_id"], e["where"]) for e in blocked] == [("currency", 1, "dispatcher")]
@@ -590,44 +574,6 @@ def test_a_blocked_reply_is_logged_by_category_only(compose_dispatcher, caplog):
 
 
 # --- Kubernetes: Jobs, pods and tickets ---------------------------------------------------------
-
-
-class FakeKube:
-    """Stands in for the Kubernetes API: keeps every Job it was asked to create."""
-
-    def __init__(self, answer=None, fail_for=()):
-        self.created: list[dict] = []
-        self._answer, self._fail_for = answer, set(fail_for)
-
-    def post(self, path, body):
-        assert path == "/apis/batch/v1/namespaces/ah-agent/jobs", path
-        if int(body["metadata"]["labels"]["ah/ticket"]) in self._fail_for:
-            raise OSError("403 Forbidden: jobs.batch is forbidden for dispatcher")
-        self.created.append(copy.deepcopy(body))
-        return self._answer(body) if self._answer else {"metadata": {"name": body["metadata"]["name"]}}
-
-    def api(self):
-        return k8s.KubeApi(api_url="https://kube.test", post=self.post)
-
-
-def pod_of(job_name, suffix="x7k2p"):
-    return f"{job_name}-{suffix}"
-
-
-@pytest.fixture
-def kube_harness(settings, as_role):
-    kube = FakeKube()
-    tokens: dict = {}
-    h = Harness(settings, as_role, mode="k8s", reviewer=reviewer_for(tokens), api=kube.api())
-    h.kube, h.tokens = kube, tokens
-
-    def agent(pod, token=None, user=AGENT_USER):
-        token = token or f"token-of-{pod}"
-        tokens[token] = (user, pod)
-        return {"Authorization": f"Bearer {token}"}
-
-    h.agent = agent
-    return h
 
 
 def test_dispatch_creates_one_job_per_open_ticket_from_the_template(kube_harness, admin):
@@ -660,11 +606,6 @@ def test_a_run_older_than_ten_minutes_no_longer_takes_a_place(kube_harness, admi
     h.dispatcher.dispatch_once()
     admin.execute("UPDATE agent_runs SET created_at = now() - interval '11 minutes'")
     assert h.dispatcher.dispatch_once() == 1                           # ticket 4; the three stale runs are not counted
-
-
-def test_compose_mode_never_calls_the_kubernetes_api(compose_dispatcher, admin):
-    assert compose_dispatcher.dispatcher.dispatch_once() == 0
-    assert runs(admin) == []
 
 
 def test_a_job_the_api_refuses_leaves_the_run_failed_and_the_next_ticket_goes_on(settings, as_role, admin):
@@ -820,11 +761,6 @@ def test_a_lease_bound_to_no_pod_is_not_accepted_from_a_pod(kube_harness, admin)
     assert stored(admin, 1) is None
 
 
-def test_a_compose_dispatcher_does_not_accept_a_lease_bound_to_a_pod(compose_dispatcher, admin):
-    lease = open_lease(admin, 1, bound_pod="agent-1-deadbeef-abcde")
-    assert post(compose_dispatcher.app, "/reply", lease=lease, body={"text": "Hi"}).status_code == 403
-
-
 def test_k8s_mode_refuses_to_exist_without_a_template_or_an_api(settings, as_role):
     with pytest.raises(ValueError, match="template"):
         Dispatcher(DispatcherDb(lambda: as_role("dispatcher")), "k8s", Metrics())
@@ -841,7 +777,7 @@ def test_the_metrics_start_at_zero_and_name_no_text():
         'dispatcher_claims_total{outcome="none"} 0',
         'dispatcher_replies_total{outcome="stored"} 0',
         'dispatcher_replies_blocked_total{reason="currency"} 0',
-        'dispatcher_callers_refused_total{reason="wrong_network"} 0',
+        'dispatcher_callers_refused_total{reason="missing"} 0',
         'dispatcher_jobs_total{outcome="created"} 0',
     ):
         assert series in text, series

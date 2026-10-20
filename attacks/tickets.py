@@ -10,9 +10,9 @@ Job; judge() then checks what the agent got back and the reply that was stored.
 
 replay_all() is the same attack with the agent's own code bypassed too: it claims a ticket
 (POST /claim), sends every CALL line to the tool gateway as is (MCP tools/call, header X-Lease,
-extra arguments included), and posts the SAY text as the reply (POST /reply). It works where the
-network is the caller check (CALLER_AUTH=compose); in Kubernetes the dispatcher hands a ticket only
-to the pod of the agent Job it created. Either way it checks the walls behind the agent: the
+extra arguments included), and posts the SAY text as the reply (POST /reply). The dispatcher
+hands a ticket only to the pod of the agent Job it created, so it needs that pod's tokens. It checks
+the walls behind the agent: the
 gateway drops arguments and refuses tools and budgets, the risk engine allows one effect per
 ticket, the dispatcher runs the reply guard again.
 
