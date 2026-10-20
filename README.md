@@ -100,19 +100,21 @@ python -m pytest -m k8s tests/k8s  # network, admission and replay tests against
 
 ## Demo UI
 
-A small web page for showing the system: a support chat on the left, what each wall recorded for your tickets on the right. Pick a made-up customer, write a message or start from an example (an honest question, or one of the attacks), and watch the agent run, every tool call, the risk check and the stored reply appear as a timeline.
+Two small pages for showing the system. `/` is a made-up energy supplier's website with a support chat in the corner: pick a fictional customer, talk to Volt, see only your own words and the replies. `/security` is the security console for the person presenting: counters, a diagram that lights up for the latest ticket (agent, gateway, risk engine, tools, database, reply guard), the order the "hijacked model" was given, and a live feed of what each wall decided.
 
 ```sh
-sh scripts/demo-ui.sh            # port-forward, then open http://localhost:8085
+sh scripts/demo-ui.sh            # port-forward, then open http://localhost:8085 and http://localhost:8085/security
 ```
 
-![The demo UI after one honest question and two attacks](docs/images/demo-ui.png)
+![The customer site after a message that carried an armed attack](docs/images/demo-ui.png)
 
-The scripted model plays a fully hijacked model, so an example fills the box with the `CALL` lines it will obey. The demo is optional (`demo.enabled`: on in `values-kind.yaml`, off on Azure) and not one of the nine parts. It gets little: its own namespace, one egress edge to PostgreSQL, a ClusterIP service, no ingress.
+To show an attack, open the console, choose one under "Next message: simulate a hijacked model", then write any message on the customer site. That one message is filed with the attack's `CALL`/`SAY` lines after your words; the chat shows only your words, the console shows the order. The lines are copied from the attack suite (`tests/attacks/tickets.py`), and a test keeps the two in step. The ticket is untrusted text like any other: no wall is told anything new.
 
-What is enforced where: the database role `demo_portal` has no table grant and three functions. It can open a ticket for a demo customer and read replies only to tickets the demo itself opened; a seeded or hand-filed ticket gets nothing. Which customer a visitor is, and that the panel shows only that visitor's tickets, is enforced by the demo's session, not by the database. `demo_ops` reads audit columns only.
+The demo is optional (`demo.enabled`: on in `values-kind.yaml`, off on Azure) and not one of the nine parts. It gets little: its own namespace, one egress edge to PostgreSQL, a ClusterIP service, no ingress.
 
-The panel shows what the database records. Two things are less firm than the rest. What the agent's own code dropped before the gateway is the agent's report, stored in `agent_events` (names only) and marked "reported by the agent": a hijacked agent could leave one out. Only when a ticket has no such event does the panel compare your message with the record, and it marks that line "from your message, no agent event". Why the reply guard blocked a reply is only logged; the panel shows the reply's kind (`agent`, `safe` or `template`).
+What is enforced where: the database role `demo_portal` has no table grant and three functions. It can open a ticket for a demo customer and read replies only to tickets the demo itself opened. `demo_ops` reads audit columns only, and one flag: whether the kill switch is on. Which customer a visitor is, that the console shows only that visitor's tickets, and that arming an attack works once per session (with the CSRF token), is enforced by the demo's session, not by the database. The customer endpoints return nothing about the walls. The console prints a tool or argument name only if it is in the schemas or the attack table; any other name becomes "an unknown tool" or "an argument the tool does not take".
+
+The console shows what the database records. Two things are less firm than the rest. What the agent's own code dropped before the gateway is the agent's report, stored in `agent_events` (names only) and marked "reported by the agent": a hijacked agent could leave one out. Why the reply guard blocked a reply is only logged; the console shows the reply's kind (`agent`, `safe` or `template`). The portraits are AI-generated images of people who do not exist (Canva); see `app/demo/static/avatars/NOTICE`.
 
 ## CI
 
