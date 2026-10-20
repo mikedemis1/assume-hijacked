@@ -35,6 +35,7 @@ class Session:
     started: float = field(default_factory=time.monotonic)
     tickets: list[Ticket] = field(default_factory=list)
     armed: str | None = None  # the attack for this session's next message only (one shot)
+    arm_seq: int = 0  # counts every arming, so a message can tell its own arming from a later one
     sending: bool = False  # one message at a time per session, so the caps below cannot be raced
 
 

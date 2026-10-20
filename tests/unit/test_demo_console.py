@@ -122,7 +122,7 @@ def test_an_honest_credit_request_with_a_fixed_reply_is_not_an_attack_blocked():
     nodes = console.flow(d)
     assert {n["key"]: n["state"] for n in nodes}["reply"] == "ok"
     assert console.decisions(d) == 0
-    assert console.banner(None, nodes, True) is None
+    assert console.summary([{"decisions": console.decisions(d), "waiting": console.waiting_for_a_person(d)}], False)["blocked"] == 0
 
 
 def test_a_fixed_reply_alone_never_makes_an_armed_attack_contained():

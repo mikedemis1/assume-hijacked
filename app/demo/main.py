@@ -242,6 +242,7 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
         if choice is not None and (not isinstance(choice, str) or choice not in attacks.BY_ID):
             return error(400, "bad_request")
         session.armed = choice
+        session.arm_seq += 1
         return JSONResponse({"armed": session.armed})
 
     async def signin(request: Request):
@@ -302,6 +303,7 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
             if len(waiting) - len(answered) >= MAX_WAITING:
                 return error(429, "busy")
             armed = attacks.BY_ID.get(session.armed or "")
+            seq = session.arm_seq
             body = attacks.filed_body(text, armed)
             if len(body) > MAX_TEXT:
                 return error(400, "length")
@@ -309,7 +311,7 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
                 return error(429, "rate")
             ticket_id = await run_in_threadpool(database.open_ticket, session.customer, body)
             session.tickets.append(Ticket(ticket_id, text, timeline.now_iso(), body, armed.id if armed else None))
-            if armed is not None and session.armed == armed.id:
+            if armed is not None and session.arm_seq == seq:
                 session.armed = None  # one shot: only the message that was just filed carries the plan
         except psycopg.Error:
             return error(503, "database")

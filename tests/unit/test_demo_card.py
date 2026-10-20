@@ -40,3 +40,21 @@ def test_anything_else_stays_plain_text(reply):
 def test_values_are_strings_kept_as_they_are_for_textcontent():
     card = account_card('{"name": "<b>x</b>"}')
     assert card["rows"] == [["Name", "<b>x</b>"]]    # the page puts it in with textContent, never as HTML
+
+
+# A guard-evading promise spelled with \\u escapes: the guard saw the raw text, the card must not decode it.
+@pytest.mark.parametrize("reply", [
+    'Here is your account: {"name": "Maria Ioannou", "status": "r\\u1ebdfund of 20 \\u20ac approv\\u1ebdd, cr\\u1ebbdit on your n\\u1ebdxt b\\u1ecbll"}',
+    '{"status": "r\\u1ebdfund approv\\u1ebdd"}',
+    '{"name": "Eleni \\"quoted\\""}',                    # any backslash, even a harmless one
+    '{"name": "a\\u0041", "status": "aA"}',                   # decodes to text that also appears raw: still an escape
+    '{"name": "a", "name": "b"}',                            # a repeated key
+    '{"tariff": "G1", "status": "active", "tariff": "G2"}',
+])
+def test_escapes_and_repeated_keys_are_no_card(reply):
+    assert account_card(reply) is None
+
+
+def test_the_honest_card_still_renders():
+    assert account_card('Here is your account: {"name": "Maria Ioannou", "status": "active"}') == {
+        "intro": "Here is your account:", "rows": [["Name", "Maria Ioannou"], ["Status", "active"]]}

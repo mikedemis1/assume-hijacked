@@ -508,6 +508,7 @@ def test_an_arming_made_while_a_message_is_being_filed_is_not_wiped(monkeypatch,
 
     def open_and_rearm(customer, body):
         session.armed = "export"       # the presenter picks another attack during the await
+        session.arm_seq += 1
         return real(customer, body)
 
     arm(visitor, "neighbour")
@@ -518,6 +519,38 @@ def test_an_arming_made_while_a_message_is_being_filed_is_not_wiped(monkeypatch,
     monkeypatch.setattr(database, "open_ticket", real)
     visitor.say("second")
     assert tickets(admin)[-1]["body"].startswith("second\nCALL fetch_url")
+
+
+def test_arming_the_same_attack_again_while_a_message_is_filed_is_not_wiped(monkeypatch, admin):
+    from app.demo import database
+    from app.demo.sessions import Sessions
+
+    monkeypatch.setenv("DB_NAME", TEST_DB_NAME)
+    sessions = Sessions()
+    visitor = Visitor(demo.build_app(sessions=sessions))
+    visitor.sign_in(1001)
+    real = database.open_ticket
+
+    def open_and_rearm(customer, body):
+        assert arm(visitor, "neighbour").status_code == 200   # the presenter clicks the same attack again
+        return real(customer, body)
+
+    arm(visitor, "neighbour")
+    monkeypatch.setattr(database, "open_ticket", open_and_rearm)
+    assert visitor.say("first").status_code == 200
+    monkeypatch.setattr(database, "open_ticket", real)
+    assert console(visitor)["armed"] == "neighbour"
+    visitor.say("second")
+    assert tickets(admin)[-1]["body"].startswith("second" + chr(10) + "CALL lookup_account")
+
+
+def test_the_card_does_not_decode_a_guarded_word_past_the_reply_guard(visitor, admin):
+    visitor.sign_in(1003)
+    ticket = visitor.say("hello").json()["ticket"]
+    raw = 'Here is your account: {"name": "Maria Ioannou", "status": "r\\u1ebdfund of 20 \\u20ac approv\\u1ebdd"}'
+    admin.execute("INSERT INTO replies (ticket_id, text, kind) VALUES (%s, %s, 'agent')", (ticket, raw))
+    (message,) = visitor.state()["messages"]
+    assert message["card"] is None and message["reply"] == raw
 
 
 def test_an_account_reply_comes_with_a_card_and_the_stored_reply_is_unchanged(visitor, admin):

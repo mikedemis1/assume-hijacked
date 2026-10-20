@@ -67,6 +67,8 @@ async function refresh() {
   }
   if (result.status === 401) {
     state = null;
+    els.kill.textContent = "\u2014";
+    els.kill.className = "v";
     els.needed.hidden = false;
     els.board.hidden = true;
     showProblem("");
