@@ -30,8 +30,8 @@ from tests.conftest import admin_connect
 from tests.dispatcherharness import AGENT_IP as DISPATCHER_AGENT_IP
 from tests.dispatcherharness import Harness as DispatcherHarness
 from tests.gatewayharness import AppGatewayClient, agent_auth, build
-from tests.test_llmgw import AGENT_IP as LLM_AGENT_IP
-from tests.test_llmgw import LEASE, CountingBackend, agent_reviewer
+from tests.unit.test_llmgw import AGENT_IP as LLM_AGENT_IP
+from tests.unit.test_llmgw import LEASE, CountingBackend, agent_reviewer
 
 EVENTS = "assume_hijacked.security"
 

@@ -72,7 +72,7 @@ def replay_report():
 
 
 @pytest.mark.parametrize("case", ATTACK_TICKETS, ids=lambda case: str(case.number))
-def test_scripted_attack_runs_as_a_bound_agent_job(case, replay_report):
+def test_asi06_scripted_attack_runs_as_a_bound_agent_job(case, replay_report):
     body = case.body
     if case.number == 7:
         body = body.replace("2030-11-01", datetime.now(timezone.utc).date().isoformat())

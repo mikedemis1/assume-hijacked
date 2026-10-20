@@ -22,22 +22,8 @@ def _login_roles(admin, *, exclude=()):
     return [r["rolname"] for r in rows if r["rolname"] not in exclude]
 
 
-def test_only_executor_can_read_flags(admin, as_role):  # ②
-    # Every login role in the database, so a role added later is checked without editing this test.
-    roles = _login_roles(admin, exclude=("postgres", "executor"))
-    assert set(TOOL_ROLES + ["approver"]) <= set(roles)
-    for role in roles:
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            as_role(role).execute("SELECT * FROM flags")
 
 
-@pytest.mark.parametrize("role", TOOL_ROLES)
-def test_tools_cannot_change_flags_directly(as_role, role):  # ③
-    conn = as_role(role)
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        conn.execute("DELETE FROM flags")
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        conn.execute("INSERT INTO flags (supply_point_id, source) VALUES ('SP-1001', 'x')")
 
 
 @pytest.mark.parametrize("role", TOOL_ROLES)

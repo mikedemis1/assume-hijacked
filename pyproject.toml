@@ -44,4 +44,6 @@ select = ["E4", "E7", "E9", "F"]
 [tool.ruff.lint.per-file-ignores]
 # A pytest fixture imported from another module and then named as a test argument is "redefined".
 # Only this file, so F811 still catches a duplicated test name everywhere else.
-"tests/test_tokens.py" = ["F811"]
+"tests/unit/test_tokens.py" = ["F811"]
+# The headline attack files import the fixtures and helpers of the unit tests they were moved from.
+"tests/attacks/test_asi*.py" = ["F401", "F811"]

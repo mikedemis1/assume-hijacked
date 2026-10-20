@@ -205,7 +205,7 @@ def test_values_schema_rejects_an_image_without_digest(env, image):
 # --- rendered walls -----------------------------------------------------------------------------
 
 @pytest.mark.parametrize("env", ENVS)
-def test_all_images_pinned_by_digest(env):
+def test_asi04_all_images_pinned_by_digest(env):
     images = [(name, c["image"]) for name, spec in pod_specs(env) for c in containers(spec)]
     assert len(images) >= len(COMPONENTS) + 2
     for name, image in images:
@@ -526,7 +526,7 @@ def cilium_policies(env: str, *sets: str) -> list[dict]:
 
 
 @pytest.mark.parametrize("env", ENVS)
-def test_every_namespace_renders_default_deny(env):
+def test_asi03_every_namespace_renders_default_deny(env):
     deny = {p["metadata"]["namespace"]: p["spec"] for p in network_policies(env)
             if p["metadata"]["name"] == "default-deny"}
     assert set(deny) == chart_namespaces(env)
@@ -633,7 +633,7 @@ def search_names(host: str, namespace: str) -> list[str]:
     return [host, f"{host}.{namespace}.svc.cluster.local", f"{host}.svc.cluster.local", f"{host}.cluster.local"]
 
 
-def test_only_named_components_reach_names_outside_the_cluster():
+def test_asi02_only_named_components_reach_names_outside_the_cluster():
     # kind defaults (scripted backend, dev console): nothing outside the cluster at all.
     assert external_names("kind") == {}
     assert external_names("kind", "llm.backend=anthropic", "secrets.anthropicApiKey=test-only") == {
@@ -655,7 +655,7 @@ def test_only_named_components_reach_names_outside_the_cluster():
 
 
 @pytest.mark.parametrize("env", ENVS)
-def test_instance_metadata_denied_in_every_namespace(env):
+def test_asi03_instance_metadata_denied_in_every_namespace(env):
     deny = {p["metadata"]["namespace"]: p["spec"] for p in cilium_policies(env)
             if p["metadata"]["name"] == "deny-instance-metadata"}
     assert set(deny) == chart_namespaces(env)

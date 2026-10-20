@@ -259,15 +259,6 @@ HIJACKED = [
 ]
 
 
-@pytest.mark.parametrize("name, text, reason", HIJACKED, ids=[h[0] for h in HIJACKED])
-def test_reply_runs_guard_again_outside_agent(kube_harness, admin, name, text, reason):
-    # The agent is taken over and sends what the model wrote without its own guard having run.
-    h = kube_harness
-    ticket, lease = claimed(h)
-    answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": text})
-    assert (answer.status_code, answer.json()) == (200, {"stored": True})   # it does not say it replaced the text
-    assert stored(admin, ticket) == SAFE_REPLY
-    assert metric(h, "dispatcher_replies_blocked_total", reason=reason) == 1
 
 
 def test_an_honest_reply_goes_out_unchanged_and_the_account_numbers_are_allowed(kube_harness, admin):

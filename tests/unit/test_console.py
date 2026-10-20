@@ -102,18 +102,6 @@ def test_csrf_required(console, route, csrf):
     asyncio.run(browser(console, check))
 
 
-def test_kill_switch_resume_still_needs_senior_approver(console, admin):
-    admin.execute("UPDATE agent_control SET paused=true WHERE id=1")
-    async def check(client):
-        csrf, _ = await login(client)
-        assert (await client.post("/agents/resume", data={"csrf":csrf,"role":"SeniorApprover"})).status_code == 403
-    asyncio.run(browser(console, check))
-    assert admin.execute("SELECT paused FROM agent_control").fetchone()["paused"]
-    async def allowed(client):
-        csrf, _ = await login(client, BOB)
-        assert (await client.post("/agents/resume", data={"csrf":csrf})).status_code == 303
-    asyncio.run(browser(console, allowed))
-    assert not admin.execute("SELECT paused FROM agent_control").fetchone()["paused"]
 
 
 @pytest.mark.parametrize("route", ["/flags/removal", "/flags/removal/1/approve", "/flags/removal/1"])
@@ -297,14 +285,6 @@ def test_oidc_callback_refuses_unbound_state(monkeypatch,settings,provider,attac
     asyncio.run(browser(app,check))
 
 
-def test_uuid_database_identity_cannot_count_twice(admin,as_role):
-    rid=request_credit(admin,"T2")
-    staff=as_role("approver")
-    staff.execute("INSERT INTO approvals(request_id,approver) VALUES (%s,%s)",(rid,ANNA))
-    with pytest.raises(psycopg.errors.UniqueViolation):
-        staff.execute("INSERT INTO approvals(request_id,approver) VALUES (%s,%s)",(rid,ANNA.upper().replace("-","")))
-    with pytest.raises(psycopg.errors.InvalidTextRepresentation):
-        staff.execute("INSERT INTO approvals(request_id,approver) VALUES (%s,%s)",(rid,"\u00a0"+ANNA))
 
 
 def test_heartbeat_read_cannot_write(as_role):

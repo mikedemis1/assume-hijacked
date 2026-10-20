@@ -7,7 +7,7 @@ a log, and the server may log it too, so the text names requests and rules, neve
 import psycopg
 import pytest
 
-from tests.test_executor_moveouts import insert_order, ready_for_order
+from tests.unit.test_executor_moveouts import insert_order, ready_for_order
 
 HOMES = ("SP-1001", "SP-1002", "SP-1003", "SP-9999")
 

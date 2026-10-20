@@ -70,20 +70,12 @@ def test_facts_and_assessment_are_frozen():
 # --- hard rules ---------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("amount", [None, Decimal("0"), Decimal("-0.01"), Decimal("-5")])
-def test_credit_with_no_or_non_positive_amount_is_rejected(amount):
-    assert judge(credit(amount_eur=amount)) == Assessment("REJECT", 100, ("invalid_amount",))
 
 
 def test_smallest_positive_credit_is_not_rejected():
     assert judge(credit(amount_eur=Decimal("0.01"))).tier == "T0"
 
 
-@pytest.mark.parametrize("protection", ["YES", "UNKNOWN", "maybe", ""])
-def test_moveout_with_protection_not_no_goes_to_humans(protection):
-    assert judge(moveout(protection=protection)) == Assessment(
-        "HUMAN_ONLY", 100, ("protected_or_unknown_home",)
-    )
 
 
 def test_many_moveouts_are_not_a_rule_any_more():
@@ -325,10 +317,6 @@ def test_tool_not_in_lease_denies():
     assert assess_call(call(tool_in_lease=False)) == ("deny", ("tool_not_in_lease",))
 
 
-@pytest.mark.parametrize("denied,verdict", [(0, "allow"), (2, "allow"), (3, "pause"), (4, "pause")])
-def test_repeated_denials_pause_from_three(denied, verdict):
-    got = assess_call(call(denied_on_lease=denied))
-    assert got == (verdict, ("repeated_denials",) if verdict == "pause" else ())
 
 
 @pytest.mark.parametrize("calls,verdict", [(0, "allow"), (7, "allow"), (8, "deny"), (9, "deny")])

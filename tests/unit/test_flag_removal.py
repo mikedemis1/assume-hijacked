@@ -31,20 +31,6 @@ def all_roles(admin):
     return [r["rolname"] for r in rows]
 
 
-@pytest.mark.parametrize("change", CHANGES)
-def test_no_role_can_remove_or_change_a_flag(admin, change):
-    # Every role the database has: the login roles (executor, approver, every tool role, ...) and
-    # the owners (api_owner, ...). Each one is refused, by the missing grant.
-    roles = all_roles(admin)
-    assert {"executor", "approver", "api_owner", "tool_set_temp_protection"} <= set(roles)
-    for role in roles:
-        with admin.transaction(force_rollback=True):
-            admin.execute(f"SET SESSION AUTHORIZATION {role}")
-            with pytest.raises(NOT_ALLOWED):
-                with admin.transaction():
-                    admin.execute(CHANGES[change])
-            admin.execute("RESET SESSION AUTHORIZATION")
-    assert flags(admin) == {"SP-1003": "state_register"}
 
 
 @pytest.mark.parametrize("change", CHANGES)

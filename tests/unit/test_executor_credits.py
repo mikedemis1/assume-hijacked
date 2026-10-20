@@ -90,11 +90,6 @@ def test_amount_above_evidence_is_rejected(admin, as_role, settings, now):
     assert statuses(admin) == ["rejected"]
 
 
-def test_above_automatic_limit_goes_to_staff(admin, as_role, settings, now):
-    admin.execute("INSERT INTO charges VALUES (8, 1, '2026-10', 80.00), (9, 1, '2026-10', 80.00)")
-    add_credit(admin, 80, 9)
-    process_credits(as_role("executor"), settings, now)
-    assert statuses(admin) == ["needs_staff"]
 
 
 def test_reason_without_automatic_check_goes_to_staff(admin, as_role, settings, now):
@@ -284,13 +279,6 @@ UNSUPPORTED_CREDITS = {
 }
 
 
-@pytest.mark.parametrize("case", UNSUPPORTED_CREDITS)
-def test_database_refuses_a_credit_the_charges_do_not_back(admin, as_role, case):
-    setup, reason = UNSUPPORTED_CREDITS[case]
-    row = setup(admin)
-    with pytest.raises(psycopg.errors.RaiseException, match=reason):
-        insert_credit(as_role("executor"), *row)
-    assert credits_count(admin) == 0
 
 
 def test_database_accepts_a_credit_at_the_hard_cap(admin, as_role):
@@ -318,7 +306,7 @@ def risk_why(admin, request_id):
 def test_executor_skips_requests_without_assessment(admin, as_role, settings, now):
     from app.common.ops import Metrics
     from app.executor.moveouts import process_moveouts
-    from tests.test_executor_moveouts import add_moveout
+    from tests.unit.test_executor_moveouts import add_moveout
 
     credit = add_credit(admin, 49, 2, tier=None)
     move_out = add_moveout(admin, tier=None)

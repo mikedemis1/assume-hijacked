@@ -135,7 +135,7 @@ def walls(tmp_path_factory):
 
 # --- network walls ------------------------------------------------------------------------------
 
-def test_every_namespace_has_default_deny(get):
+def test_asi03_every_namespace_has_default_deny(get):
     for namespace in NAMESPACES:
         policies = {p["metadata"]["name"]: p["spec"]
                     for p in get("--namespace", namespace, "get", "networkpolicies")["items"]}
@@ -175,7 +175,7 @@ def test_cilium_accepted_every_policy(get):
     "localhost:5001/assume-hijacked@sha256:" + "a" * 63,             # digest cut short
     "postgres:17-alpine@sha256:" + "a" * 64,                         # upstream name, other digest
 ])
-def test_admission_rejects_unpinned_image(image):
+def test_asi04_admission_rejects_unpinned_image(image):
     admitted, error = admit(pod("ah-core", "executor", container={"image": image}))
     assert not admitted
     assert "ah-images-pinned" in error
@@ -470,7 +470,7 @@ def probe_results(probe_pods, addresses) -> dict[str, dict]:
 
 
 @pytest.mark.parametrize("edge", [p.edge for p in MATRIX])
-def test_probe_edge(probe_results, edge):
+def test_asi03_probe_edge(probe_results, edge):
     r = probe_results[edge]
     assert r["observed"] == r["expected"], (
         f"{edge}: expected {r['expected']}, observed {r['observed']} ({r['detail']}); wall: {r['why']}")
@@ -515,7 +515,7 @@ def test_hubble_shows_policy_drops_for_denied_edges_and_forwards_the_allowed(pro
     assert ("FORWARDED", "") in tcp_verdicts(flows, addresses["tool-gateway"], 8080)
 
 
-def test_dns_exfiltration_is_answered_by_the_proxy_and_never_forwarded(probe_results, probe_pods):
+def test_asi02_dns_exfiltration_is_answered_by_the_proxy_and_never_forwarded(probe_results, probe_pods):
     """The exfiltration name dies in Cilium's DNS proxy: Hubble shows the query refused there and
     never forwarded to CoreDNS, so no server outside the cluster ever sees it. Control: a cluster
     name from the same pod is forwarded."""
@@ -551,7 +551,7 @@ ALLOW_ALL = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
                       "egress": [{}]}}
 
 
-def test_metadata_endpoint_denied_even_with_an_allow_all_policy(probe_pods, addresses):
+def test_asi03_metadata_endpoint_denied_even_with_an_allow_all_policy(probe_pods, addresses):
     """IMDS (managed identity tokens on Azure) stays shut when someone adds an allow-all egress
     policy next to the walls: the Cilium deny wins over every allow. Control: the same allow-all
     opens the internet, so it is in force."""
@@ -579,7 +579,7 @@ def test_metadata_endpoint_denied_even_with_an_allow_all_policy(probe_pods, addr
 ANTHROPIC = "api.anthropic.com"
 
 
-def test_only_the_llm_gateway_reaches_its_llm_api(probe_pods, addresses, probe_results):
+def test_asi02_only_the_llm_gateway_reaches_its_llm_api(probe_pods, addresses, probe_results):
     """With llm.backend=anthropic: the LLM gateway resolves and reaches api.anthropic.com on 443,
     nothing else outside, no other port; every other pod is refused the name."""
     result = helm("template", "kind", "--set", "llm.backend=anthropic", "--set", "secrets.anthropicApiKey=test-only")
@@ -638,7 +638,7 @@ def test_admission_rejects_ephemeral_container_off_the_rules(probe_pods):
     assert admitted, error
 
 
-def test_admission_rejects_image_swap_on_a_running_pod(probe_pods):
+def test_asi04_admission_rejects_image_swap_on_a_running_pod(probe_pods):
     """kubectl set image on a running pod is a pod UPDATE: the image policy checks it too."""
     target = probe_pods["executor"]
 

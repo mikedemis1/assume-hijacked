@@ -29,25 +29,12 @@ def test_read_unknown_ticket_fails(as_role):
         read_ticket(as_role("tool_read_ticket"), UNKNOWN_LEASE)
 
 
-def test_lookup_returns_owner_and_no_health_fields(as_role, admin):  # ②
-    result = lookup_account(as_role("tool_lookup_account"), open_lease(admin, 3))
-    assert result["name"] == "Maria Ioannou"
-    assert set(result) == {"name", "tariff", "status", "address"}
 
 
 def security_events(caplog):
     return [json.loads(r.getMessage()) for r in caplog.records if r.name == "assume_hijacked.security"]
 
 
-def test_lookup_ignores_foreign_customer_id_and_logs_it(as_role, admin, caplog):  # ①
-    caplog.set_level(logging.INFO, logger="assume_hijacked.security")
-    result = lookup_account(as_role("tool_lookup_account"), open_lease(admin, 1), customer_id=1002)
-    assert result["name"] == "Eleni Papadopoulou"
-    # Tool roles have no table grants (05-lease.sql), so the event goes to the security log, by
-    # name only: never the value the model asked for.
-    events = security_events(caplog)
-    assert [(e["kind"], e["tool"], e["args"]) for e in events] == [("blocked", "lookup_account", ["customer_id"])]
-    assert "1002" not in caplog.text
 
 
 def _utc_day(offset_days):
@@ -109,10 +96,6 @@ def test_temp_protection_adds_yes(as_role, admin):
     assert row == {"source": "customer_declared"}
 
 
-def test_temp_protection_never_downgrades(as_role, admin):  # ③
-    set_temp_protection(as_role("tool_set_temp_protection"), open_lease(admin, 3))
-    row = admin.execute("SELECT source FROM flags WHERE supply_point_id = 'SP-1003'").fetchone()
-    assert row == {"source": "state_register"}
 
 
 def test_temp_protection_unknown_ticket_fails(as_role, admin):

@@ -177,3 +177,53 @@ def as_role(settings):
     yield _connect
     for conn in opened:
         conn.close()
+
+
+# --- the OWASP ASI summary ----------------------------------------------------------------------
+# Attack tests are named test_asiNN_<what>. After the run, one line per ASI id says how they went,
+# so the output reads like the OWASP Top 10 for Agentic Applications. "kind" means the tests for
+# that id need the kind cluster (pytest -m k8s) and were not run; "n/a" means the risk does not apply.
+ASI_NAMES = {
+    "ASI01": "Agent Goal Hijack",
+    "ASI02": "Tool Misuse",
+    "ASI03": "Identity & Privilege Abuse",
+    "ASI04": "Agentic Supply Chain",
+    "ASI05": "Unexpected Code Execution",
+    "ASI06": "Memory & Context Poisoning",
+    "ASI07": "Insecure Inter-Agent Communication",
+    "ASI08": "Cascading Failures",
+    "ASI09": "Human-Agent Trust Exploitation",
+    "ASI10": "Rogue Agents",
+}
+ASI_NOT_APPLICABLE = {
+    "ASI05": "the agent runs no code",
+    "ASI07": "there is only one agent",
+}
+_ASI_TEST = re.compile(r"::test_(asi\d\d)_")
+
+
+def _asi_id(nodeid: str) -> str | None:
+    found = _ASI_TEST.search(nodeid)
+    return found.group(1).upper() if found else None
+
+
+def pytest_terminal_summary(terminalreporter):
+    counts: dict[str, dict[str, int]] = {}
+    for outcome in ("passed", "failed", "error", "skipped"):
+        for report in terminalreporter.stats.get(outcome, []):
+            asi = _asi_id(getattr(report, "nodeid", ""))
+            if asi and getattr(report, "when", "call") in ("call", "setup") and (
+                    report.when == "call" or outcome in ("failed", "error", "skipped")):
+                counts.setdefault(asi, {}).setdefault(outcome, 0)
+                counts[asi][outcome] += 1
+    kind = {_asi_id(item.nodeid) for item in terminalreporter.stats.get("deselected", [])
+            if item.get_closest_marker("k8s")} - {None}
+    terminalreporter.write_sep("-", "OWASP ASI summary")
+    for asi in sorted(ASI_NAMES):
+        if asi in ASI_NOT_APPLICABLE:
+            terminalreporter.write_line(f"{asi} n/a")
+        elif asi in counts:
+            parts = [f"{n} {name}" for name, n in counts[asi].items()]
+            terminalreporter.write_line(f"{asi} {', '.join(parts)}")
+        elif asi in kind:
+            terminalreporter.write_line(f"{asi} kind")

@@ -25,7 +25,7 @@ from app.llmgw import backends, main as llmgw_main
 from app.llmgw.backends import AnthropicBackend, BackendError, ScriptedBackend, Step
 from app.llmgw.main import Budget, LlmGateway, build_app, init_metrics
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 AGENT_IP = "10.250.3.5"  # the address a request comes from (the budget's key; the caller check ignores it)
 TOOL_IP = "10.250.9.7"  # an address that is not the agent's
 LEASE = "ab" * 32

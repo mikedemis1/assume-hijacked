@@ -23,8 +23,8 @@ from app.risk import main as risk_main
 from app.risk import service
 from app.risk.rules import ENGINE_VERSION, CallFacts
 from tests.conftest import TOOLS, open_lease
-from tests.test_executor_credits import add_credit, give_account_2_a_duplicate
-from tests.test_executor_moveouts import add_moveout
+from tests.unit.test_executor_credits import add_credit, give_account_2_a_duplicate
+from tests.unit.test_executor_moveouts import add_moveout
 
 ANNA = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01"
 
@@ -263,16 +263,6 @@ def test_decide_endpoint_denies_a_bad_body(case):
     assert decider.seen == []
 
 
-def test_decide_endpoint_fails_closed_when_the_database_fails(caplog):
-    lease = "b" * 64
-    decider = FakeDecider(error=psycopg.OperationalError(f"server closed the connection {lease}"))
-    with caplog.at_level(logging.DEBUG):
-        response = post(decider, {"lease": lease, "tool": "read_ticket"})
-    assert response.status_code == 503
-    assert response.json() == {"decision": "deny", "reasons": ["risk_unavailable"]}
-    # The log names the error class only: never the lease, never the message that may carry it.
-    assert lease not in caplog.text
-    assert "OperationalError" in caplog.text
 
 
 def test_decide_endpoint_only_takes_post():

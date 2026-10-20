@@ -19,7 +19,7 @@ import yaml
 
 from tests.conftest import db_host_allowed
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 # Top-level keys that are settings, not jobs: https://docs.gitlab.com/ci/yaml/
 RESERVED = {"workflow", "stages", "default", "variables", "include", "image", "services",
@@ -27,13 +27,6 @@ RESERVED = {"workflow", "stages", "default", "variables", "include", "image", "s
 JOBS = {"lint", "test", "build"}
 SH = shutil.which("sh")
 needs_sh = pytest.mark.skipif(SH is None, reason="no POSIX sh on PATH (Git Bash on Windows)")
-
-
-@pytest.fixture(autouse=True)
-def fresh_db():
-    """Replaces the autouse fixture of tests/conftest.py for this module. Nothing in here reads
-    a database; the original would TRUNCATE the test database before every test, which only
-    slows these file checks down and gets in the way of whoever is running the DB suite."""
 
 
 def _text(path: str) -> str:
@@ -137,7 +130,7 @@ def test_pytest_refuses_to_start_against_a_remote_database():
     env = {**os.environ, "DB_HOST": "db.prod.example.com", "GITLAB_CI": "true",
            "TEST_DB_SERVICE_HOST": "db.prod.example.com"}
     done = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/test_pipeline.py"],
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/unit/test_pipeline.py"],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=120, check=False,
     )
     assert done.returncode == 2, done.stdout + done.stderr

@@ -159,14 +159,6 @@ def test_order_refused_when_flag_added_after_assessment(admin, as_role, settings
     assert status(admin, rid) == "manual_only" and orders(admin) == 0 and errors(admin) == []
 
 
-def test_same_approver_twice_is_rejected(admin, as_role):  # ⑥
-    staff, ex = as_role("approver"), as_role("executor")
-    rid = add_moveout(admin)
-    assert approve(staff, rid, ANNA) is True
-    assert approve(staff, rid, ANNA) is False
-    assert approver_count(ex, rid) == 1
-    assert approve(staff, rid, PETROS) is True
-    assert approver_count(ex, rid) == 2
 
 
 def test_one_bad_request_does_not_block_the_batch(admin, as_role, settings, now):
@@ -197,11 +189,6 @@ def test_database_accepts_order_when_the_whole_story_holds(admin, as_role):
     assert orders(admin) == 1
 
 
-def test_database_refuses_order_at_protected_home(admin, as_role):  # ⑦ wall below the executor code
-    rid = ready_for_order(admin, as_role("approver"), account_id=3, ticket_id=3)
-    with pytest.raises(psycopg.errors.RaiseException, match="protected"):
-        insert_order(as_role("executor"), rid, "SP-1003")
-    assert orders(admin) == 0
 
 
 def _credit_request_with_approval(admin, staff):

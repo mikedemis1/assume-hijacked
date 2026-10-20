@@ -14,8 +14,8 @@ import pytest
 
 from app.executor.credits import process_credits
 from tests.conftest import approve_as, assess, open_lease
-from tests.test_executor_credits import add_credit, credits_count, insert_credit
-from tests.test_executor_moveouts import (
+from tests.unit.test_executor_credits import add_credit, credits_count, insert_credit
+from tests.unit.test_executor_moveouts import (
     add_moveout,
     insert_order,
     orders,
@@ -101,14 +101,6 @@ def test_order_refused_without_assessment(admin, as_role, ex):
     assert orders(admin) == 1
 
 
-def test_t1_credit_needs_one_approval(admin, as_role, ex):
-    rid, write = _credit(admin, "T1")
-    with pytest.raises(psycopg.errors.RaiseException, match="needs 1 distinct approval"):
-        write(ex)
-    assert credits_count(admin) == 0
-    approve_as(as_role("approver"), rid, ANNA)
-    write(ex)
-    assert credits_count(admin) == 1
 
 
 FLOOR_CASES = {
@@ -123,21 +115,6 @@ FLOOR_CASES = {
 }
 
 
-@pytest.mark.parametrize("kind", EFFECTS)
-@pytest.mark.parametrize("case", FLOOR_CASES)
-def test_floor_counts_distinct_approvers_and_roles(admin, as_role, ex, kind, case):
-    tier, approvals, allowed = FLOOR_CASES[case]
-    if allowed is None:  # T0 with no approval: a credit goes through, an order does not
-        allowed = kind == "credit"
-    rid, write = EFFECTS[kind](admin, tier)
-    approve_all(as_role("approver"), rid, approvals)
-    if allowed:
-        write(ex)
-        assert written(admin) == 1
-    else:
-        with pytest.raises(psycopg.errors.RaiseException, match="approval"):
-            write(ex)
-        assert written(admin) == 0
 
 
 @pytest.mark.parametrize("kind", EFFECTS)
@@ -207,17 +184,6 @@ def test_effect_rows_cannot_be_updated(admin, as_role, ex, table):
     assert rows == 1
 
 
-def test_order_refused_for_human_only_even_with_two_approvals(admin, as_role, ex):
-    rid, write = _order(admin, "HUMAN_ONLY")
-    approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
-    with pytest.raises(psycopg.errors.RaiseException, match="HUMAN_ONLY"):
-        write(ex)
-    assert orders(admin) == 0
-    # Control: the same approvals on a T2 request (the strictest tier that allows an order).
-    rid, write = _order(admin, "T2")
-    approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
-    write(ex)
-    assert orders(admin) == 1
 
 
 @pytest.mark.parametrize("kind", EFFECTS)
@@ -421,16 +387,6 @@ def test_agents_start_unpaused_and_there_is_one_switch(admin):
         admin.execute("INSERT INTO agent_control (id, paused) VALUES (2, true)")
 
 
-def test_risk_engine_pauses_and_approver_resumes(admin, as_role):
-    as_role("risk_engine").execute("SELECT pause_agents('repeated_denials')")
-    assert control(admin) == [{"paused": True, "reason": "repeated_denials"}]
-    as_role("approver").execute("SELECT resume_agents()")
-    assert control(admin) == [{"paused": False, "reason": ""}]
-    events = admin.execute("SELECT kind, actor, detail FROM events ORDER BY id").fetchall()
-    assert events == [
-        {"kind": "agents_paused", "actor": "risk_engine", "detail": "repeated_denials"},
-        {"kind": "agents_resumed", "actor": "approver", "detail": ""},
-    ]
 
 
 def test_only_risk_engine_pauses_and_only_approver_resumes(admin, as_role):
@@ -515,14 +471,6 @@ def test_approver_role_is_on_the_closed_list_and_defaults_to_approver(admin, as_
 # numeric accepts 'NaN', and PostgreSQL sorts NaN above every number, so `amount > 0` alone lets it
 # through; since PostgreSQL 14 numeric also takes 'Infinity'.
 
-@pytest.mark.parametrize("amount", ["0", "-5", "NaN", "Infinity", "-Infinity"])
-def test_credit_request_refuses_nan_and_infinity(admin, as_role, amount):
-    lease = open_lease(admin, 1)
-    with pytest.raises(psycopg.errors.RaiseException, match="positive finite number"):
-        as_role("tool_issue_bill_credit").execute(
-            "SELECT api_request_credit(%s, %s::numeric, 'duplicate_charge', 2)", (lease, amount)
-        )
-    assert admin.execute("SELECT count(*) AS n FROM action_requests").fetchone()["n"] == 0
 
 
 def test_credit_request_accepts_a_normal_amount(admin, as_role):

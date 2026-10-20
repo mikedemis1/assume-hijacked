@@ -4,8 +4,8 @@ from app.common.ops import Heartbeat, Metrics
 from app.executor import main as executor_main
 from app.executor.credits import process_credits
 from app.executor.moveouts import process_moveouts
-from tests.test_executor_credits import add_credit
-from tests.test_executor_moveouts import add_moveout
+from tests.unit.test_executor_credits import add_credit
+from tests.unit.test_executor_moveouts import add_moveout
 
 
 def lines(metrics):
