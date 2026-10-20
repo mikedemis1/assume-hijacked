@@ -7,11 +7,11 @@ import time
 
 import httpx2
 import jwt
+import psycopg
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from tests.conftest import assess
-import psycopg
 
 ANNA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -119,7 +119,7 @@ def test_asi03_one_person_cannot_count_twice(admin,as_role):
         staff.execute("INSERT INTO approvals(request_id,approver) VALUES (%s,%s)",(rid,"\u00a0"+ANNA))
 
 
-def test_asi10_resume_needs_a_senior_approver(console, admin):  # noqa: F811
+def test_asi10_resume_needs_a_senior_approver(console, admin):
     admin.execute("UPDATE agent_control SET paused=true WHERE id=1")
     async def check(client):
         csrf, _ = await login(client)

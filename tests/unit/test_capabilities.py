@@ -5,6 +5,7 @@ These tests check the manifests against the application itself: the fingerprint 
 descriptor, the grants of every database role, and who holds the gateway's keys.
 """
 
+import copy
 import json
 from pathlib import Path
 
@@ -12,7 +13,6 @@ import pytest
 
 from app.security import descriptors
 from app.tools import serve
-import copy
 
 ROOT = Path(__file__).resolve().parents[2]
 CAPABILITIES = ROOT / "permissions"

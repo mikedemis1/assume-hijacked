@@ -4,11 +4,10 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 import pytest
 
-from app.executor.approvals import approve
+from app.executor.approvals import approve, approver_count
 from app.executor.moveouts import process_moveouts
 from app.tools.set_temp_protection import set_temp_protection
 from tests.conftest import assess, open_lease
-from app.executor.approvals import approver_count
 
 ANNA = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01"
 PETROS = "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3"
@@ -226,7 +225,7 @@ def test_asi02_database_refuses_order_at_protected_home(admin, as_role):  # ⑦ 
 
 
 def test_asi03_same_approver_twice_is_rejected(admin, as_role):  # ⑥
-    staff, ex = as_role("approver"), as_role("executor")  # noqa: F811
+    staff, ex = as_role("approver"), as_role("executor")
     rid = add_moveout(admin)
     assert approve(staff, rid, ANNA) is True
     assert approve(staff, rid, ANNA) is False

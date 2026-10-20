@@ -8,6 +8,7 @@ argument.
 
 import asyncio
 import json
+import logging
 import time
 
 import jwt
@@ -17,9 +18,7 @@ from app.security.client import ToolTokenAuth
 from app.security.tokens import JtiCache, mint_tool_token, verify_tool_token
 from app.tools import serve
 from tests.conftest import open_lease
-from tests.toolhttp import AppToolCaller, keypair, mcp_client  # noqa: F401
-import logging
-from tests.toolhttp import CALL_READ_TICKET, ConnectSpy, MCP_HEADERS, bearer, post_each
+from tests.toolhttp import CALL_READ_TICKET, MCP_HEADERS, AppToolCaller, ConnectSpy, bearer, keypair, mcp_client, post_each  # noqa: F401
 
 NOW = 1_800_000_000.0
 LEASE = "ab" * 32

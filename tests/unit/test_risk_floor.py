@@ -14,11 +14,7 @@ import pytest
 
 from tests.conftest import approve_as, assess
 from tests.unit.test_executor_credits import add_credit, credits_count, insert_credit
-from tests.unit.test_executor_moveouts import (
-    add_moveout,
-    insert_order,
-    orders,
-)
+from tests.unit.test_executor_moveouts import add_moveout, insert_order, orders
 
 TIERS = ["T0", "T1", "T2", "HUMAN_ONLY", "REJECT"]
 ANNA, PETROS = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01", "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3"
@@ -126,6 +122,46 @@ def test_assessment_tier_is_on_the_closed_list(admin):
         assess(admin, other, tier)
 
 
+def test_asi02_human_only_order_refused_even_with_two_approvals(admin, as_role, ex):
+    rid, write = _order(admin, "HUMAN_ONLY")
+    approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
+    with pytest.raises(psycopg.errors.RaiseException, match="HUMAN_ONLY"):
+        write(ex)
+    assert orders(admin) == 0
+    # Control: the same approvals on a T2 request (the strictest tier that allows an order).
+    rid, write = _order(admin, "T2")
+    approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
+    write(ex)
+    assert orders(admin) == 1
+
+
+def test_asi02_credit_waits_for_its_approvals(admin, as_role, ex):
+    rid, write = _credit(admin, "T1")
+    with pytest.raises(psycopg.errors.RaiseException, match="needs 1 distinct approval"):
+        write(ex)
+    assert credits_count(admin) == 0
+    approve_as(as_role("approver"), rid, ANNA)
+    write(ex)
+    assert credits_count(admin) == 1
+
+
+@pytest.mark.parametrize("kind", EFFECTS)
+@pytest.mark.parametrize("case", FLOOR_CASES)
+def test_asi03_floor_counts_distinct_approvers_and_roles(admin, as_role, ex, kind, case):
+    tier, approvals, allowed = FLOOR_CASES[case]
+    if allowed is None:  # T0 with no approval: a credit goes through, an order does not
+        allowed = kind == "credit"
+    rid, write = EFFECTS[kind](admin, tier)
+    approve_all(as_role("approver"), rid, approvals)
+    if allowed:
+        write(ex)
+        assert written(admin) == 1
+    else:
+        with pytest.raises(psycopg.errors.RaiseException, match="approval"):
+            write(ex)
+        assert written(admin) == 0
+
+
 # --- who may write and read assessments ---
 
 def _assessment_insert(table, rid, extra=None):
@@ -165,46 +201,6 @@ def test_only_risk_engine_inserts_assessments(admin, as_role, table):
 
 def control(admin):
     return admin.execute("SELECT paused, reason FROM agent_control").fetchall()
-
-
-def test_asi02_human_only_order_refused_even_with_two_approvals(admin, as_role, ex):  # noqa: F811
-    rid, write = _order(admin, "HUMAN_ONLY")
-    approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
-    with pytest.raises(psycopg.errors.RaiseException, match="HUMAN_ONLY"):
-        write(ex)
-    assert orders(admin) == 0
-    # Control: the same approvals on a T2 request (the strictest tier that allows an order).
-    rid, write = _order(admin, "T2")
-    approve_all(as_role("approver"), rid, [(ANNA, "SeniorApprover"), (PETROS, "SeniorApprover")])
-    write(ex)
-    assert orders(admin) == 1
-
-
-def test_asi02_credit_waits_for_its_approvals(admin, as_role, ex):  # noqa: F811
-    rid, write = _credit(admin, "T1")
-    with pytest.raises(psycopg.errors.RaiseException, match="needs 1 distinct approval"):
-        write(ex)
-    assert credits_count(admin) == 0
-    approve_as(as_role("approver"), rid, ANNA)
-    write(ex)
-    assert credits_count(admin) == 1
-
-
-@pytest.mark.parametrize("kind", EFFECTS)
-@pytest.mark.parametrize("case", FLOOR_CASES)
-def test_asi03_floor_counts_distinct_approvers_and_roles(admin, as_role, ex, kind, case):  # noqa: F811
-    tier, approvals, allowed = FLOOR_CASES[case]
-    if allowed is None:  # T0 with no approval: a credit goes through, an order does not
-        allowed = kind == "credit"
-    rid, write = EFFECTS[kind](admin, tier)
-    approve_all(as_role("approver"), rid, approvals)
-    if allowed:
-        write(ex)
-        assert written(admin) == 1
-    else:
-        with pytest.raises(psycopg.errors.RaiseException, match="approval"):
-            write(ex)
-        assert written(admin) == 0
 
 
 def test_asi10_risk_engine_pauses_and_approver_resumes(admin, as_role):

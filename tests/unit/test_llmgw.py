@@ -256,13 +256,13 @@ def test_caller_key_is_dropped(key_file):
     assert LEASE not in text                                        # nor the lease: the provider has no use for it
 
 
+def test_asi09_the_model_has_no_approve_tool():
+    """Nothing the model is offered can approve or pay: it gets the five tools and no others."""
+    assert sorted(t["name"] for t in backends.MODEL_TOOLS) == sorted(TOOLS)
+
+
 # --- choosing the backend and starting the process -----------------------------------------------------
 
 
 def env(**more):
     return {"CALLER_AUTH": "k8s", **more}
-
-
-def test_asi09_the_model_has_no_approve_tool():
-    """Nothing the model is offered can approve or pay: it gets the five tools and no others."""
-    assert sorted(t["name"] for t in backends.MODEL_TOOLS) == sorted(TOOLS)

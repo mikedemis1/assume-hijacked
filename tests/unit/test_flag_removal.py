@@ -11,6 +11,7 @@ thing that must never be lost: a home without a flag can be disconnected.
 
 import psycopg
 import pytest
+
 from app.tools.set_temp_protection import set_temp_protection
 from tests.conftest import open_lease
 from tests.unit.test_db_roles import TOOL_ROLES

@@ -3,11 +3,11 @@ import json
 import pytest
 
 from app.agent.core import GIVE_UP, Agent
+from app.agent.guard import SAFE_REPLY, guard_reply, numbers_in
 from app.agent.llm import ScriptedLLM
 from tests.conftest import admin_connect
 from tests.dispatcherharness import Harness, post
 from tests.gatewayharness import AppGatewayClient, build
-from app.agent.guard import SAFE_REPLY, guard_reply, numbers_in
 
 
 LEASE = "lease-of-ticket-7"  # what the agent was given; RecordingGateway never checks it

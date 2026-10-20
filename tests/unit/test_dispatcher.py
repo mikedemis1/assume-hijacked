@@ -15,11 +15,11 @@ import json
 import pytest
 
 from app.agent import templates
+from app.agent.guard import SAFE_REPLY
 from app.dispatcher import replies
 from app.gateway.auth import AGENT_USER
 from tests.conftest import TOOLS
 from tests.dispatcherharness import AGENT_IP, TEMPLATE_FILE, Harness, pod_of, post, request
-from app.agent.guard import SAFE_REPLY
 
 
 @pytest.fixture
@@ -344,7 +344,7 @@ def test_a_changed_template_is_refused(tmp_path):
 
 
 @pytest.mark.parametrize("name, text, reason", HIJACKED, ids=[h[0] for h in HIJACKED])
-def test_asi09_dispatcher_runs_the_guard_again(kube_harness, admin, name, text, reason):  # noqa: F811
+def test_asi09_dispatcher_runs_the_guard_again(kube_harness, admin, name, text, reason):
     # The agent is taken over and sends what the model wrote without its own guard having run.
     h = kube_harness
     ticket, lease = claimed(h)

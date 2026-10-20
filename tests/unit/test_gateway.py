@@ -11,6 +11,8 @@ this process (tests/gatewayharness.py). The risk engine is a stand-in unless a t
 
 import asyncio
 import json
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx2
@@ -18,15 +20,20 @@ import psycopg
 import pytest
 
 from app.gateway.auth import CallerAuth, Review
+from app.gateway.proxy import RiskClient
 from app.gateway.server import build_app
 from app.tools import serve
 from tests.conftest import open_lease
-from tests.gatewayharness import AGENT_IP, AGENT_RAW_HEADERS, RealRisk, agent_auth, agent_lease, build
+from tests.gatewayharness import (
+    AGENT_IP,
+    AGENT_RAW_HEADERS,
+    FakeRisk,
+    RealRisk,
+    agent_auth,
+    agent_lease,
+    build,
+)
 from tests.toolhttp import KEYS, running
-import logging
-import time
-from app.gateway.proxy import RiskClient
-from tests.gatewayharness import FakeRisk
 
 
 def run(coro):

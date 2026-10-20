@@ -53,22 +53,22 @@ The same Helm chart runs on kind (local, free) and on AKS. Cilium network polici
 
 ## OWASP Top 10 for Agentic Applications 2026
 
-One test runs every attack ticket through the real agent, tool gateway and risk engine (`attacks/test_attack_table.py`); the tests of the database and component walls are in `tests/unit/`. They are named after the [OWASP Agentic Top 10](https://genai.owasp.org/) ids (`test_asi03_same_approver_twice`). After a test run pytest prints one line per id. The full table with every test name, and every other wall with its test, is in [docs/attacks.md](docs/attacks.md).
+One test runs every attack ticket through the real agent, tool gateway and risk engine (`attacks/test_attack_table.py`); the tests of the database and component walls are in `tests/unit/`. They are named after the [OWASP Agentic Top 10](https://genai.owasp.org/) ids (`test_asi03_same_approver_twice_is_rejected`). After a test run pytest prints one line per id. The full table with every test name, and every other wall with its test, is in [docs/attacks.md](docs/attacks.md).
 
 | ASI | Attack | Wall that stops it | Test file (under `tests/`) |
 |---|---|---|---|
 | ASI01 Agent Goal Hijack | Read another customer's account | The agent drops the id; lease-scoped DB function; row-level security | `attacks/test_attack_table.py`, `unit/test_agent.py`, `unit/test_gateway.py`, `unit/test_tools.py`, `unit/test_lease.py` |
-| ASI01, ASI02 | Disconnection at a protected home | Risk tier HUMAN_ONLY; DB trigger refuses the order | `attacks/test_attack_table.py`, `unit/test_risk_rules.py`, `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py` |
-| ASI02 Tool Misuse | Credit too big, negative, or with no real charge | Risk tier and approvals; DB trigger | `attacks/test_attack_table.py`, `unit/test_risk_rules.py`, `unit/test_risk_floor.py`, `unit/test_executor_credits.py`, `unit/test_tools.py` |
+| ASI01, ASI02 | Disconnection at a protected home | Risk tier HUMAN_ONLY; DB trigger refuses the order | `unit/test_risk_rules.py`, `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py` |
+| ASI02 Tool Misuse | Credit too big, negative, or with no real charge | Risk tier and approvals; DB trigger | `unit/test_risk_rules.py`, `unit/test_risk_floor.py`, `unit/test_executor_credits.py`, `unit/test_tools.py` |
 | ASI02 | Protection flag YES to NO | Tools can only add flags; no role can change one | `attacks/test_attack_table.py`, `unit/test_flag_removal.py` |
 | ASI02, ASI03 | Data out (internet, DNS), reach the DB or a tool directly, ask the metadata endpoint for a token | Default-deny policies (Cilium); signed token per call; metadata address denied | `attacks/test_attack_table.py`, `unit/test_tokens.py`, `k8s/test_walls.py`, `k8s/test_chart.py` |
 | ASI03 Identity & Privilege Abuse | Medical flag reaches the model | No tool returns it; only the executor role reads flags | `attacks/test_attack_table.py`, `unit/test_db_roles.py`, `unit/test_tools.py` |
-| ASI03 | Same person approves twice | Approvals only in the console; the database counts distinct people | `attacks/test_attack_table.py`, `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py`, `unit/test_console.py` |
+| ASI03 | Same person approves twice | Approvals only in the console; the database counts distinct people | `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py`, `unit/test_console.py` |
 | ASI04 Agentic Supply Chain | Unpinned or swapped image; changed tool description | Admission by digest; gateway fingerprint | `unit/test_gateway.py`, `unit/test_capabilities.py`, `k8s/test_walls.py`, `k8s/test_chart.py` |
 | ASI06 Memory & Context Poisoning | Next ticket sees the previous ticket's data | One Job per ticket, no memory, lease bound to the pod | `k8s/test_replay.py` |
 | ASI08 Cascading Failures | Risk engine down or too slow | The gateway fails closed | `unit/test_gateway.py`, `unit/test_risk_service.py` |
 | ASI09 Human-Agent Trust Exploitation | A reply that promises money | Reply guard in the agent and again in the dispatcher; no approve tool | `attacks/test_attack_table.py`, `unit/test_agent.py`, `unit/test_dispatcher.py`, `unit/test_llmgw.py` |
-| ASI10 Rogue Agents | The agent keeps calling denied tools | Three denials pause all agents; a SeniorApprover resumes | `attacks/test_attack_table.py`, `unit/test_gateway.py`, `unit/test_risk_floor.py`, `unit/test_risk_rules.py`, `unit/test_console.py` |
+| ASI10 Rogue Agents | The agent keeps calling denied tools | Three denials pause all agents; a SeniorApprover resumes | `unit/test_gateway.py`, `unit/test_risk_floor.py`, `unit/test_risk_rules.py`, `unit/test_console.py` |
 
 ASI05 (Unexpected Code Execution) and ASI07 (Insecure Inter-Agent Communication) are not applicable: the agent runs no code and there is one agent. See [docs/attacks.md](docs/attacks.md).
 

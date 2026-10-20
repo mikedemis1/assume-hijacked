@@ -1,13 +1,13 @@
 import json
+import logging
 
+import psycopg
 import pytest
 
 from app.tools.issue_bill_credit import issue_bill_credit
+from app.tools.lookup_account import lookup_account
 from app.tools.read_ticket import read_ticket
 from tests.conftest import open_lease
-import logging
-import psycopg
-from app.tools.lookup_account import lookup_account
 
 UNKNOWN_LEASE = "0" * 64
 

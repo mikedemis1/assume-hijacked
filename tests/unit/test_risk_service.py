@@ -8,6 +8,7 @@ gathers the right facts from the database, writes what it decided, and fails clo
 """
 
 import hashlib
+import logging
 
 import psycopg
 import pytest
@@ -19,7 +20,6 @@ from app.risk.rules import ENGINE_VERSION
 from tests.conftest import open_lease
 from tests.unit.test_executor_credits import add_credit
 from tests.unit.test_executor_moveouts import add_moveout
-import logging
 
 ANNA = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01"
 
