@@ -1,7 +1,7 @@
 {{- /*
 LLM gateway (ah-agent): the agent's only way to a model (POST /next). Checks the agent's
 projected token with TokenReview and caps tokens per lease. The scripted backend needs no key;
-anthropic reads its key from a secret file; foundry uses the workload identity on Azure.
+anthropic reads its key from a secret file.
 */ -}}
 {{- $l := .Values.llm -}}
 {{- $env := list
@@ -18,9 +18,6 @@ anthropic reads its key from a secret file; foundry uses the workload identity o
     "kvObject" "anthropic-api-key"
     "what" "secrets.anthropicApiKey") -}}
 {{- end -}}
-{{- if eq $l.backend "foundry" -}}
-{{- $env = append $env (dict "name" "FOUNDRY_ENDPOINT" "value" (required "llm.foundryEndpoint is required with llm.backend=foundry" $l.foundryEndpoint)) -}}
-{{- end -}}
 {{ include "ah.workload" (dict
     "root" .
     "name" "llm-gateway"
@@ -31,4 +28,4 @@ anthropic reads its key from a secret file; foundry uses the workload identity o
     "env" $env
     "files" $files
     "apiToken" true
-    "workloadIdentity" (eq $l.backend "foundry")) }}
+    "workloadIdentity" false) }}

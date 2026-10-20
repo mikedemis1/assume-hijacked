@@ -420,8 +420,8 @@ def test_the_dispatcher_manifest_names_its_edges_and_its_kubernetes_rights():
 def test_the_llm_gateway_manifest_names_its_edge_and_its_rights():
     manifest = manifests()["llm-gateway"]
     assert manifest["db"]["role"] is None and manifest["db"]["execute"] == [] and manifest["db"]["tables"] == {}
-    # Only the agent calls it, and in the stack as shipped it calls nobody (a real provider is the
-    # override's route out and the cluster's host-name policy; see the description).
+    # Only the agent calls it, and as shipped it calls nobody (a real provider is the cluster's
+    # host-name policy; see the description).
     assert manifest["network"] == {"ingress_from": ["agent"], "egress_to": [], "dns": ["cluster"]}
     assert manifest["k8s"] == {"service_account": "llm-gateway", "rbac": ["create tokenreviews.authentication.k8s.io"]}
     assert manifest["azure"]["identity"] == "id-llm-gateway"

@@ -4,7 +4,7 @@
     9000  /healthz /metrics   (app/common/ops.py)
 
 The agent holds no model key and no model identity. This is the one place that does (the provider
-key file, or the pod's workload identity), so a hijacked agent can neither read a credential nor
+key file), so a hijacked agent can neither read a credential nor
 send a request the gateway did not build.
 
 POST /next
@@ -41,12 +41,12 @@ belong to the service account ah-agent/agent and name a pod. Anything else, or a
 check, is a 401 before the request is read.
 
 The caller's credentials never travel on: the request to the provider is built in
-app/llmgw/backends.py from the gateway's own key or token, and a header of the agent's (x-api-key,
+app/llmgw/backends.py from the gateway's own key, and a header of the agent's (x-api-key,
 authorization, or any other) is not copied into it.
 
-Environment: LLM_BACKEND (scripted|anthropic|foundry, default scripted), LLM_MODEL (default
-claude-haiku-5-5), LLM_TOKEN_BUDGET_PER_LEASE (default 20000), LLM_TOKEN_BUDGET_TOTAL (default 500000), ANTHROPIC_API_KEY_FILE, FOUNDRY_ENDPOINT
-and the workload identity variables, CALLER_AUTH (compose|k8s), CALLER_SUBNET (compose).
+Environment: LLM_BACKEND (scripted|anthropic, default scripted), LLM_MODEL (default
+claude-haiku-5-5), LLM_TOKEN_BUDGET_PER_LEASE (default 20000), LLM_TOKEN_BUDGET_TOTAL (default 500000), ANTHROPIC_API_KEY_FILE,
+CALLER_AUTH (compose|k8s), CALLER_SUBNET (compose).
 """
 
 from __future__ import annotations

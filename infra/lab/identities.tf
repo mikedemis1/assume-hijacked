@@ -3,7 +3,7 @@
 # 1. One workload identity per capability manifest with `azure.identity` (module
 #    ../modules/workload-identity): a user-assigned identity in rg-lab, a federated credential
 #    for exactly its ServiceAccount, and its Key Vault roles at the physical vault IDs from
-#    infra/base. Roles whose scope is not a vault (for example Foundry) are not assigned here;
+#    infra/base. Roles whose scope is not a vault are not assigned here;
 #    they are listed in the unassigned_azure_roles output.
 # 2. Two cluster identities: the control plane and the kubelet. User-assigned, so their roles
 #    exist BEFORE the cluster is created (route table, subnets, registry), and they survive a
@@ -25,16 +25,6 @@ module "workload_identity" {
   service_account     = each.value.k8s.service_account
   role_assignments    = local.identity_grants[each.key]
   tags                = merge(var.tags, { component = each.key })
-}
-
-# Owner-run activation only: CI's delegated role allowlist does not include this external scope.
-resource "azurerm_role_assignment" "llm_foundry" {
-  count                            = var.foundry_enabled ? 1 : 0
-  scope                            = var.foundry_resource_id
-  role_definition_name             = "Cognitive Services User"
-  principal_id                     = module.workload_identity["llm-gateway"].principal_id
-  principal_type                   = "ServicePrincipal"
-  skip_service_principal_aad_check = true
 }
 
 # ---------------------------------------------------------------- cluster identities

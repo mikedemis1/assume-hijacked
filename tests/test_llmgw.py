@@ -22,7 +22,7 @@ from app.common.ops import Metrics
 from app.common.tokenreview import Review
 from app.gateway.auth import AGENT_USER
 from app.llmgw import backends, main as llmgw_main
-from app.llmgw.backends import AnthropicBackend, BackendError, FoundryBackend, ScriptedBackend, Step
+from app.llmgw.backends import AnthropicBackend, BackendError, ScriptedBackend, Step
 from app.llmgw.main import Budget, LlmGateway, build_app, init_metrics
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -832,98 +832,6 @@ def test_the_agents_service_account_token_never_reaches_the_provider(key_file):
     assert "sa-token-xyz" not in everything_sent(upstream) and "authorization" not in upstream.seen[0].headers
 
 
-# --- the Foundry backend ------------------------------------------------------------------------------
-
-
-def foundry(upstream, token="entra-token-1"):
-    async def source():
-        return token
-
-    return FoundryBackend("https://res.services.ai.azure.test/anthropic", "claude-haiku-5-5", source, transport=upstream.transport)
-
-
-def test_foundry_backend_uses_its_own_entra_token_and_the_foundry_url():
-    upstream = Upstream()
-    h = Harness(foundry(upstream))
-    assert h.post(headers={"x-api-key": "caller-key", "Authorization": "Bearer caller-token"}).status_code == 200
-    sent = upstream.seen[0]
-    assert str(sent.url) == "https://res.services.ai.azure.test/anthropic/v1/messages"
-    assert sent.headers["authorization"] == "Bearer entra-token-1"
-    assert "x-api-key" not in sent.headers
-    assert "caller-key" not in everything_sent(upstream) and "caller-token" not in everything_sent(upstream)
-    assert upstream.body()["model"] == "claude-haiku-5-5"
-
-
-def test_foundry_endpoint_must_be_https():
-    with pytest.raises(BackendError):
-        FoundryBackend("http://res.services.ai.azure.test/anthropic", "m", lambda: "t")
-    with pytest.raises(BackendError):
-        FoundryBackend("", "m", lambda: "t")
-
-
-def test_a_token_source_that_fails_is_a_502():
-    async def broken():
-        raise OSError("no token file")
-
-    backend = FoundryBackend("https://res.services.ai.azure.test/anthropic", "m", broken, transport=Upstream().transport)
-    assert Harness(backend).post().status_code == 502
-
-
-class TokenEndpoint:
-    def __init__(self, expires_in=3600):
-        self.seen, self.expires_in = [], expires_in
-
-    def __call__(self, request):
-        self.seen.append(request)
-        return httpx2.Response(200, json={"access_token": f"entra-{len(self.seen)}", "expires_in": self.expires_in, "token_type": "Bearer"})
-
-
-def workload_env(tmp_path, token="projected-jwt"):
-    path = tmp_path / "federated-token"
-    path.write_text(token, encoding="utf-8")
-    return {
-        "AZURE_FEDERATED_TOKEN_FILE": str(path), "AZURE_CLIENT_ID": "client-1", "AZURE_TENANT_ID": "tenant-1",
-        "AZURE_AUTHORITY_HOST": "https://login.test/",
-    }
-
-
-def test_workload_identity_exchanges_the_projected_token_for_an_entra_token(tmp_path):
-    endpoint, now = TokenEndpoint(), [1000.0]
-    source = backends.WorkloadIdentity(workload_env(tmp_path), transport=httpx2.MockTransport(endpoint), clock=lambda: now[0])
-    assert asyncio.run(source()) == "entra-1"
-    sent = endpoint.seen[0]
-    assert str(sent.url) == "https://login.test/tenant-1/oauth2/v2.0/token"
-    form = dict(pair.split("=", 1) for pair in sent.content.decode().split("&"))
-    assert form["grant_type"] == "client_credentials" and form["client_id"] == "client-1"
-    assert form["client_assertion"] == "projected-jwt"
-    assert form["client_assertion_type"] == "urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer"
-    assert form["scope"] == "https%3A%2F%2Fai.azure.com%2F.default"
-    # It is kept until shortly before it expires, then fetched again.
-    assert asyncio.run(source()) == "entra-1" and len(endpoint.seen) == 1
-    now[0] += 3600
-    assert asyncio.run(source()) == "entra-2" and len(endpoint.seen) == 2
-
-
-def test_workload_identity_needs_all_of_its_environment(tmp_path):
-    env = workload_env(tmp_path)
-    for name in ("AZURE_FEDERATED_TOKEN_FILE", "AZURE_CLIENT_ID", "AZURE_TENANT_ID"):
-        with pytest.raises(BackendError):
-            backends.WorkloadIdentity({k: v for k, v in env.items() if k != name})
-
-
-def test_workload_identity_refuses_an_authority_that_is_not_https(tmp_path):
-    with pytest.raises(BackendError):
-        backends.WorkloadIdentity({**workload_env(tmp_path), "AZURE_AUTHORITY_HOST": "http://login.test/"})
-
-
-def test_a_failing_token_endpoint_is_an_error_without_its_text(tmp_path):
-    endpoint = httpx2.MockTransport(lambda request: httpx2.Response(400, text="AADSTS70021 secret detail"))
-    source = backends.WorkloadIdentity(workload_env(tmp_path), transport=endpoint)
-    with pytest.raises(BackendError) as err:
-        asyncio.run(source())
-    assert "AADSTS" not in str(err.value)
-
-
 # --- choosing the backend and starting the process -----------------------------------------------------
 
 
@@ -955,8 +863,6 @@ def test_a_budget_that_makes_no_sense_stops_the_start(value):
         ({"LLM_BACKEND": "gpt"}, "LLM_BACKEND"),
         ({"LLM_BACKEND": "anthropic"}, "ANTHROPIC_API_KEY_FILE"),
         ({"LLM_BACKEND": "anthropic", "ANTHROPIC_API_KEY_FILE": "/no/such/file"}, "key"),
-        ({"LLM_BACKEND": "foundry"}, "FOUNDRY_ENDPOINT"),
-        ({"LLM_BACKEND": "foundry", "FOUNDRY_ENDPOINT": "https://x.test/anthropic"}, "AZURE_FEDERATED_TOKEN_FILE"),
         ({"CALLER_SUBNET": ""}, "CALLER_SUBNET"),
     ],
 )
@@ -965,13 +871,22 @@ def test_the_process_does_not_start_when_a_backend_cannot_work(more, word):
         llmgw_main.prepare({**env(), **more})
 
 
-def test_prepare_builds_the_anthropic_and_foundry_backends(key_file, tmp_path):
+def test_unknown_backend_foundry_is_refused_at_startup():
+    # v1 had a Foundry backend; only scripted and anthropic are left.
+    with pytest.raises(SystemExit, match="LLM_BACKEND must be scripted or anthropic"):
+        llmgw_main.prepare(env(LLM_BACKEND="foundry"))
+    with pytest.raises(BackendError):
+        backends.make_backend({"LLM_BACKEND": "foundry"})
+
+
+def test_prepare_builds_the_anthropic_backend(key_file):
     a, _ = llmgw_main.prepare(env(LLM_BACKEND="anthropic", ANTHROPIC_API_KEY_FILE=str(key_file), LLM_MODEL="claude-haiku-5-5"))
     assert isinstance(a.backend, AnthropicBackend)
-    f, _ = llmgw_main.prepare(
-        env(LLM_BACKEND="foundry", FOUNDRY_ENDPOINT="https://x.services.ai.azure.test/anthropic", **workload_env(tmp_path))
-    )
-    assert isinstance(f.backend, FoundryBackend)
+
+
+def test_the_default_model_is_claude_haiku_5_5(key_file):
+    gateway, _ = llmgw_main.prepare(env(LLM_BACKEND="anthropic", ANTHROPIC_API_KEY_FILE=str(key_file)))
+    assert gateway.backend._model == "claude-haiku-5-5"
 
 
 def test_a_scripted_gateway_holds_no_key_and_ignores_one(key_file):
@@ -986,7 +901,7 @@ def test_the_process_reads_the_peer_address_and_no_proxy_header():
 
 
 def test_only_the_gateway_knows_the_provider_the_agent_names_none():
-    # The model key and the Foundry identity live in the LLM gateway only, so a hijacked agent has
+    # The model key lives in the LLM gateway only, so a hijacked agent has
     # nothing to read. The agent
     # package does not mention a provider, a key variable or the provider's address.
     agent_dir = ROOT / "app" / "agent"

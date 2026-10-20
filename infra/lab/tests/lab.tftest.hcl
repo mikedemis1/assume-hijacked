@@ -550,55 +550,11 @@ run "service_range_overlapping_the_pod_range_is_refused" {
   expect_failures = [azurerm_kubernetes_cluster.this]
 }
 
-run "foundry_egress_is_off_by_default_and_system_only_when_on" {
-  command = plan
-
-  variables {
-    foundry_enabled     = true
-    foundry_fqdn        = "ah-foundry.services.ai.azure.com"
-    foundry_resource_id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-model/providers/Microsoft.CognitiveServices/accounts/ah-foundry"
-  }
-
-  assert {
-    condition = anytrue(flatten([
-      for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : [
-        for r in c.rule : r.name == "foundry-api" && toset(r.destination_fqdns) == toset(["ah-foundry.services.ai.azure.com"]) && toset(r.source_addresses) == toset(["10.20.0.0/24"])
-      ]
-    ]))
-    error_message = "With foundry_enabled, the Foundry endpoint is allowed from the system subnet only."
-  }
-}
-
-run "foundry_rule_absent_by_default" {
-  command = plan
-
-  assert {
-    condition = alltrue(flatten([
-      for c in azurerm_firewall_policy_rule_collection_group.egress[0].application_rule_collection : [
-        for r in c.rule : r.name != "foundry-api"
-      ]
-    ]))
-    error_message = "No Foundry rule unless the foundry backend is enabled."
-  }
-}
-
-run "foundry_without_an_exact_host_is_refused" {
-  command = plan
-
-  variables {
-    foundry_enabled     = true
-    foundry_fqdn        = "*.services.ai.azure.com"
-    foundry_resource_id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-model/providers/Microsoft.CognitiveServices/accounts/ah-foundry"
-  }
-
-  expect_failures = [var.foundry_fqdn]
-}
-
-run "scripted_has_no_provider_route_or_foundry_grant" {
+run "scripted_has_no_provider_route" {
   command = plan
   assert {
-    condition     = length(local.llm_rules) == 0 && length(azurerm_role_assignment.llm_foundry) == 0
-    error_message = "The default scripted model must have no paid-provider route or role."
+    condition     = length(local.llm_rules) == 0
+    error_message = "The default scripted model must have no paid-provider route."
   }
 }
 
@@ -606,8 +562,8 @@ run "anthropic_has_only_its_own_provider_route" {
   command = plan
   variables { anthropic_enabled = true }
   assert {
-    condition     = toset(keys(local.llm_rules)) == toset(["anthropic-api"]) && length(azurerm_role_assignment.llm_foundry) == 0
-    error_message = "Anthropic must not inherit a Foundry route or identity grant."
+    condition     = toset(keys(local.llm_rules)) == toset(["anthropic-api"])
+    error_message = "Anthropic enabled opens the Anthropic host and nothing else."
   }
 }
 

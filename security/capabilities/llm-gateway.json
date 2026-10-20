@@ -1,6 +1,6 @@
 {
   "component": "llm-gateway",
-  "description": "The agent's only way to a model. Checks the caller, keeps a token budget per lease and sends the conversation to the model provider with its own key or workload identity, never the agent's headers. The only component that holds a model key (Anthropic: a secret file) or identity (Foundry: Entra, workload identity). No database. As shipped (the scripted backend) it calls nobody; with a real provider it also reaches that provider and, for Foundry, Entra: Compose gives that route to this service alone in compose.llm-anthropic.yaml, and the cluster allows the provider's host name for this pod only.",
+  "description": "The agent's only way to a model. Checks the caller, keeps a token budget per lease and sends the conversation to the model provider with its own key, never the agent's headers. The only component that holds a model key (Anthropic: a secret file). No database. As shipped (the scripted backend) it calls nobody; with the Anthropic backend it also reaches that provider, and the cluster allows the provider's host name for this pod only.",
   "db": {
     "role": null,
     "execute": [],

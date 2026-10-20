@@ -36,10 +36,9 @@ console:
     clientId: ""
 
 llm:
-  backend: scripted          # scripted | anthropic | foundry
+  backend: scripted          # scripted | anthropic
   model: claude-haiku-5-5
   tokenBudgetPerLease: 20000
-  foundryEndpoint: ""
 
 db:
   host: postgres.ah-data.svc.cluster.local

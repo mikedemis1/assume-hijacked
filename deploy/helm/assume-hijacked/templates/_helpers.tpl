@@ -561,7 +561,7 @@ database for every caller. */ -}}
 Names outside the cluster that a component may resolve and reach on 443 (matrix rows 19, 20),
 as a JSON list of {name, ns, hosts}. Nothing else in the chart resolves a name outside
 cluster.local.
-  llm-gateway  anthropic: the API host; foundry: the endpoint host + Entra (workload identity)
+  llm-gateway  anthropic: the API host
   console      Entra sign-in keys, when authMode=entra
   db-migrate   Entra (Azure only: it trades its workload identity token for a database token)
 */}}
@@ -571,13 +571,6 @@ cluster.local.
 {{- $out := list -}}
 {{- if eq $v.llm.backend "anthropic" -}}
 {{- $out = append $out (dict "name" "llm-gateway" "ns" "ah-agent" "hosts" (list "api.anthropic.com")) -}}
-{{- else if eq $v.llm.backend "foundry" -}}
-{{- /* hostname, not host: host keeps a :port, and DNS rules match names. */ -}}
-{{- $host := (urlParse (required "llm.foundryEndpoint is required with llm.backend=foundry" $v.llm.foundryEndpoint)).hostname -}}
-{{- if not $host -}}
-{{- fail (printf "llm.foundryEndpoint must be a URL with a host (https://<name>/...), got %s" $v.llm.foundryEndpoint) -}}
-{{- end -}}
-{{- $out = append $out (dict "name" "llm-gateway" "ns" "ah-agent" "hosts" (list $host $entra)) -}}
 {{- end -}}
 {{- if eq $v.console.authMode "entra" -}}
 {{- $out = append $out (dict "name" "console" "ns" "ah-staff" "hosts" (list $entra)) -}}

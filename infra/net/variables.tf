@@ -87,7 +87,7 @@ variable "dns_block_mode" {
 }
 
 variable "dns_allowed_domains" {
-  description = "Domains that always resolve (rule priority 100, action Allow). Each entry ends with a dot and covers its subdomains (DNS hierarchy). The first list is a starting point for AKS, Key Vault, PostgreSQL, ACR, Entra and Foundry; check it against the DNS query log before turning on dns_block_mode."
+  description = "Domains that always resolve (rule priority 100, action Allow). Each entry ends with a dot and covers its subdomains (DNS hierarchy). The first list is a starting point for AKS, Key Vault, PostgreSQL, ACR and Entra; check it against the DNS query log before turning on dns_block_mode."
   type        = list(string)
   default = [
     "azure.com.",

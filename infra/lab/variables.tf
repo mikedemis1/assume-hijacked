@@ -211,38 +211,10 @@ variable "enable_firewall" {
   default     = true
 }
 
-variable "foundry_enabled" {
-  description = "true when llm-gateway uses the foundry backend: the firewall then allows the Foundry endpoint from the system subnet."
-  type        = bool
-  default     = false
-}
-
 variable "anthropic_enabled" {
   description = "Allow the Anthropic API from the system pool only when that backend is selected."
   type        = bool
   default     = false
-}
-
-variable "foundry_resource_id" {
-  description = "Existing Foundry account for the gateway's Cognitive Services User grant. No model resource is created here."
-  type        = string
-  default     = null
-
-  validation {
-    condition     = !var.foundry_enabled || try(startswith(var.foundry_resource_id, "/subscriptions/${var.subscription_id}/resourceGroups/") && strcontains(var.foundry_resource_id, "/providers/Microsoft.CognitiveServices/accounts/"), false)
-    error_message = "Foundry needs an account resource ID in the selected subscription."
-  }
-}
-
-variable "foundry_fqdn" {
-  description = "Host name of the Foundry endpoint (for example <resource>.services.ai.azure.com). Required when foundry_enabled."
-  type        = string
-  default     = null
-
-  validation {
-    condition     = !var.foundry_enabled || can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.foundry_fqdn))
-    error_message = "With foundry_enabled, foundry_fqdn must be one exact host name (no wildcard, no scheme)."
-  }
 }
 
 # ---------------------------------------------------------------- PostgreSQL

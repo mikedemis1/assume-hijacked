@@ -4,14 +4,11 @@
                 hijacked model would. The default, and what CI runs. Needs no key and no network.
     anthropic   the Anthropic Messages API, with the key from a file.
                 https://docs.anthropic.com/en/api/messages
-    foundry     Claude in Microsoft Foundry: the same Messages API at
-                `<endpoint>/v1/messages`, with a Microsoft Entra token the gateway gets for its
-                workload identity (no key). https://learn.microsoft.com/azure/foundry/foundry-models/how-to/use-foundry-models-claude
 
 Every backend answers the same question: given the conversation so far (the ticket, then each tool
 call with its result), what next? One `Step`: a tool call or a reply, with the tokens it cost.
 
-The headers a provider is sent are built here from the gateway's own key or token. Nothing from the
+The headers a provider is sent are built here from the gateway's own key. Nothing from the
 agent's request is copied into them: the gateway's caller never sees, supplies or overrides a
 credential. What a provider answered with is never passed on in an error: a failure is a category
 (`BackendError.category`) and nothing else.
@@ -20,12 +17,9 @@ credential. What a provider answered with is never passed on in an error: a fail
 from __future__ import annotations
 
 import json
-import os
-import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx2
 
@@ -40,10 +34,6 @@ MAX_ANSWER_BYTES = 1024 * 1024
 TIMEOUT_S = 45.0
 ANTHROPIC_URL = "https://api.anthropic.com"
 ANTHROPIC_VERSION = "2023-06-01"
-# The token scope Claude in Foundry asks for with Entra ID.
-FOUNDRY_SCOPE = "https://ai.azure.com/.default"
-DEFAULT_AUTHORITY = "https://login.microsoftonline.com/"
-TOKEN_REFRESH_BEFORE_S = 300
 
 SYSTEM_PROMPT = (
     "You are the support assistant of an electricity supplier. You answer one customer ticket. "
@@ -137,7 +127,7 @@ class ScriptedBackend:
         return Step("call", name=action.name, args=action.args)
 
 
-# --- the Messages API (Anthropic, and Claude in Foundry) ---------------------------------------
+# --- the Messages API (Anthropic) ---------------------------------------
 
 
 def _messages(transcript: list[dict]) -> list[dict]:
@@ -175,7 +165,7 @@ def _step_of(answer, fallback_tokens: int) -> Step:
 
 
 class _MessagesBackend:
-    """Shared by the two providers that speak the Messages API."""
+    """The Messages API: one request, one answer."""
 
     def __init__(self, url: str, model: str, transport: httpx2.AsyncBaseTransport | None, timeout_s: float) -> None:
         self._url, self._model, self._transport, self._timeout_s = url, model, transport, timeout_s
@@ -248,86 +238,6 @@ class AnthropicBackend(_MessagesBackend):
         return {"x-api-key": self._read_key()}
 
 
-class FoundryBackend(_MessagesBackend):
-    def __init__(
-        self,
-        endpoint: str,
-        model: str,
-        token_source: Callable[[], Awaitable[str]],
-        *,
-        transport: httpx2.AsyncBaseTransport | None = None,
-        timeout_s: float = TIMEOUT_S,
-    ) -> None:
-        parts = urlsplit(endpoint or "")
-        if parts.scheme != "https" or not parts.hostname:
-            raise BackendError("FOUNDRY_ENDPOINT must be an https URL, https://<name>.services.ai.azure.com/anthropic")
-        base = endpoint.rstrip("/")
-        url = base if base.endswith("/v1/messages") else f"{base}/v1/messages"
-        super().__init__(url, model, transport, timeout_s)
-        self._token_source = token_source
-
-    async def _headers(self) -> dict[str, str]:
-        return {"authorization": f"Bearer {await self._token_source()}"}
-
-
-class WorkloadIdentity:
-    """A Microsoft Entra token for this pod's workload identity, with no secret: the kubelet projects a
-    signed token for the pod's service account (AZURE_FEDERATED_TOKEN_FILE), and Entra swaps it for an
-    access token (OAuth 2.0 client credentials with a client assertion). The access token is kept until
-    shortly before it expires.
-    https://learn.microsoft.com/entra/workload-id/workload-identity-federation
-    https://learn.microsoft.com/entra/identity-platform/v2-oauth2-client-creds-grant-flow#third-case-access-token-request-with-a-federated-credential
-    """
-
-    def __init__(
-        self,
-        env: Mapping[str, str] = os.environ,
-        *,
-        transport: httpx2.AsyncBaseTransport | None = None,
-        clock: Callable[[], float] = time.time,
-        scope: str = FOUNDRY_SCOPE,
-    ) -> None:
-        missing = [n for n in ("AZURE_FEDERATED_TOKEN_FILE", "AZURE_CLIENT_ID", "AZURE_TENANT_ID") if not env.get(n)]
-        if missing:
-            raise BackendError(f"workload identity needs {', '.join(missing)} (set by the workload identity webhook)")
-        authority = env.get("AZURE_AUTHORITY_HOST") or DEFAULT_AUTHORITY
-        if urlsplit(authority).scheme != "https":
-            raise BackendError("AZURE_AUTHORITY_HOST must be an https URL")
-        self._file = Path(env["AZURE_FEDERATED_TOKEN_FILE"])
-        self._client_id, self._scope = env["AZURE_CLIENT_ID"], scope
-        self._url = f"{authority.rstrip('/')}/{env['AZURE_TENANT_ID']}/oauth2/v2.0/token"
-        self._transport, self._clock = transport, clock
-        self._token: str | None = None
-        self._expires_at = 0.0
-
-    async def __call__(self) -> str:
-        if self._token is not None and self._clock() < self._expires_at - TOKEN_REFRESH_BEFORE_S:
-            return self._token
-        form = {
-            "grant_type": "client_credentials",
-            "client_id": self._client_id,
-            "scope": self._scope,
-            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-            "client_assertion": self._file.read_text(encoding="utf-8").strip(),
-        }
-        try:
-            async with httpx2.AsyncClient(transport=self._transport, timeout=httpx2.Timeout(15.0)) as http:
-                response = await http.post(self._url, data=form)
-        except httpx2.HTTPError as err:
-            raise BackendError("token_unreachable") from err
-        if response.status_code != 200:
-            raise BackendError("token_refused")  # Entra's error text names the app: not passed on
-        try:
-            answer = response.json()
-            token, lifetime = answer["access_token"], int(answer["expires_in"])
-        except (ValueError, KeyError, TypeError) as err:
-            raise BackendError("token_bad_answer") from err
-        if not isinstance(token, str) or not token:
-            raise BackendError("token_bad_answer")
-        self._token, self._expires_at = token, self._clock() + lifetime
-        return token
-
-
 def make_backend(env: Mapping[str, str], *, transport: httpx2.AsyncBaseTransport | None = None):
     """The backend LLM_BACKEND names (default scripted). Raises BackendError when it cannot work, so
     the process does not start."""
@@ -340,9 +250,4 @@ def make_backend(env: Mapping[str, str], *, transport: httpx2.AsyncBaseTransport
         if not key_file:
             raise BackendError("LLM_BACKEND=anthropic needs ANTHROPIC_API_KEY_FILE")
         return AnthropicBackend(key_file, model, transport=transport)
-    if kind == "foundry":
-        endpoint = env.get("FOUNDRY_ENDPOINT")
-        if not endpoint:
-            raise BackendError("LLM_BACKEND=foundry needs FOUNDRY_ENDPOINT")
-        return FoundryBackend(endpoint, model, WorkloadIdentity(env), transport=transport)
-    raise BackendError("LLM_BACKEND must be scripted, anthropic or foundry")
+    raise BackendError("LLM_BACKEND must be scripted or anthropic")

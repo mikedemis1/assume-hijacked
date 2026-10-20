@@ -445,16 +445,14 @@ def test_azure_secrets_come_from_key_vault_with_workload_identity():
     assert "annotations" not in service_accounts["agent"]["metadata"]
 
 
-def test_llm_gateway_gets_azure_identity_only_for_foundry():
+def test_llm_gateway_gets_no_azure_identity_of_its_own():
     def llm_pod(*sets):
         [d] = [o for o in rendered("azure", *sets)
                if o["kind"] == "Deployment" and o["metadata"]["name"] == "llm-gateway"]
         return d["spec"]["template"]
     assert "azure.workload.identity/use" not in llm_pod()["metadata"]["labels"]
-    foundry = llm_pod("llm.backend=foundry", "llm.foundryEndpoint=https://ai.example.test")
-    assert foundry["metadata"]["labels"]["azure.workload.identity/use"] == "true"
-    env = {e["name"]: e.get("value") for e in foundry["spec"]["containers"][0]["env"]}
-    assert env["FOUNDRY_ENDPOINT"] == "https://ai.example.test"
+    env = {e["name"] for e in llm_pod()["spec"]["containers"][0]["env"]}
+    assert "FOUNDRY_ENDPOINT" not in env
 
 
 def test_database_objects_per_environment():
@@ -658,12 +656,6 @@ def test_only_named_components_reach_names_outside_the_cluster():
     assert external_names("azure") == {
         "console": (search_names(ENTRA, "ah-staff"), [ENTRA]),
         "db-migrate": ([n for h in migrate_hosts for n in search_names(h, "ah-core")], migrate_hosts)}
-    # The endpoint's port is not part of the name.
-    for endpoint in ("https://ai-ah.openai.azure.com/", "https://ai-ah.openai.azure.com:443/openai"):
-        foundry = external_names("azure", "llm.backend=foundry", f"llm.foundryEndpoint={endpoint}")
-        assert foundry["llm-gateway"] == (
-            search_names("ai-ah.openai.azure.com", "ah-agent") + search_names(ENTRA, "ah-agent"),
-            ["ai-ah.openai.azure.com", ENTRA])
     # No other Cilium egress to the world: no CIDR allow, no entity but the API server.
     for env in ENVS:
         for p in cilium_policies(env):
@@ -800,12 +792,10 @@ def test_console_template_refuses_dev_auth_in_azure_without_the_schema():
     assert helm("template", "azure", "--skip-schema-validation").returncode == 0
 
 
-@pytest.mark.parametrize("endpoint", ["ai-ah.openai.azure.com", "https:///openai"])
-def test_foundry_endpoint_without_a_host_is_refused(endpoint):
-    """A scheme-less or host-less endpoint would give an empty DNS name."""
-    result = helm("template", "azure", "--set", "llm.backend=foundry", "--set", f"llm.foundryEndpoint={endpoint}")
+def test_the_foundry_backend_is_refused_by_the_chart():
+    result = helm("template", "azure", "--set", "llm.backend=foundry")
     assert result.returncode != 0
-    assert "llm.foundryEndpoint must be a URL with a host" in result.stderr
+    assert "/llm/backend" in result.stderr
 
 
 @pytest.mark.parametrize("env", ENVS)
