@@ -27,14 +27,17 @@ def test_the_portal_role_reads_no_table(as_role, table):
 def test_the_portal_role_writes_no_table(as_role):
     conn = as_role("demo_portal")
     refused(conn, "INSERT INTO tickets (id, customer_id, body) VALUES (5000, 1001, 'x')")
-    refused(conn, "INSERT INTO replies (ticket_id, text) VALUES (1, 'x')")
+    refused(conn, "INSERT INTO replies (ticket_id, text, kind) VALUES (1, 'x', 'agent')")
     refused(conn, "UPDATE tickets SET customer_id = 1002")
     refused(conn, "SELECT nextval('demo_ticket_id_seq')")
 
 
 @pytest.mark.parametrize("call", [
     "demo_request_errors(ARRAY[1])", "open_lease(1, ARRAY['read_ticket'], NULL)", "lease_scope('x')",
-    "reply_facts('x')", "beat('demo')", "pause_agents('x')", "resume_agents()",
+    "finish_reply_facts('x', 'y')", "beat('demo')", "pause_agents('x')",
+    "resume_agents('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'::uuid)",
+    "approve_request(1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'::uuid)",
+    "record_agent_events('x', 'y', '[]'::jsonb)",
 ])
 def test_the_portal_role_runs_no_other_function(as_role, call):
     refused(as_role("demo_portal"), f"SELECT * FROM {call}")
@@ -83,8 +86,8 @@ def test_a_customer_reads_the_reply_to_their_own_ticket_and_nobody_else_does(adm
     conn = as_role("demo_portal")
     mine = conn.execute("SELECT portal_open_ticket(1001, 'Mine') AS id").fetchone()["id"]
     pending = conn.execute("SELECT portal_open_ticket(1001, 'No answer yet') AS id").fetchone()["id"]
-    admin.execute("INSERT INTO replies (ticket_id, text) VALUES (%s, 'Your tariff is G1.')", (mine,))
-    admin.execute("INSERT INTO replies (ticket_id, text) VALUES (1, 'A seeded ticket of customer 1001.')")
+    admin.execute("INSERT INTO replies (ticket_id, text, kind) VALUES (%s, 'Your tariff is G1.', 'agent')", (mine,))
+    admin.execute("INSERT INTO replies (ticket_id, text, kind) VALUES (1, 'A seeded ticket of customer 1001.', 'agent')")
 
     def reply(customer, ticket):
         return conn.execute("SELECT text FROM portal_reply(%s, %s)", (customer, ticket)).fetchall()
@@ -101,7 +104,7 @@ def test_a_customer_reads_the_reply_to_their_own_ticket_and_nobody_else_does(adm
     # in the demo's id range and for the same customer.
     assert reply(1001, 1) == []
     other = admin.execute("INSERT INTO tickets (id, customer_id, body) VALUES (1500, 1001, 'filed by hand') RETURNING id").fetchone()["id"]
-    admin.execute("INSERT INTO replies (ticket_id, text) VALUES (%s, 'A reply the demo did not ask for.')", (other,))
+    admin.execute("INSERT INTO replies (ticket_id, text, kind) VALUES (%s, 'A reply the demo did not ask for.', 'agent')", (other,))
     assert reply(1001, other) == []
 
 
@@ -181,3 +184,16 @@ def test_a_run_ties_a_ticket_to_the_calls_of_its_lease_by_hash_only(admin, as_ro
     run = conn.execute("SELECT lease_hash FROM agent_runs WHERE ticket_id = 1").fetchone()
     calls = conn.execute("SELECT tool, dropped_args FROM tool_calls WHERE lease_hash = %s", (run["lease_hash"],)).fetchall()
     assert calls == [{"tool": "lookup_account", "dropped_args": ["customer_id"]}]
+
+
+def test_the_panel_reads_agent_events_by_name_and_reply_kind_but_never_reply_text(admin, as_role):
+    ticket = as_role("demo_portal").execute("SELECT portal_open_ticket(1001, 'Mine') AS id").fetchone()["id"]
+    admin.execute("INSERT INTO agent_events (ticket_id, lease_hash, kind, tool, arg_names) "
+                  "VALUES (%s, '\x02'::bytea, 'dropped_argument', 'lookup_account', ARRAY['customer_id'])", (ticket,))
+    admin.execute("INSERT INTO replies (ticket_id, text, kind) VALUES (%s, 'Secret words', 'template')", (ticket,))
+    ops = as_role("demo_ops")
+    assert ops.execute("SELECT kind, tool, arg_names FROM agent_events").fetchall() == [
+        {"kind": "dropped_argument", "tool": "lookup_account", "arg_names": ["customer_id"]}]
+    assert ops.execute("SELECT kind FROM replies").fetchall() == [{"kind": "template"}]
+    refused(ops, "SELECT text FROM replies")
+    refused(ops, "INSERT INTO agent_events (ticket_id, lease_hash, kind, tool, arg_names) VALUES (1, '\x03'::bytea, 'unknown_tool', 'x', '{}')")

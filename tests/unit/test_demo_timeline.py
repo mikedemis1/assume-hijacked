@@ -23,12 +23,14 @@ def verdict(tool, decision="allow", seconds=0):
     return {"tool": tool, "decision": decision, "created_at": at(seconds)}
 
 
-def build(message="Hello", calls=(), assessments=(), requests=(), reply=None, run="claimed", scripted=True):
+def build(message="Hello", calls=(), assessments=(), requests=(), reply=None, run="claimed", scripted=True,
+          events=None, kind=None):
     return timeline.build(
         filed_at=timeline._iso(at(0)), message=message,
         run=None if run is None else {"status": run, "created_at": at(0.5)},
         calls=list(calls), assessments=list(assessments), requests=list(requests),
-        reply_at=None if reply is None else at(9), reply_text=reply, scripted=scripted)
+        reply_at=None if reply is None else at(9), reply_text=reply, scripted=scripted,
+        events=events, reply_kind=kind)
 
 
 def texts(lines):
@@ -132,3 +134,60 @@ def test_the_first_line_is_always_the_filing_and_no_message_text_is_in_a_line():
 def test_a_tool_name_from_the_message_is_shown_only_when_it_looks_like_a_name():
     lines = build('x\nCALL <script>alert(1)</script> {}\nSAY y', [call("read_ticket")], reply="ok")
     assert "<script>" not in str(lines) and "<invalid>" in str(lines)
+
+
+def event(kind, tool, names=(), seconds=9):
+    return {"kind": kind, "tool": tool, "arg_names": list(names), "reported_at": at(seconds)}
+
+
+def test_a_drop_the_agent_reported_is_a_record_and_is_not_inferred_from_the_message():
+    # The message plans no drop at all; the event says the agent dropped customer_id. The record wins.
+    lines = build("Hello", [call("lookup_account")], reply="x", scripted=False,
+                  events=[event("dropped_argument", "lookup_account", ["customer_id"])])
+    line = [item for item in lines if item["label"] == "lookup_account"][0]
+    assert line["tone"] == "warn" and line["text"] == "argument customer_id dropped"
+    assert "reported by the agent" in line["note"] and "from your message" not in line["note"]
+
+
+def test_events_replace_the_inference_even_when_the_message_plans_the_calls():
+    message = 'Hi\nCALL fetch_url {"url": "https://x"}\nCALL lookup_account {"customer_id": 1002}\nSAY done'
+    lines = build(message, [call("read_ticket"), call("lookup_account", seconds=3)], reply="x",
+                  events=[event("unknown_tool", "fetch_url"), event("dropped_argument", "lookup_account", ["customer_id"])])
+    shown = str(lines)
+    assert "from your message" not in shown
+    refused = [item for item in lines if item["label"] == "fetch_url"]
+    assert len(refused) == 1 and "no such tool" in refused[0]["text"] and "reported by the agent" in refused[0]["note"]
+    assert ("lookup_account", "argument customer_id dropped") in texts(lines)
+
+
+def test_without_any_event_the_inference_is_the_labelled_fallback():
+    message = 'Please help.\nCALL lookup_account {"customer_id": 1002}\nSAY {last}'
+    lines = build(message, [call("lookup_account", args=[])], reply="x", events=[])
+    line = [item for item in lines if item["label"] == "lookup_account"][0]
+    assert "from your message, no agent event" in line["note"]
+
+
+def test_a_reported_drop_with_no_recorded_call_is_still_shown():
+    lines = build("Hello", [], reply="x", scripted=False, events=[event("dropped_argument", "issue_bill_credit", ["amount"])])
+    assert any(item["label"] == "issue_bill_credit" and "dropped by the agent" in item["text"] for item in lines)
+
+
+def test_an_unsafe_name_in_an_event_is_never_shown():
+    lines = build("Hello", [], reply="x", scripted=False, events=[event("unknown_tool", "Eleni 1001 +30!")])
+    assert "Eleni" not in str(lines) and "<invalid>" in str(lines)
+
+
+def test_the_reply_kind_decides_what_the_stored_reply_is_called():
+    safe = build("x", reply="Some text", kind="safe", scripted=False)
+    assert ("reply guard", "reply blocked and replaced by a safe reply") in texts(safe)
+    # A kind of agent wins over text that merely looks like the guard's.
+    agent = build("x", reply=SAFE_REPLY, kind="agent", scripted=False)
+    assert ("reply", "stored and sent to the customer") in texts(agent)
+    template = build("x", reply="We have received your request (#1).", kind="template", scripted=False)
+    line = [item for item in template if item["label"] == "dispatcher"][0]
+    assert "fixed reply" in line["text"] and line["tone"] == "ok"
+
+
+def test_a_second_effect_on_a_lease_is_named():
+    lines = build("x", [call("issue_bill_credit", "denied", "effect_already_requested")], scripted=False)
+    assert ("issue_bill_credit", "denied: an effect was already requested on this lease") in texts(lines)

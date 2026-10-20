@@ -40,10 +40,12 @@ def replies(customer: int, tickets: list[int]) -> dict[int, str]:
 
 def audit(tickets: list[int]) -> dict[int, dict]:
     """For each ticket: its run, the gateway's calls, the risk engine's verdicts on them, the effect
-    requests with their risk tier, approvals and outcome, and when the reply was stored."""
+    requests with their risk tier, approvals and outcome, the agent's own report of what it dropped
+    (agent_events, names only), and when the reply was stored and of which kind."""
     if not tickets:
         return {}
-    out = {t: {"run": None, "calls": [], "assessments": [], "requests": [], "reply_at": None} for t in tickets}
+    out = {t: {"run": None, "calls": [], "assessments": [], "requests": [], "events": [],
+                     "reply_at": None, "reply_kind": None} for t in tickets}
     with _connect("demo_ops") as conn:
         runs = conn.execute(
             "SELECT ticket_id, lease_hash, status, created_at FROM agent_runs WHERE ticket_id = ANY(%s)", (tickets,)
@@ -97,6 +99,14 @@ def audit(tickets: list[int]) -> dict[int, dict]:
                 "approvals": approvals.get(r["id"], []), "credit_paid": r["id"] in paid,
                 "order_written": r["id"] in ordered, "errors": errors.get(r["id"], []),
             })
-        for row in conn.execute("SELECT ticket_id, created_at FROM replies WHERE ticket_id = ANY(%s)", (tickets,)).fetchall():
+        for row in conn.execute(
+            "SELECT ticket_id, kind, tool, arg_names, reported_at FROM agent_events "
+            "WHERE ticket_id = ANY(%s) ORDER BY id", (tickets,)
+        ).fetchall():
+            out[row["ticket_id"]]["events"].append(row)
+        for row in conn.execute(
+            "SELECT ticket_id, kind, created_at FROM replies WHERE ticket_id = ANY(%s)", (tickets,)
+        ).fetchall():
             out[row["ticket_id"]]["reply_at"] = row["created_at"]
+            out[row["ticket_id"]]["reply_kind"] = row["kind"]
     return out

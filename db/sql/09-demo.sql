@@ -88,7 +88,10 @@ GRANT SELECT (id, lease_hash, tool, arg_names, dropped_args, outcome, reason, cr
 GRANT SELECT (id, lease_hash, tool, decision, created_at) ON call_assessments TO demo_ops;
 GRANT SELECT (id, kind, ticket_id, amount_eur, status, decision_reason, created_at) ON action_requests TO demo_ops;
 GRANT SELECT (request_id, tier, reasons, created_at) ON risk_assessments TO demo_ops;
-GRANT SELECT (ticket_id, created_at) ON replies TO demo_ops;
+-- replies.kind says where the stored text came from (agent, safe, template); agent_events is the
+-- agent's own report of what it dropped, names only (05-lease.sql). Neither role reads reply text here.
+GRANT SELECT (ticket_id, kind, created_at) ON replies TO demo_ops;
+GRANT SELECT (id, ticket_id, lease_hash, kind, tool, arg_names, reported_at) ON agent_events TO demo_ops;
 GRANT SELECT (request_id, created_at) ON credits TO demo_ops;
 GRANT SELECT (request_id, created_at) ON disconnection_orders TO demo_ops;
 GRANT SELECT (request_id, approver_role, created_at) ON approvals TO demo_ops;
@@ -97,7 +100,7 @@ DECLARE
     t text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['agent_runs', 'tool_calls', 'call_assessments', 'action_requests',
-                            'risk_assessments', 'replies']
+                            'risk_assessments', 'replies', 'agent_events']
     LOOP
         EXECUTE format('CREATE POLICY demo_ops_read ON %I FOR SELECT TO demo_ops USING (true)', t);
     END LOOP;

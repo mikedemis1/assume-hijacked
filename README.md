@@ -112,7 +112,7 @@ The scripted model plays a fully hijacked model, so an example fills the box wit
 
 What is enforced where: the database role `demo_portal` has no table grant and three functions. It can open a ticket for a demo customer and read replies only to tickets the demo itself opened; a seeded or hand-filed ticket gets nothing. Which customer a visitor is, and that the panel shows only that visitor's tickets, is enforced by the demo's session, not by the database. `demo_ops` reads audit columns only.
 
-The panel shows what the database records. Two things are only logged: what the agent's own code dropped before the gateway (the panel compares your message with the record and marks that line "from your message"), and why the reply guard blocked a reply.
+The panel shows what the database records. Two things are less firm than the rest. What the agent's own code dropped before the gateway is the agent's report, stored in `agent_events` (names only) and marked "reported by the agent": a hijacked agent could leave one out. Only when a ticket has no such event does the panel compare your message with the record, and it marks that line "from your message, no agent event". Why the reply guard blocked a reply is only logged; the panel shows the reply's kind (`agent`, `safe` or `template`).
 
 ## CI
 
@@ -145,7 +145,7 @@ Monitoring is two alerts (executor stopped, kill switch fired) and one Grafana b
 
 Verified means it ran and the output was read.
 
-- **Test suite.** The default `pytest` run is green: 543 passed, 170 deselected (the deselected ones need a kind cluster). It runs against a real PostgreSQL, so the database walls are tested as the database enforces them.
+- **Test suite.** The default `pytest` run is green: 673 passed, 170 deselected (the deselected ones need a kind cluster). It runs against a real PostgreSQL, so the database walls are tested as the database enforces them.
 - **Images.** The application image and the attack-suite image both build.
 - **kind run.** Pending; the deployed stack and the kind tests have not been run on v2 yet.
 

@@ -53,8 +53,11 @@ def main() -> None:
                 continue
             ticket, lease = claimed.json()["ticket_id"], claimed.json()["lease"]
             gateway = AppGatewayClient(built, auth=agent_auth(pod=pod))
-            text = Agent(ScriptedLLM(), gateway).handle_ticket(ticket, lease)
-            answer = post(harness.app, "/reply", lease=lease, headers=harness.agent(pod), body={"text": text})
+            agent = Agent(ScriptedLLM(), gateway)
+            text = agent.handle_ticket(ticket, lease)
+            # The real agent sends its own drops (names only) with the reply: the panel reads them from agent_events.
+            answer = post(harness.app, "/reply", lease=lease, headers=harness.agent(pod),
+                          body={"text": text, "events": agent.events})
             print(f"demo_local: ticket {ticket} answered ({answer.status_code}) {json.dumps(answer.json())[:40]}", flush=True)
         handled = len(jobs)
         assess_pending(risk_conn, settings, datetime.now(timezone.utc))

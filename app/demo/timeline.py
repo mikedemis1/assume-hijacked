@@ -5,15 +5,18 @@ agent run, the tool gateway's record of every call (tool, argument names, droppe
 outcome, reason), the risk engine's verdict on each call, the effect requests with their risk tier,
 approvals and executor outcome, and the stored reply.
 
-Two things are not in the database, and this module says so instead of guessing:
+Two things need care, and this module says where each line comes from instead of guessing:
 
 - The agent's own code drops arguments and refuses unknown tools before the gateway sees a call
-  (app/agent/core.py), and only writes that to its log. With the scripted model the demo knows
-  what the model was told, because it is in the customer's own message (CALL lines). When it has
-  that plan it compares the plan with the gateway's record, and the lines that come from the
-  comparison carry the source "from your message" so they are not mistaken for a record.
-- Why the reply guard blocked a reply is only logged. What is recorded is the reply: the guard
-  replaces a blocked reply with a fixed text, and this module recognises that text.
+  (app/agent/core.py). It reports that, names only, with its reply and the dispatcher stores it in
+  agent_events. Those lines carry the source "reported by the agent": a hijacked agent could leave
+  events out, so they are a best-effort record, not the gateway's. Only when a ticket has no
+  event at all and the scripted model's plan is known (the CALL lines of the customer's own
+  message) does the module fall back to comparing the plan with the gateway's record; those lines
+  carry "from your message, no agent event" so they are not mistaken for a record.
+- Why the reply guard blocked a reply is only logged. What is recorded is the reply and its kind
+  (replies.kind: agent, safe or template). Without a kind the module recognises the guard's fixed
+  text instead.
 
 No ticket text goes into a line. Tool and argument names that come from the message are shown only
 when they look like identifiers.
@@ -45,6 +48,7 @@ REASONS = {
     "repeated_denials": "too many refused calls, agents paused",
     "call_budget": "call budget for this ticket used up",
     "one_effect_per_ticket": "one effect per ticket",
+    "effect_already_requested": "an effect was already requested on this lease",
     "risk_unavailable": "risk engine unavailable",
     "risk_timeout": "risk engine did not answer in time",
     "risk_other": "refused by the risk engine",
@@ -145,10 +149,34 @@ def _plan_calls(message: str) -> list[ToolCall]:
     return [step for step in parse_plan(message) if isinstance(step, ToolCall)]
 
 
-def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall] | None, finished: bool) -> list[Line]:
-    """One line per call the gateway recorded, and, when a plan is known, the agent-side steps the
-    gateway never saw. Each recorded call is matched with the next plan step that names the same tool."""
+FROM_EVENTS = "reported by the agent"
+FROM_PLAN = "from your message, no agent event"
+
+
+def _event_lines(events: list[dict], calls: list[dict]) -> tuple[dict[str, list[list[str]]], list[Line]]:
+    """The agent's reports (agent_events): dropped arguments per tool, in the order reported, to be
+    matched with the gateway's calls to that tool, and a line for each unknown tool it refused."""
+    dropped: dict[str, list[list[str]]] = {}
+    lines: list[Line] = []
+    for event in events:
+        if event["kind"] == "dropped_argument":
+            dropped.setdefault(event["tool"], []).append(sorted(event["arg_names"]))
+        elif event["kind"] == "unknown_tool":
+            lines.append(Line(_iso(event["reported_at"]), "bad", _shown(event["tool"]),
+                              "refused: the agent has no such tool", f"by the agent ({FROM_EVENTS})"))
+    return dropped, lines
+
+
+def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall] | None, finished: bool,
+                events: list[dict] | None = None) -> list[Line]:
+    """One line per call the gateway recorded. The agent-side drops come from the agent's events when
+    there are any; otherwise, and only when a plan is known, from comparing the plan with the record
+    (each recorded call is matched with the next plan step that names the same tool)."""
     unused = list(assessments)
+    reported, extra = _event_lines(events, calls) if events else ({}, [])
+    source = FROM_EVENTS if events else FROM_PLAN
+    if events:
+        plan = None
 
     def verdict_of(call: dict) -> str:
         for k, a in enumerate(unused):
@@ -162,7 +190,7 @@ def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall]
     position = 0  # first plan step that has not been matched yet
     for call in calls:
         tool = call["tool"]
-        by_agent: list[str] = []
+        by_agent: list[str] = reported.get(tool, []).pop(0) if reported.get(tool) else []
         # Plan steps skipped on the way (a tool the agent does not have) are shown before the call
         # they precede, so the timeline keeps the order of the message.
         hit = next((i for i in range(position, len(steps)) if steps[i].name == tool), None)
@@ -173,7 +201,13 @@ def _call_lines(calls: list[dict], assessments: list[dict], plan: list[ToolCall]
             if tool in ALLOWED_ARGS:
                 by_agent = sorted(k for k in asked if k not in call["arg_names"] and k not in call["dropped_args"])
             position = hit + 1
-        lines.append(_gateway_line(call, by_agent, verdict_of(call)))
+        lines.append(_gateway_line(call, by_agent, verdict_of(call), source))
+    for tool, leftovers in reported.items():  # reported drops with no recorded call to hang them on
+        for names in leftovers:
+            lines.append(Line(_iso(events[-1]["reported_at"]), "warn", _shown(tool),
+                              f"{_plural(len(names), 'argument', 'arguments')} {_names(names)} dropped by the agent",
+                              f"no call reached the gateway ({FROM_EVENTS})"))
+    lines += extra
     if finished:  # until the reply is stored the agent may simply not have got that far
         for step in steps[position:]:
             lines.append(_agent_refusal(step, None))
@@ -184,13 +218,14 @@ def _agent_refusal(step: ToolCall, before) -> Line:
     at = _iso(before) if before is not None else ""
     if step.name in ALLOWED_ARGS:
         return Line(at, "neutral", _shown(step.name), "asked for, but the run ended before the call",
-                    "from your message")
-    return Line(at, "bad", _shown(step.name), "refused: the agent has no such tool", "by the agent (from your message)")
+                    FROM_PLAN)
+    return Line(at, "bad", _shown(step.name), "refused: the agent has no such tool", f"by the agent ({FROM_PLAN})")
 
 
-def _gateway_line(call: dict, by_agent: list[str], verdict: str) -> Line:
+def _gateway_line(call: dict, by_agent: list[str], verdict: str, source: str = FROM_PLAN) -> Line:
     """One line for a call the gateway recorded. `by_agent` are the argument names the agent's own
-    code dropped before the call (known only by comparing with the message)."""
+    code dropped before the call; `source` says whether they come from the agent's events or from
+    comparing the message with the record."""
     at = _iso(call["created_at"])
     tool, outcome, reason = call["tool"], call["outcome"], call["reason"]
     if tool == "unknown":
@@ -199,7 +234,7 @@ def _gateway_line(call: dict, by_agent: list[str], verdict: str) -> Line:
     dropped = by_agent + by_gateway
     facts = []
     if by_agent:
-        facts.append("dropped by the agent, before the gateway (from your message)")
+        facts.append(f"dropped by the agent, before the gateway ({source})")
     if by_gateway:
         facts.append("dropped by the gateway")
     if verdict:
@@ -265,18 +300,22 @@ def build(
     reply_at,
     reply_text: str | None,
     scripted: bool,
+    events: list[dict] | None = None,
+    reply_kind: str | None = None,
 ) -> list[dict[str, str]]:
     """The timeline of one ticket, oldest first. `filed_at` and `message` are the demo's own
     record of what the customer sent; everything else is read from the database. Lines without a
     time of their own (an effect's current status) go after the line they follow. The first line is
-    always "Ticket filed": this service and the database keep their own clocks."""
+    always "Ticket filed": this service and the database keep their own clocks. `events` are the rows of
+    agent_events for the ticket and `reply_kind` is replies.kind; both are optional and, when missing,
+    the module falls back to the labelled inference described above."""
     lines: list[Line] = []
     if run is not None:
         if run["status"] == "failed":
             lines.append(Line(_iso(run["created_at"]), "bad", "agent", "run could not be started", "a person looks at the ticket"))
         else:
             lines.append(Line(_iso(run["created_at"]), "neutral", "agent", "run started"))
-    lines += _call_lines(calls, assessments, _plan_calls(message) if scripted else None, reply_at is not None)
+    lines += _call_lines(calls, assessments, _plan_calls(message) if scripted else None, reply_at is not None, events)
     # The gateway records a call after the tool has answered, and the request is filed during the
     # call, so the request is older than its call. Show it after the call that filed it.
     filed_by = {"credit": "issue_bill_credit", "move_out": "request_disconnection"}
@@ -291,9 +330,13 @@ def build(
     state = reply_state(reply_text)
     if reply_at is not None:
         at = _iso(reply_at)
-        if state["blocked"]:
+        blocked = reply_kind == "safe" if reply_kind is not None else state["blocked"]
+        if blocked:
             lines.append(Line(at, "bad", "reply guard", "reply blocked and replaced by a safe reply",
                               "the reason is not recorded in the database"))
+        elif reply_kind == "template":
+            lines.append(Line(at, "ok", "dispatcher", "an effect was requested, so a fixed reply was stored, not the model's text",
+                              "stored and sent to the customer"))
         else:
             lines.append(Line(at, "ok", "reply", "stored and sent to the customer"))
         for notice in state["notices"]:

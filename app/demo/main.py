@@ -183,7 +183,8 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
                 "timeline": timeline.build(
                     filed_at=ticket.filed_at, message=ticket.text, run=data["run"], calls=data["calls"],
                     assessments=data["assessments"], requests=data["requests"], reply_at=data["reply_at"],
-                    reply_text=reply, scripted=backend["scripted"]),
+                    reply_text=reply, scripted=backend["scripted"], events=data["events"],
+                    reply_kind=data["reply_kind"]),
             })
         return out
 
