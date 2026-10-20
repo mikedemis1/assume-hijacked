@@ -20,10 +20,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
-    "bandit==1.9.4",
-    "pip-audit==2.10.1",
-    "mutmut==3.8.0",
-    "pip-tools==7.6.2",
+    "hypothesis==6.168.5",
+    # tests/ and scripts/render-chart.py import yaml; it used to come in through bandit.
+    "pyyaml==6.0.3",
 ]
 
 [tool.setuptools.packages.find]

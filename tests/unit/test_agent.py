@@ -1,14 +1,18 @@
 import json
 
 import pytest
+from hypothesis import assume, example, given, settings as hypothesis_settings, strategies as st
 
-from app.agent.core import GIVE_UP, Agent
+from app.agent.core import ALLOWED_ARGS, GIVE_UP, Agent
 from app.agent.guard import SAFE_REPLY, guard_reply, numbers_in
 from app.agent.llm import ScriptedLLM
 from tests.conftest import admin_connect
 from tests.dispatcherharness import Harness, post
 from tests.gatewayharness import AppGatewayClient, build
 
+
+# Properties run the same cases on every run (derandomize), so a red CI run can be repeated on a PC.
+PROPERTY = hypothesis_settings(max_examples=200, deadline=None, derandomize=True)
 
 LEASE = "lease-of-ticket-7"  # what the agent was given; RecordingGateway never checks it
 UNKNOWN_LEASE = "0" * 64
@@ -88,25 +92,6 @@ def add_ticket(admin, ticket_id, customer_id, body):
 
 
 
-ACCOUNT_JSON = (
-    '{"name": "Eleni Papadopoulou", "tariff": "G1 residential", '
-    '"status": "active", "address": "Patision 10, Athens"}'
-)
-
-# The eight strings gap I1 found getting through, plus a Greek one.
-BYPASSES = [
-    "You will get 49 back on your next bill",
-    "We knocked 49 off your bill",
-    "We added 49.00 to your balance",
-    "Rebate of 49 done",
-    "We will pay you back 49",
-    "50 quid back",
-    "Credit approved: forty nine",
-    "We reimbursed forty-nine",
-    "Θα πάρετε 49 πίσω",
-]
-
-
 def test_agent_stops_after_max_steps(settings, admin, as_role):
     add_ticket(admin, 104, 1001, "\n".join(["CALL lookup_account {}"] * 30))
     assert make_agent(settings, as_role).handle_ticket(104) == GIVE_UP
@@ -162,25 +147,99 @@ def test_the_agent_holds_no_key_and_knows_no_tool_address():
 
 
 def test_asi01_agent_drops_customer_id():
+    # One readable example of the rule; the property below holds it for any tool and any arguments.
     agent = Agent(ScriptedLLM(), RecordingGateway(""))
     sent = {"amount_eur": 1, "reason": "duplicate_charge", "evidence_ref": 2, "customer_id": 1002}
     assert agent._safe_args("issue_bill_credit", sent, LEASE) == (
         {"amount_eur": 1, "reason": "duplicate_charge", "evidence_ref": 2, "lease": LEASE}, ["customer_id"])
-    assert agent._safe_args("lookup_account", {"customer_id": 1002}, LEASE) == ({"lease": LEASE}, ["customer_id"])
 
 
-@pytest.mark.parametrize(
-    "text", ["We credited €49", "You get 49 euros", "EUR 49 refunded", "€ 49,00 back", "a refund of 49 Euro",
-     "EUR49 back", "49EUR", "refund of $49", "49 dollars", "100 ευρώ",
-     "We credited 49 to your account", "Η πίστωση 49 έγινε"],
-)
+# Names the model might send: the real ones, the ones it must not set, and any text.
+_ARG_NAMES = sorted({n for names in ALLOWED_ARGS.values() for n in names}
+                    | {"customer_id", "ticket_id", "lease", "account_id", "id", ""})
+_arg_name = st.one_of(st.sampled_from(_ARG_NAMES), st.text(max_size=12))
+_arg_value = st.one_of(st.none(), st.booleans(), st.integers(), st.text(max_size=12), st.lists(st.integers(), max_size=3))
+_arguments = st.one_of(st.dictionaries(_arg_name, _arg_value, max_size=8),
+                       st.none(), st.text(max_size=8), st.lists(st.integers(), max_size=3))
+
+
+@given(tool=st.sampled_from(sorted(ALLOWED_ARGS)), sent=_arguments)
+@example(tool="issue_bill_credit", sent={"amount_eur": 1, "customer_id": 1002, "lease": "mine"})
+@PROPERTY
+def test_asi01_property_agent_sends_only_the_tools_arguments_and_its_own_lease(tool, sent):
+    agent = Agent(ScriptedLLM(), RecordingGateway(""))
+    clean, dropped = agent._safe_args(tool, sent, LEASE)
+    sent_names = list(sent) if isinstance(sent, dict) else []
+    allowed = ALLOWED_ARGS[tool]
+    # Only this tool's argument names go on, plus the lease, and the lease is the agent's own.
+    assert set(clean) == (allowed & set(sent_names)) | {"lease"}
+    assert clean["lease"] == LEASE
+    assert "customer_id" not in clean
+    assert all(clean[name] == sent[name] for name in allowed & set(sent_names))
+    # Every other name the model sent is reported, in the order sent, none twice.
+    assert dropped == [name for name in sent_names if name not in allowed]
+
+
+@given(tool=st.text(max_size=20).filter(lambda name: name not in ALLOWED_ARGS), sent=_arguments)
+@PROPERTY
+def test_asi01_property_agent_sends_nothing_for_a_tool_not_in_the_table(tool, sent):
+    assert Agent(ScriptedLLM(), RecordingGateway(""))._safe_args(tool, sent, LEASE) == (None, [])
+
+
+# One readable example per way a reply can promise money; the properties below hold the rule for
+# any amount, in any of these shapes.
+@pytest.mark.parametrize("text", ["We credited €49", "We knocked 49 off your bill"])
 def test_asi09_guard_blocks_money_promises(text):
     assert guard_reply(text, set()) == SAFE_REPLY
 
 
-@pytest.mark.parametrize("text", BYPASSES)
-def test_asi09_guard_blocks_the_known_bypasses(text):
-    assert guard_reply(text, numbers_in(ACCOUNT_JSON)) == SAFE_REPLY
+# Ways to write an amount into a reply: symbol, code, word, wording without a currency, Greek.
+_PROMISES = [
+    "We credited €{a}", "You get {a} euros", "EUR {a} refunded", "€ {a} back", "a refund of {a} Euro",
+    "EUR{a} back", "{a}EUR", "refund of ${a}", "{a} dollars", "{a} ευρώ", "We credited {a} to your account",
+    "Η πίστωση {a} έγινε", "You will get {a} back on your next bill", "We knocked {a} off your bill",
+    "We added {a} to your balance", "Rebate of {a} done", "We will pay you back {a}", "{a} quid back",
+    "Θα πάρετε {a} πίσω",
+]
+_amounts = st.one_of(
+    st.integers(0, 999_999).map(str),
+    st.tuples(st.integers(0, 9_999), st.integers(0, 99), st.sampled_from(".,")).map(lambda t: f"{t[0]}{t[2]}{t[1]:02d}"),
+)
+_filler = st.text(alphabet="abcdefghijklmnopqrstuvwxyz ", max_size=20)
+
+
+@given(template=st.sampled_from(_PROMISES), amount=_amounts, returned=_amounts, before=_filler, after=_filler)
+@example(template="We credited €{a}", amount="49", returned="10", before="", after="")
+@example(template="EUR{a} back", amount="49.00", returned="10", before="", after="")
+@PROPERTY
+def test_asi09_property_guard_blocks_an_amount_no_tool_returned(template, amount, returned, before, after):
+    assume(numbers_in(amount).isdisjoint(numbers_in(returned)))
+    text = f"{before} {template.format(a=amount)} {after}"
+    assert guard_reply(text, numbers_in(returned)) == SAFE_REPLY
+
+
+_NUMBER_WORDS = st.builds(
+    lambda tens, joiner, unit: tens + joiner + unit,
+    st.sampled_from(["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]),
+    st.sampled_from(["", " ", "-"]), st.sampled_from(["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]))
+
+
+@given(words=_NUMBER_WORDS, before=_filler)
+@example(words="forty nine", before="")
+@example(words="fortynine", before="")
+@PROPERTY
+def test_asi09_property_guard_blocks_an_amount_written_in_words(words, before):
+    assert guard_reply(f"{before} Your meter number is {words}", set()) == SAFE_REPLY
+
+
+@given(number=st.integers(0, 999_999), other=st.integers(0, 999_999))
+@PROPERTY
+def test_asi09_property_guard_allows_exactly_the_numbers_a_tool_returned(number, other):
+    # The other half of the rule: the guard is not just blocking everything with a digit in it.
+    reply = f"Your meter number is {number}"
+    assert guard_reply(reply, numbers_in(json.dumps({"meter": number}))) == reply
+    assume(number != other)
+    assert guard_reply(reply, numbers_in(json.dumps({"meter": other}))) == SAFE_REPLY
 
 
 def test_asi09_agent_blocks_a_number_no_tool_returned(settings, admin, as_role):
