@@ -1,12 +1,13 @@
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg
 import pytest
 
 from app.executor.approvals import approve
 from app.executor.moveouts import process_moveouts
-from tests.conftest import assess
+from app.tools.set_temp_protection import set_temp_protection
+from tests.conftest import assess, open_lease
 
 ANNA = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01"
 PETROS = "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3"
@@ -102,3 +103,115 @@ def test_a_held_home_lock_fails_that_request_and_the_batch_goes_on(admin, as_rol
     assert errors(admin) == [f"move_out request={first}: LockNotAvailable"]
 
 
+
+
+def test_no_order_before_the_move_out_date(admin, as_role, settings, now):
+    ex, staff = as_role("executor"), as_role("approver")
+    rid = ready_for_order(admin, staff, move_out_date=utc_today() + timedelta(days=30))
+    process_moveouts(ex, settings, now)
+    # The executor waits by itself; the trigger would refuse too, but it is not needed here.
+    assert status(admin, rid) == "pending" and orders(admin) == 0 and errors(admin) == []
+
+
+def test_order_refused_when_flag_added_after_assessment(admin, as_role, settings, now):
+    ex, staff = as_role("executor"), as_role("approver")
+    rid = ready_for_order(admin, staff)  # assessed T1, approved, date today, no flag yet
+    set_temp_protection(as_role("tool_set_temp_protection"), open_lease(admin, 1))
+    with pytest.raises(psycopg.errors.RaiseException, match="protected"):
+        insert_order(ex, rid, "SP-1001")
+    process_moveouts(ex, settings, now)
+    assert status(admin, rid) == "manual_only" and orders(admin) == 0 and errors(admin) == []
+
+
+def test_database_accepts_order_when_the_whole_story_holds(admin, as_role):
+    # Control for the refusals below: each of them breaks one condition of this setup.
+    rid = ready_for_order(admin, as_role("approver"))
+    insert_order(as_role("executor"), rid, "SP-1001")
+    assert orders(admin) == 1
+
+
+def _credit_request_with_approval(admin, staff):
+    # Everything else holds, move-out date included, so only the request kind is wrong.
+    admin.execute(
+        "INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur, reason, evidence_ref, move_out_date) "
+        "VALUES ('credit', 1, 1, 49, 'duplicate_charge', 2, %s)",
+        (utc_today(),),
+    )
+    rid = admin.execute("SELECT max(id) AS id FROM action_requests").fetchone()["id"]
+    assess(admin, rid, "T1")
+    approve(staff, rid, ANNA)
+    return rid, "SP-1001"
+
+
+def _no_approval(admin, staff):
+    return add_moveout(admin), "SP-1001"
+
+
+def _approval_before_assessment(admin, staff):
+    rid = add_moveout(admin, tier=None)
+    approve(staff, rid, ANNA)
+    assess(admin, rid, "T1")
+    return rid, "SP-1001"
+
+
+def _future_date(admin, staff):
+    return ready_for_order(admin, staff, move_out_date=utc_today() + timedelta(days=1)), "SP-1001"
+
+
+BROKEN_STORIES = {
+    # The order must name exactly the home of the request, byte for byte.
+    "trailing space": lambda admin, staff: (ready_for_order(admin, staff, 3, 3), "SP-1003 "),
+    "lower case": lambda admin, staff: (ready_for_order(admin, staff, 3, 3), "sp-1003"),
+    "another home": lambda admin, staff: (ready_for_order(admin, staff, 3, 3), "SP-1002"),
+    "credit request": _credit_request_with_approval,
+    "unknown request": lambda admin, staff: (999, "SP-1001"),
+    "no approval": _no_approval,
+    "approval older than the assessment": _approval_before_assessment,
+    "move-out date in the future": _future_date,
+}
+
+
+@pytest.mark.parametrize("story", BROKEN_STORIES)
+def test_database_refuses_order_unless_the_whole_story_holds(admin, as_role, story):
+    rid, home = BROKEN_STORIES[story](admin, as_role("approver"))
+    with pytest.raises(psycopg.errors.RaiseException):
+        insert_order(as_role("executor"), rid, home)
+    assert orders(admin) == 0
+
+
+@pytest.mark.parametrize("held", ["manual_only", "rejected", "executed", "refused"])
+def test_database_refuses_order_unless_the_request_is_pending(admin, as_role, held):
+    # Every other condition holds, so only the request status is wrong.
+    # manual_only is a human's job; rejected, refused and executed are finished.
+    rid = ready_for_order(admin, as_role("approver"))
+    admin.execute("UPDATE action_requests SET status = %s WHERE id = %s", (held, rid))
+    with pytest.raises(psycopg.errors.RaiseException, match="not pending"):
+        insert_order(as_role("executor"), rid, "SP-1001")
+    assert orders(admin) == 0
+
+
+def test_flag_waits_while_the_executor_holds_the_home(admin, as_role):
+    ex, tool = as_role("executor"), as_role("tool_set_temp_protection")
+    lease = open_lease(admin, 1)
+    tool.execute("SET lock_timeout = '200ms'")
+    with ex.transaction():
+        ex.execute("SELECT pg_advisory_xact_lock(hashtext('SP-1001'))")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            set_temp_protection(tool, lease)
+    set_temp_protection(tool, lease)  # lock released at commit
+
+
+def test_trigger_takes_the_home_lock(admin, as_role):
+    rid = ready_for_order(admin, as_role("approver"))
+    ex = as_role("executor")
+    ex.execute("SET lock_timeout = '300ms'")
+    admin.execute("SELECT pg_advisory_lock(hashtext('SP-1001'))")
+    try:
+        # Straight into the table: no executor code, so only the trigger can be waiting.
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            insert_order(ex, rid, "SP-1001")
+    finally:
+        admin.execute("SELECT pg_advisory_unlock_all()")
+    assert orders(admin) == 0
+    insert_order(ex, rid, "SP-1001")  # control: without the lock held the same insert works
+    assert orders(admin) == 1

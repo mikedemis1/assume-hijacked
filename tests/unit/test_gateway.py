@@ -86,6 +86,32 @@ def test_a_tool_that_is_not_in_the_lease_is_a_lease_error_and_the_risk_engine_co
 # --- 3. the bound pod (Kubernetes) ---
 
 
+def test_gateway_k8s_mode_refuses_lease_from_other_pod(settings, admin, as_role):
+    lease = open_lease(admin, 1, bound_pod="agent-ticket-1-abcde")
+    built = build(settings, as_role)
+    # The control: the pod the lease was opened for.
+    assert built.call("read_ticket", {}, lease, pod="agent-ticket-1-abcde").is_error is False
+    # Another pod holding the same lease (it leaked, or a pod was started by hand) gets nothing.
+    other = built.call("read_ticket", {}, lease, pod="agent-ticket-1-zzzzz")
+    assert (other.is_error, other.text) == (True, "ERROR: denied")
+    assert len(built.tools.forwarded()) == 1                  # only the control's call
+    assert len(built.risk.asked) == 1
+    assert [(r["outcome"], r["reason"]) for r in calls(admin)] == [("ok", ""), ("denied", "pod_mismatch")]
+    assert metric(built, "gateway_denials_total", tool="read_ticket", reason="pod_mismatch") == 1
+
+
+@pytest.mark.parametrize(
+    "bound, pod",
+    [(None, "agent-ticket-1-abcde"), ("agent-ticket-1-abcde", None), ("a", "A")],
+    ids=["lease-not-bound-but-caller-is-a-pod", "lease-bound-but-no-pod-known", "case-differs"],
+)
+def test_the_bound_pod_must_match_exactly(settings, admin, as_role, bound, pod):
+    lease = open_lease(admin, 1, bound_pod=bound)
+    built = build(settings, as_role)
+    assert built.call("read_ticket", {}, lease, pod=pod).text == "ERROR: denied"
+    assert built.tools.forwarded() == []
+
+
 AGENT_USER = "system:serviceaccount:ah-agent:agent"
 
 

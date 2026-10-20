@@ -105,6 +105,27 @@ def test_required_approvals_per_tier(admin):
         assert rows == want, tier
 
 
+def test_tier_hold_is_refused_by_the_database(admin):
+    # HOLD (the move-out flood hold) is gone from the closed list of tiers.
+    rid = add_credit(admin, 49, 2, tier=None)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        admin.execute(
+            "INSERT INTO risk_assessments (request_id, tier, score, reasons, engine_version) "
+            "VALUES (%s, 'HOLD', 100, '{flood}', 'rules-1')",
+            (rid,),
+        )
+
+
+def test_assessment_tier_is_on_the_closed_list(admin):
+    rid = add_credit(admin, 49, 2, tier=None)
+    for bad in ("T3", "t0", "", "ALLOW", "HOLD"):
+        with pytest.raises(psycopg.errors.CheckViolation):
+            assess(admin, rid, bad)
+    for tier in TIERS:  # control: every tier the rules can return (app/risk/rules.py)
+        other = add_credit(admin, 49, 2, tier=None)
+        assess(admin, other, tier)
+
+
 # --- who may write and read assessments ---
 
 def _assessment_insert(table, rid, extra=None):

@@ -81,6 +81,21 @@ class FakeDecider:
         return self.result
 
 
+def test_one_allowed_effect_per_lease_is_a_database_rule(admin, engine):
+    # Two decisions racing on one lease (a second engine replica, say) could both read "no effect
+    # yet". The partial unique index lets only one allowed effect row in.
+    statement = "INSERT INTO call_assessments (lease_hash, tool, decision, reasons) VALUES (%s, %s, %s, '{}')"
+    h = lease_hash("race")
+    engine.execute(statement, (h, "issue_bill_credit", "allow"))
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        engine.execute(statement, (h, "request_disconnection", "allow"))
+    # Controls: denials, reads and another lease's effect are not limited by it.
+    engine.execute(statement, (h, "issue_bill_credit", "deny"))
+    engine.execute(statement, (h, "read_ticket", "allow"))
+    engine.execute(statement, (h, "read_ticket", "allow"))
+    engine.execute(statement, (lease_hash("other"), "issue_bill_credit", "allow"))
+
+
 def post(decider, body, **kwargs):
     client = TestClient(service.build_app(decider))
     if isinstance(body, (dict, list)):

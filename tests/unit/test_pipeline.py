@@ -125,6 +125,20 @@ def test_local_only_tls_workaround_is_never_set_by_the_pipeline_or_a_script():
         assert not re.search(r"export\s+TF_DISABLE_PLUGIN_TLS", text), path.name
 
 
+def test_test_job_has_helm_so_the_chart_tests_cannot_skip():
+    job = _jobs()["test"]
+    assert re.search(r"install_tools\b.*\bhelm\b", _script("test")), "the test job installs helm"
+    # The monitoring chart is downloaded and rendered too; a failed download is a failure.
+    assert (job.get("variables") or {}).get("AH_REQUIRE_MONITORING_RENDER") == "1"
+
+
+def test_helm_is_installed_when_the_pipeline_runs_the_tests():
+    # tests/k8s/test_chart.py skips itself without helm. Inside GitLab CI that would be a green
+    # job that checked nothing, so there the missing binary is a failure.
+    if os.environ.get("GITLAB_CI") == "true":
+        assert shutil.which("helm"), "helm is not installed in the test job"
+
+
 def test_terraform_providers_follow_the_committed_lock():
     # -lockfile=readonly: a changed provider or a missing hash fails here, not at the first apply.
     assert "-lockfile=readonly" in _script("lint")

@@ -60,6 +60,16 @@ def test_lease_functions_refuse_expired_revoked_unknown(admin, as_role, state):
     assert admin.execute("SELECT count(*) AS n FROM flags WHERE supply_point_id = 'SP-1001'").fetchone()["n"] == 0
 
 
+@pytest.mark.parametrize("tool", TOOLS)
+def test_lease_function_refuses_tool_not_in_lease(admin, as_role, tool):
+    others = [t for t in TOOLS if t != tool]
+    lease = open_lease(admin, 1, others)
+    with pytest.raises(psycopg.errors.RaiseException, match="lease invalid"):
+        call_api(as_role(f"tool_{tool}"), tool, lease)
+    # Control: a lease that lists the tool works for the same call.
+    assert call_api(as_role(f"tool_{tool}"), tool, open_lease(admin, 1, [tool]))
+
+
 def test_tool_roles_have_no_table_grants(admin):
     for view in ("table_privileges", "column_privileges"):
         rows = admin.execute(

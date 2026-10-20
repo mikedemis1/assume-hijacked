@@ -17,7 +17,7 @@ from app.security.client import ToolTokenAuth
 from app.security.tokens import JtiCache, mint_tool_token, verify_tool_token
 from app.tools import serve
 from tests.conftest import open_lease
-from tests.toolhttp import AppToolCaller, keypair, mcp_client
+from tests.toolhttp import AppToolCaller, keypair, mcp_client  # noqa: F401
 
 NOW = 1_800_000_000.0
 LEASE = "ab" * 32
