@@ -1,153 +1,104 @@
-"""What the security console shows for the tickets of one presenter session, from the records.
+"""What the walls did for each message of the session: three plain lines and a badge per message.
 
-Nothing here is invented: the flow nodes, the counters and the banner are derived from the same rows
-as the live feed (app/demo/database.py reads them as demo_ops; app/demo/timeline.py words them).
-Names that came from a ticket pass through app/demo/vocabulary.py first (ruling R14).
+Nothing is invented: every line is derived from the rows the database holds for the ticket
+(app/demo/database.py reads them as demo_ops). Only fixed phrases are printed, never a name or a
+word from a ticket, so a ticket cannot put text on the screen (ruling R14).
 
-A node has a state:
-  idle      nothing reached it
-  passed    it let the work through unchanged (blue)
-  changed   it altered or held something: an argument dropped, a fixed reply, a person is needed (amber)
-  stopped   it refused (red)
-  ok        it did its job and the outcome is fine (green)
+    The AI tried:        the attack's sentence (attacks.py), or "answer the question"
+    Stopped by:          the strongest wall that acted, from the records
+    The customer got:    from the stored reply and its kind
+
+`node` says which part of the architecture strip lights up: agent, gateway, risk or dispatcher.
 """
 
 from __future__ import annotations
 
-from app.demo import attacks, timeline, vocabulary
-
-NODES = (("agent", "Agent"), ("gateway", "Gateway"), ("risk", "Risk engine"), ("tools", "Tools"),
-         ("database", "Database"), ("reply", "Reply guard"))
+from app.agent.guard import SAFE_REPLY
+from app.demo import attacks, card
 
 WAITING_TIERS = ("T1", "T2", "HUMAN_ONLY")
+# Refusals that come from the risk engine; any other refused call is the tool gateway's.
+RISK_REASONS = {"one_effect_per_ticket", "effect_already_requested", "call_budget", "repeated_denials",
+                "risk_unavailable", "risk_timeout", "risk_other"}
 
 
-def _node(key: str, state: str, note: str = "") -> dict[str, str]:
-    return {"key": key, "label": dict(NODES)[key], "state": state, "note": note}
+def _waiting(data: dict) -> list[dict]:
+    return [r for r in data["requests"] if r["status"] == "manual_only"
+            or (r["status"] == "pending" and r["risk"] is not None and r["risk"]["tier"] in WAITING_TIERS)]
 
 
-def _dropped_names(data: dict) -> list[str]:
-    names: list[str] = []
-    for call in data["calls"]:
-        names += list(call["dropped_args"])
-    names += [n for e in data["events"] if e["kind"] == "dropped_argument" for n in e["arg_names"]]
-    return names
+def _stop(node: str, wall: str, why: str) -> dict[str, str]:
+    return {"node": node, "wall": wall, "why": why}
 
 
-def flow(data: dict) -> list[dict[str, str]]:
-    run, calls, events, requests = data["run"], data["calls"], data["events"], data["requests"]
-    # agent
-    if run is None:
-        agent = _node("agent", "idle")
-    elif run["status"] == "failed" or any(e["kind"] == "unknown_tool" for e in events):
-        unknown = [e["tool"] for e in events if e["kind"] == "unknown_tool"]
-        agent = _node("agent", "stopped", f"refused {vocabulary.tool(unknown[0])}" if unknown else "the run could not start")
-    elif any(e["kind"] == "dropped_argument" for e in events):
-        agent = _node("agent", "changed", "dropped " + vocabulary.args(
-            n for e in events if e["kind"] == "dropped_argument" for n in e["arg_names"]))
-    else:
-        agent = _node("agent", "passed")
-    # gateway
-    denied = [c for c in calls if c["outcome"] == "denied"]
-    gateway_dropped = [n for c in calls for n in c["dropped_args"]]
-    if not calls:
-        gateway = _node("gateway", "idle")
-    elif denied:
-        gateway = _node("gateway", "stopped", "denied: " + timeline.REASONS.get(denied[0]["reason"], "refused"))
-    elif gateway_dropped:
-        gateway = _node("gateway", "changed", "dropped " + vocabulary.args(gateway_dropped))
-    else:
-        gateway = _node("gateway", "passed")
-    # risk engine: the verdict on each call, and the tier of each effect request
-    verdicts = [a["decision"] for a in data["assessments"]]
-    tiers = [r["risk"]["tier"] for r in requests if r["risk"] is not None]
-    if "deny" in verdicts or "pause" in verdicts or "REJECT" in tiers:
-        risk = _node("risk", "stopped", "refused")
-    elif any(t in WAITING_TIERS for t in tiers):
-        risk = _node("risk", "changed", "a person must decide")
-    elif verdicts or tiers:
-        risk = _node("risk", "ok", "allowed")
-    else:
-        risk = _node("risk", "idle")
-    # tools: only calls that got past the gateway and the risk engine reach one
-    reached = [c for c in calls if c["outcome"] in ("ok", "tool_error", "unavailable")]
-    if any(c["outcome"] != "ok" for c in reached):
-        tools = _node("tools", "stopped", "a tool failed")
-    elif reached:
-        tools = _node("tools", "ok")
-    else:
-        tools = _node("tools", "idle")
-    # database
-    failed = [r for r in requests if r["errors"]]
-    waiting = [r for r in requests if r["status"] == "pending" and r["risk"] is not None and r["risk"]["tier"] in WAITING_TIERS]
-    if failed:
-        database = _node("database", "stopped", "a database rule refused the write")
-    elif waiting or any(r["status"] == "manual_only" for r in requests):
-        database = _node("database", "changed", "waiting for a person")
-    elif reached or requests:
-        database = _node("database", "ok")
-    else:
-        database = _node("database", "idle")
-    # reply guard
-    kind = data["reply_kind"]
+def _replaced(data: dict, reply: str | None) -> bool:
+    """The reply guard replaced the model's reply (the dispatcher's kind, or the guard's fixed text)."""
+    return data["reply_kind"] == "safe" or (reply or "").startswith(SAFE_REPLY)
+
+
+def stopped_by(data: dict, reply: str | None) -> dict[str, str] | None:
+    """The strongest wall that acted on this ticket, or None when nothing did."""
+    calls, events, requests = data["calls"], data["events"], data["requests"]
+    denied = [c["reason"] for c in calls if c["outcome"] == "denied"]
+    waiting = _waiting(data)
+    if waiting:
+        what = "credits" if waiting[0]["kind"] == "credit" else "power cuts"
+        extra = "; the extra requests were refused" if "one_effect_per_ticket" in denied else ""
+        return _stop("risk", "Risk engine", f"{what} need a human{extra}")
+    if any(r["status"] in ("rejected", "refused") or (r["risk"] and r["risk"]["tier"] == "REJECT") for r in requests):
+        return _stop("risk", "Risk engine", "the request was rejected")
+    if any(reason in RISK_REASONS for reason in denied):
+        return _stop("risk", "Risk engine", "this action is not allowed")
+    if denied:
+        return _stop("gateway", "Tool gateway", "this tool is not allowed")
+    if any(e["kind"] == "unknown_tool" for e in events):
+        return _stop("agent", "Agent tool list", "the agent has no tool for that")
+    if _replaced(data, reply):
+        return _stop("dispatcher", "Reply guard", "the unsafe reply was replaced")
+    dropped = [n for c in calls for n in c["dropped_args"]]
+    dropped += [n for e in events if e["kind"] == "dropped_argument" for n in e["arg_names"]]
+    if "customer_id" in dropped:
+        return _stop("agent", "Login-bound ID", "the agent can only use the logged-in customer's ID")
+    if dropped:
+        return _stop("agent", "Argument filter", "arguments the tool does not take were dropped")
+    return None
+
+
+def _got(data: dict, reply: str | None, waiting: bool) -> str:
     if data["reply_at"] is None:
-        reply = _node("reply", "idle")
-    elif kind == "safe":
-        reply = _node("reply", "stopped", "blocked and replaced")
-    elif kind == "template":
-        # The dispatcher stores a fixed reply for every effect request, honest ones too: not a wall acting.
-        reply = _node("reply", "ok", "fixed reply for a request")
+        return "no answer yet"
+    if _replaced(data, reply):
+        return "a safe reply"
+    if waiting or data["reply_kind"] == "template":
+        return "a reply saying a colleague will check"
+    return "her own account" if card.account_card(reply) else "a plain answer"
+
+
+def view(*, ticket_id: int, attack: attacks.Attack | None, simulated: bool, data: dict, reply: str | None) -> dict:
+    stop = stopped_by(data, reply)
+    waiting = bool(_waiting(data))
+    if data["reply_at"] is None:
+        badge = ("running", "Working")
+    elif waiting:
+        badge = ("waiting", "⏳ Waiting for a human")
+    elif stop is None and attack is None:
+        badge = ("normal", "✓ Normal answer")
+    elif stop is not None:
+        badge = ("contained", "✓ Attack contained" if attack else "✓ Contained")
     else:
-        reply = _node("reply", "ok", "stored")
-    return [agent, gateway, risk, tools, database, reply]
-
-
-def banner(attack: attacks.Attack | None, nodes: list[dict], replied: bool) -> dict[str, str] | None:
-    """Only a ticket that carried an armed attack gets one, and it says contained only when a wall acted."""
-    if attack is None:
-        return None
-    if not replied:
-        return {"kind": "running", "text": "The attack is running. The walls are at work."}
-    if any(n["state"] in ("changed", "stopped") for n in nodes):
-        return {"kind": "contained", "text": f"Attack contained · OWASP {attack.asi_text}"}
-    return {"kind": "open", "text": "No wall acted on this attack. Look at the feed."}
-
-
-def decisions(data: dict) -> int:
-    """Denied calls, calls with a dropped argument, the agent's own drops and refusals, replies the
-    guard blocked and replaced, and effect requests that were rejected or refused. A fixed reply
-    (kind template) is not counted: the dispatcher stores one for every effect request."""
-    n = sum(1 for c in data["calls"] if c["outcome"] == "denied" or c["dropped_args"])
-    n += len(data["events"])
-    n += 1 if data["reply_kind"] == "safe" else 0
-    n += sum(1 for r in data["requests"]
-             if r["status"] in ("rejected", "refused") or (r["risk"] is not None and r["risk"]["tier"] == "REJECT"))
-    return n
-
-
-def waiting_for_a_person(data: dict) -> int:
-    return sum(1 for r in data["requests"]
-               if r["status"] == "manual_only"
-               or (r["status"] == "pending" and r["risk"] is not None and r["risk"]["tier"] in WAITING_TIERS))
-
-
-def view(*, ticket_id: int, filed_at: str, body: str, attack: attacks.Attack | None, data: dict,
-         reply: str | None, scripted: bool) -> dict:
-    nodes = flow(data)
-    replied = data["reply_at"] is not None
-    lines = timeline.build(
-        filed_at=filed_at, message=body, run=data["run"], calls=data["calls"], assessments=data["assessments"],
-        requests=data["requests"], reply_at=data["reply_at"], reply_text=reply, scripted=scripted,
-        events=data["events"], reply_kind=data["reply_kind"])
+        badge = ("open", "No wall acted, check the records")
+    line = f"{stop['wall']} — {stop['why']}" if stop else "Nothing to stop"
     return {
-        "id": ticket_id, "filedAt": filed_at, "replied": replied,
-        "attack": None if attack is None else {"id": attack.id, "label": attack.label, "asi": list(attack.asi)},
-        "order": None if attack is None else list(attack.plan),
-        "flow": nodes, "banner": banner(attack, nodes, replied), "feed": lines,
-        "decisions": decisions(data), "waiting": waiting_for_a_person(data),
+        "id": ticket_id, "simulated": simulated, "attack": attack is not None,
+        "tried": attack.tried if attack else "answer the question",
+        "stopped": line, "got": _got(data, reply, waiting),
+        "badge": {"kind": badge[0], "text": badge[1]},
+        "nodes": ([stop["node"]] if stop else []) + (["staff"] if waiting else []),
     }
 
 
 def summary(views: list[dict], paused: bool) -> dict:
-    return {"blocked": sum(v["decisions"] for v in views), "waiting": sum(v["waiting"] for v in views),
+    """Counters: attacks that were contained or wait for a human, messages that wait for one."""
+    return {"blocked": sum(1 for v in views if v["attack"] and v["badge"]["kind"] in ("contained", "waiting")),
+            "waiting": sum(1 for v in views if v["badge"]["kind"] == "waiting"),
             "killSwitch": "on" if paused else "off"}

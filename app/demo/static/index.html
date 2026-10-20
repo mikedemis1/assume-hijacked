@@ -56,16 +56,10 @@
   </header>
   <p class="w-error" id="error" role="alert" hidden></p>
 
-  <div class="w-body" id="signin" hidden>
-    <p class="w-hello">Hi, I am Volt. This is a demo with made-up customers. Who are you today?</p>
-    <div class="people" id="people"></div>
-  </div>
-
-  <div class="w-body chat" id="chat" hidden>
+  <div class="w-body chat" id="chat">
     <div class="me">
       <img id="me-img" src="/static/volt.svg" alt="" width="24" height="24">
-      <span id="me-name"></span>
-      <button type="button" class="link" id="signout">Switch customer</button>
+      <span id="me-name">Signing in&hellip;</span>
     </div>
     <div class="log" id="log" role="log" aria-label="Conversation" tabindex="0"></div>
     <form class="composer" id="form" autocomplete="off">

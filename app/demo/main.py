@@ -1,41 +1,37 @@
 """The demo UI on 8085, with operational probes on 9000.
 
-Two pages of one small service. `/` is a fictional supplier's website with a support chat in the
-corner: the customer sees their own words and the replies, and nothing else. `/security` is the
-security console: what the walls decided for the tickets of this session, read-only, plus one
-presenter control. Optional: the chart renders it only with demo.enabled, and the security story
-does not depend on it. It is a front door, so it is treated as untrusted like the others:
+Two pages of one small service, both with Eleni Papadopoulou (customer 1001) signed in. `/` is a
+fictional supplier's website with the Volt support chat in the corner: the customer sees their own
+words and the replies, and nothing else. `/security` is the presenter view: the same chat with a
+switch for the model's "brain" (Claude, or a simulated hijacked model with five attacks to type)
+and, next to it, what the walls did for each message. Optional: the chart renders it only with
+demo.enabled, and the security story does not depend on it. It is a front door, so it is treated
+as untrusted like the others:
 
-- The customer comes from the visitor's session, never from a request body. The session cookie is
-  HttpOnly and SameSite=Strict; every POST needs application/json, the same origin and, once
-  signed in, the session's CSRF token.
+- The customer comes from the visitor's session, never from a request body, and it is always 1001.
+  The session cookie is HttpOnly and SameSite=Strict; every POST needs application/json, the same
+  origin and, once signed in, the session's CSRF token.
 - It logs in to PostgreSQL as demo_portal (three functions, no table) and demo_ops (audit columns
-  only); db/sql/09-demo.sql. The console reads only the ticket numbers this session created.
-- The customer endpoints return the visitor's own messages and replies and no backstage field
-  (ruling R14). Everything about the walls is under /api/console.
-- Names from the records (tools, arguments) are printed only when they are in the known vocabulary.
-- Arming an attack is per session, needs the CSRF token and works once: the next message of that
-  session is filed with the attack's CALL/SAY lines after the customer's words. That is only more
-  ticket text; the ticket is untrusted input as always and no wall is told anything new.
+  only); db/sql/09-demo.sql. The cards read only the ticket numbers this session created.
+- The customer endpoint returns the visitor's own messages and replies and no backstage field
+  (ruling R14). Everything about the walls is under /api/console, as fixed phrases.
+- An attack travels inside the one message that carries it: {"text": ..., "attack": "neighbour"}
+  files the words, a marker line and the attack's CALL/SAY lines. That is only more ticket text;
+  the ticket is untrusted input as always and no wall is told anything new.
 - Pages and scripts are its own files, with a Content-Security-Policy that allows nothing else.
 - The Host header must be a local name: it is reached with kubectl port-forward only
   (scripts/demo-ui.sh), and this stops a DNS-rebinding page from talking to it.
 
-The security console has no login of its own: it shows the session of the browser it is opened in.
-That is acceptable only because the service is reached with kubectl port-forward on localhost.
-
-Dev sign-in: whoever opens the page picks a fictional customer. That is the point of a demo and
-the reason it is never exposed.
+The sign-in trusts whoever opens the page. That is acceptable only because the service is reached
+with kubectl port-forward on localhost.
 
     GET  /                    the website and chat (static/index.html)
-    GET  /security            the console (static/security.html)
-    GET  /static/...          css, js, the robot, the three portraits
-    GET  /api/state           customers, the session, its messages and replies
+    GET  /security            the presenter view (static/security.html)
+    GET  /static/...          css, js, the robot, the portrait
+    GET  /api/state           the session, its messages and replies
     POST /api/signin          {"customer": 1001}
-    POST /api/signout
-    POST /api/message         {"text": "..."} with X-CSRF-Token
-    GET  /api/console         counters, the flow, the feed, the attacks to arm
-    POST /api/arm             {"attack": "neighbour"} or {"attack": null} with X-CSRF-Token
+    POST /api/message         {"text": "...", "attack": "neighbour" or absent} with X-CSRF-Token
+    GET  /api/console         counters, one card per message, the attacks to type
 """
 
 from __future__ import annotations
@@ -46,6 +42,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import psycopg
@@ -59,7 +56,7 @@ from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.common.ops import Heartbeat, Metrics, start_ops_server
-from app.demo import attacks, card, console, database, timeline
+from app.demo import attacks, card, console, database
 from app.demo.sessions import MAX_TICKETS, MAX_WAITING, Sessions, Ticket
 
 PORT = 8085
@@ -71,9 +68,9 @@ STATIC = Path(__file__).parent / "static"
 PAGES = {"/": "index.html", "/security": "security.html"}
 TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
          ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".jpg": "image/jpeg"}
-# The three fictional customers and their portraits (AI-generated people who do not exist, see
-# static/avatars/NOTICE).
-AVATARS = {1001: "eleni", 1002: "nikos", 1003: "maria"}
+# The one customer who is logged in (a person who does not exist, see static/avatars/NOTICE).
+# Nikos (1002) and Maria (1003) exist only in the database, as the targets of attacks.
+CUSTOMER = {"id": 1001, "name": "Eleni Papadopoulou", "avatar": "/static/avatars/eleni.jpg"}
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
 SECURITY_HEADERS = {
@@ -87,6 +84,10 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     "Cache-Control": "no-store",
 }
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def backend_info() -> dict:
@@ -178,72 +179,42 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
     async def nothing(request: Request):
         return Response(status_code=204)
 
-    def avatar(customer: int) -> str | None:
-        return f"/static/avatars/{AVATARS[customer]}.jpg" if customer in AVATARS else None
-
-    def person(people: list[dict], customer: int) -> dict:
-        me = next((c for c in people if c["id"] == customer), None)
-        return {"id": customer, "name": me["name"] if me else str(customer), "avatar": avatar(customer)}
-
     async def state(request: Request):
         """The customer page's data: the visitor's own words and the replies, and nothing about the walls."""
         session = current(request)
-        try:
-            people = await run_in_threadpool(database.customers)
-            body = {"customers": [{"id": p["id"], "name": p["name"], "avatar": avatar(p["id"])} for p in people],
-                    "customer": None}
-            if session is not None:
+        body: dict = {"customer": None}
+        if session is not None:
+            try:
                 ids = [t.id for t in session.tickets]
                 texts = await run_in_threadpool(database.replies, session.customer, ids)
-                body.update(customer=session.customer, csrf=session.csrf, messages=[
-                    {"id": t.id, "text": t.text, "reply": texts.get(t.id), "card": card.account_card(texts.get(t.id))}
-                    for t in session.tickets])
-        except psycopg.Error:
-            return error(503, "database")
+            except psycopg.Error:
+                return error(503, "database")
+            body.update(customer=CUSTOMER, csrf=session.csrf, messages=[
+                {"id": t.id, "text": t.text, "reply": texts.get(t.id), "card": card.account_card(texts.get(t.id)),
+                 "simulated": backend["scripted"] or t.attack is not None}
+                for t in session.tickets])
         return JSONResponse(body)
 
     async def console_state(request: Request):
-        """The console's data for this session's tickets, newest first."""
+        """The presenter's data for this session's tickets, newest first."""
         session = current(request)
         if session is None:
             return error(401, "signin")
         try:
-            people = await run_in_threadpool(database.customers)
             ids = [t.id for t in session.tickets]
+            audit = await run_in_threadpool(database.audit, ids)   # first: a reply it shows is surely in the next read
             texts = await run_in_threadpool(database.replies, session.customer, ids)
-            audit = await run_in_threadpool(database.audit, ids)
             paused = await run_in_threadpool(database.kill_switch_on)
         except psycopg.Error:
             return error(503, "database")
-        views = [console.view(
-            ticket_id=t.id, filed_at=t.filed_at, body=t.body or t.text, attack=attacks.BY_ID.get(t.attack or ""),
-            data=audit[t.id], reply=texts.get(t.id), scripted=backend["scripted"])
+        cards = [console.view(
+            ticket_id=t.id, attack=attacks.BY_ID.get(t.attack or ""),
+            simulated=backend["scripted"] or t.attack is not None, data=audit[t.id], reply=texts.get(t.id))
             for t in reversed(session.tickets)]
         return JSONResponse({
-            "customer": person(people, session.customer), "csrf": session.csrf, "backend": backend,
-            "summary": console.summary(views, paused), "armed": session.armed, "tickets": views,
-            "attacks": [{"id": a.id, "label": a.label, "asi": list(a.asi), "customer": a.customer}
-                        for a in attacks.ATTACKS],
+            "backend": backend, "summary": console.summary(cards, paused), "cards": cards,
+            "attacks": [{"id": a.id, "typed": a.typed} for a in attacks.ATTACKS],
         })
-
-    async def arm(request: Request):
-        if not same_origin(request):
-            return error(403, "origin")
-        session = current(request)
-        if session is None:
-            return error(401, "signin")
-        if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), session.csrf):
-            return error(403, "csrf")
-        try:
-            data = await read_json(request)
-        except BadBody as bad:
-            return bad.response
-        choice = data.get("attack")
-        if choice is not None and (not isinstance(choice, str) or choice not in attacks.BY_ID):
-            return error(400, "bad_request")
-        session.armed = choice
-        session.arm_seq += 1
-        return JSONResponse({"armed": session.armed})
 
     async def signin(request: Request):
         if not same_origin(request):
@@ -253,26 +224,12 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
         except BadBody as bad:
             return bad.response
         customer = data.get("customer")
-        if not isinstance(customer, int) or isinstance(customer, bool):
+        if not isinstance(customer, int) or isinstance(customer, bool) or customer != CUSTOMER["id"]:
             return error(400, "bad_request")
-        try:
-            people = await run_in_threadpool(database.customers)
-        except psycopg.Error:
-            return error(503, "database")
-        if customer not in {p["id"] for p in people}:
-            return error(400, "unknown_customer")
         sessions.end(request.cookies.get(COOKIE))
         token, session = sessions.start(customer)
         response = JSONResponse({"customer": customer, "csrf": session.csrf})
         response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/", max_age=8 * 3600)
-        return response
-
-    async def signout(request: Request):
-        if not same_origin(request):
-            return error(403, "origin")
-        sessions.end(request.cookies.get(COOKIE))
-        response = JSONResponse({"customer": None})
-        response.delete_cookie(COOKIE, path="/")
         return response
 
     async def message(request: Request):
@@ -287,8 +244,14 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
             data = await read_json(request)
         except BadBody as bad:
             return bad.response
-        text = data.get("text")
+        text, choice = data.get("text"), data.get("attack")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT or "\x00" in text:
+            return error(400, "length")
+        if choice is not None and (not isinstance(choice, str) or choice not in attacks.BY_ID):
+            return error(400, "bad_request")
+        attack = attacks.BY_ID.get(choice or "")
+        body = attacks.filed_body(text, attack)
+        if len(body) > MAX_TEXT:
             return error(400, "length")
         # One message at a time per session: the checks below and the append at the end have awaits
         # between them, and without this two requests at once could both pass the caps.
@@ -302,17 +265,10 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
             answered = await run_in_threadpool(database.replies, session.customer, waiting)
             if len(waiting) - len(answered) >= MAX_WAITING:
                 return error(429, "busy")
-            armed = attacks.BY_ID.get(session.armed or "")
-            seq = session.arm_seq
-            body = attacks.filed_body(text, armed)
-            if len(body) > MAX_TEXT:
-                return error(400, "length")
             if not sessions.allow_message():
                 return error(429, "rate")
             ticket_id = await run_in_threadpool(database.open_ticket, session.customer, body)
-            session.tickets.append(Ticket(ticket_id, text, timeline.now_iso(), body, armed.id if armed else None))
-            if armed is not None and session.arm_seq == seq:
-                session.armed = None  # one shot: only the message that was just filed carries the plan
+            session.tickets.append(Ticket(ticket_id, text, now_iso(), body, attack.id if attack else None))
         except psycopg.Error:
             return error(503, "database")
         finally:
@@ -341,9 +297,7 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
             Route("/favicon.ico", nothing),
             Route("/api/state", state),
             Route("/api/console", console_state),
-            Route("/api/arm", arm, methods=["POST"]),
             Route("/api/signin", signin, methods=["POST"]),
-            Route("/api/signout", signout, methods=["POST"]),
             Route("/api/message", message, methods=["POST"]),
         ],
         middleware=[Middleware(Guard, hosts=hosts)],

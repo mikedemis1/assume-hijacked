@@ -27,18 +27,9 @@
 .icon-btn svg { width: 18px; height: 18px; stroke: var(--ink); stroke-width: 2; fill: none; stroke-linecap: round; }
 .w-error { margin: 0; padding: 8px 14px; font-size: 13px; background: rgba(255, 107, 129, .18); color: #ffd3da; }
 .w-body { padding: 14px; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
-.w-hello { margin: 0 0 12px; font-size: 14px; color: var(--ink-faint); }
-
-.people { display: grid; gap: 8px; }
-.person { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--glass); text-align: left; }
-.person:hover { background: var(--glass-strong); }
-.person img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid #fff; flex: none; }
-.person strong { display: block; font-size: 14px; }
-.person span { font-size: 12px; color: var(--ink-soft); }
 
 .me { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); margin-bottom: 10px; }
 .me img { border-radius: 50%; object-fit: cover; border: 2px solid #fff; width: 24px; height: 24px; }
-.link { background: none; border: 0; padding: 0; margin-left: auto; color: var(--accent); text-decoration: underline; font-size: 13px; }
 
 .log { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; min-height: 220px; max-height: 420px; padding-right: 2px; }
 .msg { display: flex; align-items: flex-end; gap: 8px; }
@@ -46,12 +37,14 @@
 .msg img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex: none; }
 .msg.mine img { border: 2px solid #fff; }
 .bubble { padding: 8px 12px; border-radius: 14px; font-size: 14px; max-width: 78%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.bot .sim { color: var(--warn); }
 .msg.mine .bubble { background: #fff; color: var(--navy-0); border-bottom-right-radius: 4px; }
 .msg.bot .bubble { background: rgba(255, 255, 255, .12); border: 1px solid rgba(255, 255, 255, .2); border-bottom-left-radius: 4px; }
 .bubble .intro { margin: 0 0 6px; }
 .card-list { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 13px; }
 .card-list dt { color: var(--ink-soft); }
 .card-list dd { margin: 0; overflow-wrap: anywhere; }
+.sim { display: block; margin-bottom: 2px; font-size: 11px; font-weight: 600; color: #b45309; }
 .typing .bubble { color: var(--ink-soft); font-style: italic; }
 
 .composer { margin-top: 12px; display: grid; gap: 8px; }

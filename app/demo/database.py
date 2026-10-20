@@ -1,6 +1,6 @@
 """The demo's two database roles (db/sql/09-demo.sql), one short connection per call.
 
-demo_portal: list the fictional customers, open a ticket for a customer, read the reply to that
+demo_portal: open a ticket for a customer, read the reply to that
 customer's own ticket. demo_ops: read the audit tables for a handful of ticket numbers that the
 caller (this service) took from the visitor's own session, never from the request.
 """
@@ -15,11 +15,6 @@ STATEMENT_TIMEOUT_MS = 3000
 
 def _connect(role: str):
     return db.connect(config.load(), role, connect_timeout_s=CONNECT_TIMEOUT_S, statement_timeout_ms=STATEMENT_TIMEOUT_MS)
-
-
-def customers() -> list[dict]:
-    with _connect("demo_portal") as conn:
-        return conn.execute("SELECT id, name FROM portal_customers()").fetchall()
 
 
 def open_ticket(customer: int, text: str) -> int:

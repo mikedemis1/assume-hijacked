@@ -1,20 +1,22 @@
 "use strict";
 
-// The customer site. It shows the visitor's own words and the replies, and nothing about the walls:
-// the server sends nothing else to this page. Everything is put on the page with textContent, never
-// as HTML, because a reply can hold whatever a model wrote.
+// The chat, on both pages. It shows the visitor's own words and the replies, and nothing about the
+// walls. Everything is put on the page with textContent, never as HTML, because a reply can hold
+// whatever a model wrote. The chat signs in as Eleni (customer 1001) by itself.
 //
 // The chat is updated in place: a poll adds the bubbles that are new and leaves the others alone, so
 // the scroll position, the text being typed and what a screen reader has read stay as they are.
+// On the presenter page (body.presenter) console.js sends the attacks through window.volt.send.
 
 const MAX_TEXT = 2000;
 const ROBOT = "/static/volt.svg";
+const PRESENTER = document.body.classList.contains("presenter");
 
 const $ = (id) => document.getElementById(id);
 const els = {
   error: $("error"), widget: $("widget"), launcher: $("launcher"), minimise: $("minimise"),
-  signin: $("signin"), people: $("people"), chat: $("chat"), meImg: $("me-img"), meName: $("me-name"),
-  signout: $("signout"), log: $("log"), form: $("form"), text: $("text"), send: $("send"), honest: $("honest"),
+  meImg: $("me-img"), meName: $("me-name"), log: $("log"), form: $("form"), text: $("text"),
+  send: $("send"), honest: $("honest"),
 };
 
 let state = null;
@@ -22,18 +24,17 @@ let csrf = "";
 let timer = null;
 let sending = false;
 let signature = "";
-let shownCustomer = null;
 const rows = new Map(); // "u12" / "b12" / "t12" -> the element of that bubble
 
 const PROBLEMS = {
   database: "The service is not answering. Try again in a moment.",
-  ticket_limit: "That is enough for one visit. Switch customer to start again.",
+  ticket_limit: "That is enough for one visit. Reload the page to start again.",
   busy: "Volt is still working on your earlier messages. Wait for the replies first.",
   rate: "Too many messages at once. Wait a moment.",
   length: "A message needs 1 to 2000 characters.",
   too_big: "That message is too big.",
   csrf: "The page was out of date. Reload it and try again.",
-  signin: "Your visit ended. Choose a customer again.",
+  signin: "Your visit ended. Reload the page.",
 };
 
 function el(tag, className, text) {
@@ -43,10 +44,10 @@ function el(tag, className, text) {
   return node;
 }
 
-function avatar(src, alt) {
+function avatar(src) {
   const img = el("img");
   img.src = src;
-  img.alt = alt || "";
+  img.alt = "";
   img.width = 28;
   img.height = 28;
   return img;
@@ -74,6 +75,10 @@ async function refresh() {
   let result;
   try {
     result = await api("/api/state");
+    if (result.ok && result.body.customer === null) {   // no session yet (or it ended): sign in as Eleni
+      await api("/api/signin", { method: "POST", body: { customer: 1001 } });
+      result = await api("/api/state");
+    }
   } catch (_) {
     showError("Cannot reach the service.");
     timer = setTimeout(refresh, 5000);
@@ -97,36 +102,6 @@ async function refresh() {
 
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 
-function render() {
-  const signedIn = state.customer !== null;
-  els.signin.hidden = signedIn;
-  els.chat.hidden = !signedIn;
-  if (state.customer !== shownCustomer) {
-    rows.clear();
-    els.log.replaceChildren();
-    shownCustomer = state.customer;
-  }
-  if (!signedIn) { renderPeople(); return; }
-  const me = state.customers.find((c) => c.id === state.customer);
-  els.meName.textContent = me ? me.name : "Customer";
-  els.meImg.src = (me && me.avatar) || ROBOT;
-  renderLog(me);
-}
-
-function renderPeople() {
-  els.people.replaceChildren();
-  for (const person of state.customers) {
-    const button = el("button", "person");
-    button.type = "button";
-    if (person.avatar) { const img = avatar(person.avatar, ""); img.width = 40; img.height = 40; button.append(img); }
-    const label = el("div");
-    label.append(el("strong", "", person.name), el("span", "", "Customer"));
-    button.append(label);
-    button.addEventListener("click", () => signIn(person.id));
-    els.people.append(button);
-  }
-}
-
 // A reply that is the account's JSON comes with a card from the server (textContent only, fixed labels).
 function cardBody(card) {
   const body = el("div", "bubble");
@@ -139,39 +114,43 @@ function cardBody(card) {
   return body;
 }
 
-function bubble(kind, who, text, card) {
+function bubble(kind, avatarSrc, text, card, simulated) {
   const row = el("div", "msg " + kind);
   const body = card ? cardBody(card) : el("div", "bubble", text);
-  if (kind === "mine") row.append(body, avatar(who.avatar || ROBOT, who.name || ""));
-  else row.append(avatar(ROBOT, ""), body);
+  if (simulated && PRESENTER) body.prepend(el("span", "sim", "simulated hijacked model"));
+  if (kind === "mine") row.append(body, avatar(avatarSrc));
+  else row.append(avatar(ROBOT), body);
   return row;
 }
 
-function renderLog(me) {
+function render() {
+  const me = state.customer;
+  if (me === null) return;
+  els.meName.textContent = me.name;
+  els.meImg.src = me.avatar || ROBOT;
   const near = els.log.scrollHeight - els.log.scrollTop - els.log.clientHeight < 40;
   if (!rows.has("hello")) {
-    const hello = bubble("bot", {}, "Hi " + (me ? me.name.split(" ")[0] : "there") + ", I am Volt. How can I help?");
+    const hello = bubble("bot", ROBOT, "Hi " + me.name.split(" ")[0] + ", I am Volt. How can I help?");
     rows.set("hello", hello);
     els.log.append(hello);
   }
-  const who = me || {};
   let added = false;
   for (const m of state.messages || []) {
     if (!rows.has("u" + m.id)) {
-      const row = bubble("mine", who, m.text);
+      const row = bubble("mine", me.avatar || ROBOT, m.text, null, m.simulated);
       rows.set("u" + m.id, row);
       els.log.append(row);
       added = true;
     }
     const typing = rows.get("t" + m.id);
     if (!m.reply && !typing) {
-      const row = bubble("bot typing", {}, "Volt is typing…");
+      const row = bubble("bot typing", ROBOT, "Volt is typing…");
       rows.set("t" + m.id, row);
       els.log.append(row);
       added = true;
     }
     if (m.reply && !rows.has("b" + m.id)) {
-      const row = bubble("bot", {}, m.reply, m.card);
+      const row = bubble("bot", ROBOT, m.reply, m.card, m.simulated);
       rows.set("b" + m.id, row);
       if (typing) { typing.replaceWith(row); rows.delete("t" + m.id); } else els.log.append(row);
       added = true;
@@ -180,29 +159,15 @@ function renderLog(me) {
   if (added && near) els.log.scrollTop = els.log.scrollHeight;
 }
 
-async function signIn(id) {
-  const result = await api("/api/signin", { method: "POST", body: { customer: id } });
-  if (!result.ok) { showError(PROBLEMS[result.body && result.body.error] || "Could not sign in."); return; }
-  showError("");
-  await refresh();
-  els.text.focus();
-}
-
-els.signout.addEventListener("click", async () => {
-  await api("/api/signout", { method: "POST", body: {} });
-  signature = "";
-  await refresh();
-});
-
-async function submit() {
-  if (sending) return;
-  const text = els.text.value;
-  if (!text.trim()) return;
+// One request carries the words and, for an attack, its id: nothing is armed beforehand.
+async function send(text, attack) {
+  if (sending || !text.trim()) return;
   if (text.length > MAX_TEXT) { showError(PROBLEMS.length); return; }
   sending = true;
   els.send.disabled = true;
   try {
-    const result = await api("/api/message", { method: "POST", body: { text } });
+    const body = attack ? { text, attack } : { text };
+    const result = await api("/api/message", { method: "POST", body });
     if (!result.ok) { showError(PROBLEMS[result.body && result.body.error] || "Could not send that."); return; }
     showError("");
     els.text.value = "";
@@ -213,20 +178,23 @@ async function submit() {
     els.text.focus();
   }
 }
+window.volt = { send };
 
-els.form.addEventListener("submit", (event) => { event.preventDefault(); submit(); });
+els.form.addEventListener("submit", (event) => { event.preventDefault(); send(els.text.value); });
 els.text.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); }
+  if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(els.text.value); }
 });
-els.honest.addEventListener("click", () => { els.text.value = els.honest.textContent; submit(); });
+els.honest.addEventListener("click", () => send(els.honest.textContent));
 
-function setOpen(open) {
-  els.widget.hidden = !open;
-  els.launcher.hidden = open;
-  els.minimise.setAttribute("aria-expanded", String(open));
-  (open ? els.text : els.launcher).focus();
+if (els.widget) {
+  const setOpen = (open) => {
+    els.widget.hidden = !open;
+    els.launcher.hidden = open;
+    els.minimise.setAttribute("aria-expanded", String(open));
+    (open ? els.text : els.launcher).focus();
+  };
+  els.minimise.addEventListener("click", () => setOpen(false));
+  els.launcher.addEventListener("click", () => setOpen(true));
 }
-els.minimise.addEventListener("click", () => setOpen(false));
-els.launcher.addEventListener("click", () => setOpen(true));
 
 refresh();
