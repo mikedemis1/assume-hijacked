@@ -1,5 +1,5 @@
 # Local Kubernetes for the walls: kind cluster "ah" (kubectl context kind-ah).
-# Two nodes only, because Docker Desktop has 6 GB and the Compose stack runs next to it:
+# Two nodes only, because Docker Desktop has 6 GB:
 #   control-plane  untainted, label ah/pool=system   stands in for the AKS system pool
 #   worker         label ah/pool=sandbox, taint ah/sandbox=true:NoSchedule
 #                  stands in for the AKS Kata sandbox pool (agent Jobs land here)

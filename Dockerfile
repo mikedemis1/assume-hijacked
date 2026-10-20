@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Optional local wheels: a directory of .whl files. Empty by default, so a plain
-# `docker build .` works; Compose replaces this stage with LOCAL_WHEELS_DIR
-# (additional_contexts: wheels).
+# `docker build .` works; scripts/kind-deploy.sh replaces this stage with LOCAL_WHEELS_DIR
+# (--build-context wheels=...).
 FROM scratch AS wheels
 
 # Base image pinned by digest (multi-arch index). Tag python:3.12-slim, resolved 2026-10-15

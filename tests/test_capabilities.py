@@ -1,5 +1,5 @@
 """The capability manifests (security/capabilities/*.json): what each component may do, written
-down so the tests below can compare it with the real database and the Compose file.
+down so the tests below can compare it with the real database.
 
 These tests check the manifests against the application itself: the fingerprint of every tool
 descriptor, the grants of every database role, and who holds the gateway's keys.
@@ -9,18 +9,14 @@ import asyncio
 import copy
 import hashlib
 import json
-import os
-import shutil
-import subprocess
 import time
 from pathlib import Path
 
 import pytest
-import yaml
 
 from app import config
 from app.security import descriptors
-from app.security.tokens import JtiCache, load_private_key, load_public_key, mint_tool_token, verify_tool_token
+from app.security.tokens import mint_tool_token
 from app.tools import serve
 from tests.toolhttp import KEYS, bearer, post_each
 
@@ -309,59 +305,6 @@ def test_every_login_role_has_a_manifest(admin):
 
 # --- who holds the gateway's keys --------------------------------------------------------------
 
-def compose():
-    return yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
-
-
-def test_every_tool_gets_the_public_key_and_only_the_gateway_gets_the_private_key():
-    services = compose()["services"]
-    for tool, component in TOOL_COMPONENTS.items():
-        service = services[component]
-        assert service["secrets"] == ["gateway_public_key"], component
-        assert service["environment"]["TOOL_NAME"] == tool
-        assert service["environment"]["GATEWAY_PUBLIC_KEY_FILE"] == "/run/secrets/gateway_public_key"
-        assert service["command"][-1] == tool
-    holders = [name for name, service in services.items() if "gateway_signing_key" in service.get("secrets", [])]
-    assert holders == ["tool-gateway"]
-    assert services["tool-gateway"]["environment"]["GATEWAY_SIGNING_KEY_FILE"] == "/run/secrets/gateway_signing_key"
-    # The agent, the component a hijacked model can reach, has no key and is not told where one is.
-    agent = services["agent"]
-    assert "secrets" not in agent
-    assert not any("KEY" in name or name.startswith("TOOL_URL") for name in agent["environment"])
-    # ... nor a model key, a model identity, a password or a token of any kind.
-    secret_words = ("KEY", "SECRET", "TOKEN", "PASSWORD", "ANTHROPIC", "FOUNDRY", "AZURE", "SIGNING")
-    assert not [n for n in agent["environment"] if any(word in n for word in secret_words)], agent["environment"]
-    # The public key is for the tools only; nothing else needs to check a token.
-    users = [name for name, service in services.items() if "gateway_public_key" in service.get("secrets", [])]
-    assert sorted(users) == sorted(TOOL_COMPONENTS.values())
-
-
-def test_the_key_files_live_in_the_ignored_folder():
-    secrets = compose()["secrets"]
-    assert secrets["gateway_public_key"]["file"] == "./build/keys/gateway.pub"
-    assert secrets["gateway_signing_key"]["file"] == "./build/keys/gateway.pem"
-    ignored = subprocess.run(
-        ["git", "check-ignore", "build/keys/gateway.pem", "build/keys/gateway.pub"],
-        cwd=ROOT, capture_output=True, text=True, check=False,
-    )
-    assert ignored.stdout.split() == ["build/keys/gateway.pem", "build/keys/gateway.pub"]
-
-
-def test_the_key_script_makes_a_pair_that_signs_and_verifies(tmp_path):
-    env = {"KEY_DIR": str(tmp_path), "PATH": os.environ["PATH"]}
-    run = lambda *args: subprocess.run(  # noqa: E731
-        ["sh", "scripts/gen-gateway-key.sh", *args], cwd=ROOT, env=env, capture_output=True, text=True, check=False
-    )
-    first = run()
-    assert first.returncode == 0, first.stderr
-    private, public = load_private_key(tmp_path / "gateway.pem"), load_public_key(tmp_path / "gateway.pub")
-    token = mint_tool_token(private, "read_ticket", "ab" * 32, 1_800_000_000.0)
-    assert verify_tool_token(public, token, "read_ticket", 1_800_000_000.0, JtiCache())["lease"] == "ab" * 32
-    kept = (tmp_path / "gateway.pem").read_bytes()
-    assert run().returncode == 0 and (tmp_path / "gateway.pem").read_bytes() == kept     # keeps what exists
-    assert run("--force").returncode == 0 and (tmp_path / "gateway.pem").read_bytes() != kept
-
-
 def test_serve_refuses_to_start_without_the_public_key_or_with_a_wrong_name(monkeypatch):
     monkeypatch.setattr("sys.argv", ["serve", "read_ticket"])
     monkeypatch.delenv("GATEWAY_PUBLIC_KEY_FILE", raising=False)
@@ -430,93 +373,8 @@ def test_the_gateway_manifest_matches_its_database_role(admin):
     )
 
 
-# Components that exist only in Azure: the database setup Job. Compose has no service for them.
-AZURE_ONLY = {"db-migrate"}
-
-
-def edges_of_manifests() -> set[frozenset]:
-    edges = set()
-    for name, manifest in manifests().items():
-        if name in AZURE_ONLY:
-            continue
-        for peer in manifest["network"]["egress_to"] + manifest["network"]["ingress_from"]:
-            if peer != "internet":   # hostaccess, the db's published port: not an edge between two services
-                edges.add(frozenset({name, peer}))
-    return edges
-
-
-def edges_of_compose() -> set[frozenset]:
-    """Every pair of services that share a network (undirected)."""
-    config = compose()
-    members: dict[str, set[str]] = {}
-    for name, service in config["services"].items():
-        for network in service.get("networks", []):
-            members.setdefault(network, set()).add(name)
-    edges = set()
-    for network, services in members.items():
-        ordered = sorted(services)
-        edges |= {frozenset({a, b}) for i, a in enumerate(ordered) for b in ordered[i + 1:]}
-    return edges
-
-
-def test_the_edges_the_manifests_name_are_the_edges_compose_builds():
-    # A manifest and the Compose file must name the same edges, so a drift shows at once.
-    assert edges_of_compose() == edges_of_manifests()
-
-
-def test_the_agent_has_three_edges_to_the_gateway_the_llm_gateway_and_the_dispatcher():
-    services = compose()["services"]
-    assert services["agent"]["networks"] == ["edge_agent_gateway", "edge_agent_llmgw", "edge_agent_dispatcher"]
+def test_the_agent_manifest_names_its_three_edges():
     assert manifests()["agent"]["network"]["egress_to"] == ["dispatcher", "llm-gateway", "tool-gateway"]
-    sharing = [name for name, service in services.items() if "edge_agent_llmgw" in service.get("networks", [])]
-    assert sorted(sharing) == ["agent", "llm-gateway"]
-    sharing = [name for name, service in services.items() if "edge_agent_gateway" in service.get("networks", [])]
-    assert sorted(sharing) == ["agent", "tool-gateway"]
-    sharing = [name for name, service in services.items() if "edge_agent_dispatcher" in service.get("networks", [])]
-    assert sorted(sharing) == ["agent", "dispatcher"]
-    # No tool is on a network the agent is on.
-    agent_networks = set(services["agent"]["networks"])
-    for component in TOOL_COMPONENTS.values():
-        assert not agent_networks & set(services[component]["networks"]), component
-
-
-def test_the_agents_edge_has_a_pinned_subnet_and_the_gateway_is_told_it():
-    import ipaddress
-
-    config = compose()
-    pinned = config["networks"]["edge_agent_gateway"]["ipam"]["config"]
-    assert len(pinned) == 1
-    subnet = pinned[0]["subnet"]
-    assert ipaddress.ip_network(subnet, strict=True).prefixlen >= 24
-    assert config["services"]["tool-gateway"]["environment"]["CALLER_SUBNET"] == subnet
-    # Only the agent and the gateway are on it, and no other network pins the same range.
-    assert sorted(name for name, s in config["services"].items() if "edge_agent_gateway" in s.get("networks", [])) == [
-        "agent", "tool-gateway"]
-    others = [n["ipam"]["config"][0]["subnet"] for name, n in config["networks"].items()
-              if name != "edge_agent_gateway" and n.get("ipam")]
-    assert subnet not in others
-
-
-def test_the_gateway_is_the_only_service_on_a_tools_gateway_edge():
-    services = compose()["services"]
-    for tool, component in TOOL_COMPONENTS.items():
-        edge = f"edge_gateway_{tool}"
-        on_edge = sorted(name for name, service in services.items() if edge in service.get("networks", []))
-        assert on_edge == sorted([component, "tool-gateway"]), edge
-
-
-def test_the_gateway_asks_the_risk_engine_and_reaches_the_database_and_nothing_else():
-    services = compose()["services"]
-    assert sorted(services["tool-gateway"]["networks"]) == sorted(
-        ["edge_agent_gateway", "edge_gateway_risk", "edge_gateway_db",
-         *(f"edge_gateway_{tool}" for tool in TOOL_COMPONENTS)]
-    )
-    assert services["risk-engine"]["networks"] == ["edge_risk_db", "edge_gateway_risk"]
-    assert services["tool-gateway"]["environment"]["RISK_URL"] == "http://risk-engine:8082"
-    assert services["tool-gateway"]["environment"]["CALLER_AUTH"] == "compose"
-    for tool in TOOL_COMPONENTS:
-        url = services["tool-gateway"]["environment"][f"TOOL_URL_{tool.upper()}"]
-        assert url == f"http://{TOOL_COMPONENTS[tool]}:8000/mcp"
 
 
 def test_a_tool_serves_healthz_on_9000_while_it_runs(monkeypatch, tmp_path):
@@ -548,41 +406,6 @@ def test_a_tool_serves_healthz_on_9000_while_it_runs(monkeypatch, tmp_path):
 
 # --- the dispatcher: its manifest, its edges, its subnet ------------------------------------------
 
-def test_the_dispatchers_edge_has_a_pinned_subnet_and_the_dispatcher_is_told_it():
-    import ipaddress
-
-    config = compose()
-    pinned = config["networks"]["edge_agent_dispatcher"]["ipam"]["config"]
-    assert len(pinned) == 1
-    subnet = pinned[0]["subnet"]
-    assert ipaddress.ip_network(subnet, strict=True).prefixlen >= 24
-    assert config["services"]["dispatcher"]["environment"]["CALLER_SUBNET"] == subnet
-    # Only the agent and the dispatcher are on it, and no other network pins the same range.
-    assert sorted(n for n, s in config["services"].items() if "edge_agent_dispatcher" in s.get("networks", [])) == [
-        "agent", "dispatcher"]
-    others = [n["ipam"]["config"][0]["subnet"] for name, n in config["networks"].items()
-              if name != "edge_agent_dispatcher" and n.get("ipam")]
-    assert subnet not in others
-
-
-def test_the_dispatcher_reaches_the_database_and_nothing_else():
-    services = compose()["services"]
-    assert sorted(services["dispatcher"]["networks"]) == ["edge_agent_dispatcher", "edge_dispatcher_db"]
-    assert sorted(n for n, s in services.items() if "edge_dispatcher_db" in s.get("networks", [])) == ["db", "dispatcher"]
-    env = services["dispatcher"]["environment"]
-    assert env["CALLER_AUTH"] == "compose" and env["DISPATCH_MODE"] == "compose"
-    # Its database password is its own, and it holds no key.
-    assert "DB_PASSWORD_DISPATCHER" in env and not [k for k in env if k.startswith("DB_PASSWORD_") and k != "DB_PASSWORD_DISPATCHER"]
-    assert "secrets" not in services["dispatcher"]
-    agent_env = services["agent"]["environment"]
-    assert agent_env["DISPATCHER_URL"] == "http://dispatcher:8081"
-    # The dispatcher's password is held by the dispatcher and by the db that sets it, nobody else.
-    holders = sorted(n for n, s in services.items() if "DB_PASSWORD_DISPATCHER" in s.get("environment", {}))
-    assert holders == ["db", "dispatcher"]
-    assert not [k for k in agent_env if k.startswith("DB_PASSWORD")]
-    assert sorted(services["agent"]["depends_on"]) == ["dispatcher", "llm-gateway", "tool-gateway"]
-
-
 def test_the_dispatcher_manifest_names_its_edges_and_its_kubernetes_rights():
     manifest = manifests()["dispatcher"]
     assert manifest["network"] == {"ingress_from": ["agent"], "egress_to": ["db"], "dns": ["cluster"]}
@@ -593,80 +416,6 @@ def test_the_dispatcher_manifest_names_its_edges_and_its_kubernetes_rights():
 
 
 # --- the LLM gateway: its manifest, its edge, its subnet, the only place a model key can be ---------------
-
-def compose_override():
-    return yaml.safe_load((ROOT / "compose.llm-anthropic.yaml").read_text(encoding="utf-8"))
-
-
-def test_the_llm_gateways_edge_has_a_pinned_subnet_and_the_llm_gateway_is_told_it():
-    import ipaddress
-
-    config = compose()
-    pinned = config["networks"]["edge_agent_llmgw"]["ipam"]["config"]
-    assert len(pinned) == 1
-    subnet = pinned[0]["subnet"]
-    assert ipaddress.ip_network(subnet, strict=True).prefixlen >= 24
-    assert config["services"]["llm-gateway"]["environment"]["CALLER_SUBNET"] == subnet
-    assert config["services"]["llm-gateway"]["environment"]["CALLER_AUTH"] == "compose"
-    # Only the agent and the LLM gateway are on it, and no other network pins the same range.
-    assert sorted(n for n, s in config["services"].items() if "edge_agent_llmgw" in s.get("networks", [])) == [
-        "agent", "llm-gateway"]
-    others = [n["ipam"]["config"][0]["subnet"] for name, n in config["networks"].items()
-              if name != "edge_agent_llmgw" and n.get("ipam")]
-    assert subnet not in others
-
-
-def test_the_llm_gateway_as_shipped_has_no_key_no_database_and_no_route_out():
-    config = compose()
-    service = config["services"]["llm-gateway"]
-    assert service["networks"] == ["edge_agent_llmgw"]
-    assert all(config["networks"][n].get("internal") is True for n in service["networks"])   # nothing leaves
-    assert "secrets" not in service
-    env = service["environment"]
-    assert env["LLM_BACKEND"] == "scripted"                           # no provider unless the override is used
-    assert not [n for n in env if n.startswith("DB_") or "KEY" in n or "FOUNDRY" in n or "ANTHROPIC" in n]
-    assert service["command"] == ["python", "-m", "app.llmgw.main"]
-    assert int(env["LLM_TOKEN_BUDGET_PER_LEASE"]) > 0
-    assert int(env["LLM_TOKEN_BUDGET_TOTAL"]) >= int(env["LLM_TOKEN_BUDGET_PER_LEASE"])   # a ceiling for all callers
-
-
-def test_a_model_key_exists_in_the_override_and_reaches_the_llm_gateway_only():
-    base, override = compose(), compose_override()
-    # The stack as shipped declares no model key at all.
-    assert not [name for name in base["secrets"] if "anthropic" in name.lower()]
-    assert not [n for n, s in base["services"].items()
-                if any("ANTHROPIC" in k or "FOUNDRY" in k for k in s.get("environment", {}))]
-    # The override touches one service, and gives it the key and a route out.
-    assert list(override["services"]) == ["llm-gateway"]
-    service = override["services"]["llm-gateway"]
-    assert service["secrets"] == ["anthropic_api_key"]
-    assert service["environment"] == {"LLM_BACKEND": "anthropic", "ANTHROPIC_API_KEY_FILE": "/run/secrets/anthropic_api_key"}
-    assert service["networks"] == ["egress_llm"]
-    assert override["networks"] == {"egress_llm": {}}                  # an ordinary network: that is the route out
-    assert list(override["secrets"]) == ["anthropic_api_key"]
-    assert override["secrets"]["anthropic_api_key"]["file"] == "./build/keys/anthropic.key"
-    ignored = subprocess.run(["git", "check-ignore", "build/keys/anthropic.key"], cwd=ROOT, capture_output=True, text=True, check=False)
-    assert ignored.stdout.split() == ["build/keys/anthropic.key"]      # the key file can never be committed
-
-
-def test_the_override_merges_into_a_valid_stack_where_only_the_llm_gateway_changes():
-    if shutil.which("docker") is None:
-        pytest.skip("needs the docker CLI to render the merged Compose file")
-    done = subprocess.run(
-        ["docker", "compose", "--profile", "manual", "-f", "compose.yaml", "-f", "compose.llm-anthropic.yaml", "config", "--format", "json"],
-        cwd=ROOT, capture_output=True, text=True, check=False,
-    )
-    if done.returncode != 0 and "required variable" in done.stderr:
-        pytest.skip("compose needs the .env passwords to render")
-    assert done.returncode == 0, done.stderr
-    merged = json.loads(done.stdout)
-    holders = [n for n, s in merged["services"].items() if "anthropic_api_key" in s.get("secrets", {})
-               or any(isinstance(x, dict) and x.get("source") == "anthropic_api_key" for x in s.get("secrets", []))]
-    assert holders == ["llm-gateway"]
-    outward = [n for n, s in merged["services"].items() if "egress_llm" in s.get("networks", {})]
-    assert outward == ["llm-gateway"]
-    assert merged["services"]["agent"]["networks"].keys() == {"edge_agent_gateway", "edge_agent_llmgw", "edge_agent_dispatcher"}
-
 
 def test_the_llm_gateway_manifest_names_its_edge_and_its_rights():
     manifest = manifests()["llm-gateway"]

@@ -2,7 +2,7 @@
 
 The operator reads stored replies from PostgreSQL. POST /reply deliberately returns only an
 acknowledgement, so the agent cannot use the reply guard as an oracle. These checks cover the
-deployed agent path; the Compose smoke suite separately inspects raw gateway responses with
+deployed agent path; the gateway tests separately inspect raw gateway responses with
 the agent's argument filtering bypassed.
 """
 

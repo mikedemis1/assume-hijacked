@@ -1,10 +1,10 @@
 #!/bin/sh
-# The database the pytest suite runs against, without Docker Compose. Works from any directory.
+# The database the pytest suite runs against. Works from any directory.
 #   sh scripts/test-db.sh start   start container ah-test-db (replaces one that already exists)
 #   sh scripts/test-db.sh stop    remove it
 #
-# The same image and the same three log flags as the db service in compose.yaml, and the same
-# db/init/init.sh run by the image on an empty data directory, so the roles, supplier and
+# The postgres image pinned by digest (below), three log flags that keep statement parameters out
+# of the log, and db/init/init.sh run by the image on an empty data directory, so the roles, supplier and
 # supplier_test are what the suite expects. The init files are copied into the container with
 # `docker cp` before it starts, not bind-mounted: on Docker Desktop for Windows a bind mount from a
 # Git Bash path is sometimes empty (in any path form), and then init.sh silently never runs.
@@ -20,7 +20,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 NAME=ah-test-db
-# Keep in step with the db service in compose.yaml (pinned by digest).
+# Pinned by digest. Keep in step with the postgres image in deploy/helm/assume-hijacked/values.yaml.
 IMAGE=postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
 SECRETS="POSTGRES_PASSWORD
 DB_PASSWORD_TOOL_READ_TICKET
@@ -84,7 +84,7 @@ start() {
         -c log_min_error_statement=panic \
         -c log_parameter_max_length=0 \
         -c log_parameter_max_length_on_error=0 >/dev/null
-    # The same two folders Compose mounts read-only: db/init into the entrypoint's init folder and
+    # Two folders: db/init into the entrypoint's init folder and
     # db/sql at /db/sql, where init.sh looks for the SQL (`docker cp db` makes /db, with sql in it).
     docker cp db/init/. "$NAME:/docker-entrypoint-initdb.d"
     docker cp db "$NAME:/"

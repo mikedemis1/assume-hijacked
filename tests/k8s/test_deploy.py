@@ -77,7 +77,7 @@ def test_deploy_writes_secrets_only_into_its_temporary_folder():
     code = "\n".join(re.sub(r"(^|\s)#.*", "", line) for line in text.splitlines())
     for target in re.findall(r'>\s*"?([^\s"|&;]+)', code):
         assert target.startswith(("$work/", "/dev/", "&")), target
-    # The .env passwords belong to Compose: only the two build settings are read from it.
+    # Only the two build settings are read from .env.
     assert re.findall(r"env_setting (\w+)", text) == ["PIP_CERT_FILE", "LOCAL_WHEELS_DIR"]
 
 

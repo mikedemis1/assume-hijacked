@@ -88,11 +88,11 @@ def test_dockerfile_base_images_are_pinned_by_digest():
             stages.add(alias)
 
 
-def test_compose_images_are_pinned_by_digest():
-    images = re.findall(r"^\s*image:\s*(\S+)", (ROOT / "compose.yaml").read_text(encoding="utf-8"), re.M)
-    assert images, "compose.yaml should name at least the db image"
+def test_the_test_database_image_is_pinned_by_digest():
+    images = re.findall(r"^IMAGE=(\S+)", (ROOT / "scripts" / "test-db.sh").read_text(encoding="utf-8"), re.M)
+    assert images, "scripts/test-db.sh should name the db image"
     for image in images:
-        assert DIGEST.search(image), f"compose image without digest: {image}"
+        assert DIGEST.search(image), f"test database image without digest: {image}"
 
 
 def test_dockerfile_installs_with_hashes_only():

@@ -1,6 +1,6 @@
 {{- /*
 kind only: PostgreSQL in ah-data, set up once by the postgres-init Job, which runs the same
-db/init/init.sh as Compose and CI. On Azure the database is the flexible server behind a
+db/init/init.sh as CI. On Azure the database is the flexible server behind a
 private endpoint, and db-migrate.yaml sets it up instead.
 */ -}}
 {{- if eq .Values.env "kind" }}
@@ -121,7 +121,7 @@ spec:
             storage: 1Gi
 ---
 # Runs once, after the first install: init.sh is not idempotent (CREATE ROLE, CREATE DATABASE).
-# It waits for the server, then applies db/sql exactly as Compose's initdb hook and CI do.
+# It waits for the server, then applies db/sql exactly as CI does.
 # Helm runs a post-install hook after it has created the release and, with --wait, only once every
 # pod is ready; the components are not ready until the database is set up, so a --wait install
 # would wait for this hook and the hook for the wait. scripts/kind-deploy.sh therefore runs helm

@@ -30,8 +30,8 @@ def run_kubectl(args: list[str], stdin: str | None = None, timeout: int = 120) -
 
 @pytest.fixture(autouse=True)
 def fresh_db():
-    """Replaces the autouse fixture of tests/conftest.py, which truncates the Compose database.
-    These tests never touch it (the database belongs to the Compose stack)."""
+    """Replaces the autouse fixture of tests/conftest.py, which truncates the test database.
+    These tests never touch it (the database belongs to the cluster)."""
 
 
 def kubectl_json(*args: str) -> dict:

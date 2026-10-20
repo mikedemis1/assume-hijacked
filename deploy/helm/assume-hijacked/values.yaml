@@ -12,7 +12,7 @@ env: kind
 #   postgres  kind: the database; also the psql client of the init Job / db-migrate Job
 #   azureCli  azure only: db-migrate exchanges its workload identity token for an Entra token
 images:
-  # Tag postgres:17-alpine, the same digest as compose.yaml.
+  # Tag postgres:17-alpine, the same digest as scripts/test-db.sh.
   postgres: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
 
 # Registry the admission policy accepts images from, by digest. Set per

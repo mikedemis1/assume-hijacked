@@ -2,7 +2,7 @@
 # Stop or delete the local Kubernetes cluster "ah". Run from the repository root.
 #   sh scripts/kind-down.sh stop   stop the node containers and the local registry (keeps the
 #                                  cluster, its state and the pushed images; frees memory for
-#                                  the Compose stack). `sh scripts/kind-up.sh` starts them again.
+#                                  other work). `sh scripts/kind-up.sh` starts them again.
 #   sh scripts/kind-down.sh        delete the cluster and the registry container.
 set -eu
 

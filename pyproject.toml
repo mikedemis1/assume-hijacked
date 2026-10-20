@@ -32,10 +32,9 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "smoke: needs the full docker compose stack running",
     "k8s: needs the kind cluster ah running (sh scripts/kind-up.sh)",
 ]
-addopts = "-m 'not smoke and not k8s' -rs"
+addopts = "-m 'not k8s' -rs"
 
 # ruff: a narrower set than ruff's default rule set: the errors and pyflakes rules that find real
 # mistakes (unused imports, undefined names). https://docs.astral.sh/ruff/rules/

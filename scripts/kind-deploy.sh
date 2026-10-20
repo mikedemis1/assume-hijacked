@@ -127,9 +127,9 @@ if command -v cygpath >/dev/null 2>&1; then
 fi
 
 # --- the image -----------------------------------------------------------------------------------
-# The same build inputs as Compose: an optional CA bundle for TLS-intercepting networks
+# The build inputs: an optional CA bundle for TLS-intercepting networks
 # (PIP_CERT_FILE) and an optional folder of wheels (LOCAL_WHEELS_DIR), both from .env. Only these
-# two lines are read; the passwords in .env are for Compose and are not used here.
+# two lines are read; the other settings in .env are not used here.
 env_setting() {
     [ -f .env ] || return 0
     sed -n "s/^$1=//p" .env | tr -d '\r' | tail -n 1

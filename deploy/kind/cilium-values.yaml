@@ -2,7 +2,7 @@
 # pins the chart file by sha256). Everything not set here keeps the chart default, including
 # the image digests: the chart pins every Cilium image by sha256 (image.useDigest: true).
 #
-# Lean on purpose: Docker has 6 GB and Compose runs next to the cluster.
+# Lean on purpose: Docker has 6 GB.
 ipam:
   mode: kubernetes
 

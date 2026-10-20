@@ -9,7 +9,7 @@
 #   - Cluster is running: checks readiness, upgrades Cilium when its version or
 #     deploy/kind/cilium-values.yaml changed, and applies the RuntimeClass again (idempotent).
 #
-# Stopping to free memory for the Compose stack:  sh scripts/kind-down.sh stop
+# Stopping to free memory:                       sh scripts/kind-down.sh stop
 # Deleting the cluster:                           sh scripts/kind-down.sh
 set -eu
 

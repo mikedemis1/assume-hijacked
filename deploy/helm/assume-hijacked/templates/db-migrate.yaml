@@ -4,7 +4,7 @@ PostgreSQL password exists for them: an init container trades the pod's workload
 for Entra access tokens (one for PostgreSQL, one for Key Vault) that the next containers read
 from a memory-backed volume.
 
-  db-migrate           post-install, so once: runs db/init/init.sh (the same file as kind, Compose
+  db-migrate           post-install, so once: runs db/init/init.sh (the same file as kind
                        and CI; not idempotent). init.sh creates each role with a random password
                        nobody keeps; the passwords step right after replaces it.
   db-passwords-rotate  the passwords step alone (db-passwords-rotate.yaml). Never part of a

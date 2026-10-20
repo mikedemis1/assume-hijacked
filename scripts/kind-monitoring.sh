@@ -8,7 +8,7 @@
 #   sh scripts/kind-monitoring.sh remove    delete all of it, including the CRDs of the operator
 #
 # The stack needs about 1 GB on top of the cluster. Docker has 6 GB, so install it while the
-# Compose stack is down, and remove it when the check is done.
+# nothing else heavy is running, and remove it when the check is done.
 #
 # Grafana:       kubectl --context kind-ah -n ah-monitoring port-forward svc/kps-grafana 3000:80
 #                login admin, retrieve its password from the Secret grafana-admin

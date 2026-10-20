@@ -6,8 +6,7 @@ SMS provider. Each records the calls it gets in memory (GET /calls) and accepts 
   dso         executor        POST /orders     a disconnection order
   sms         executor        POST /messages   an occupier notice
 
-With CALLER_AUTH=compose the network is the wall (one internal edge network per caller, compose.yaml;
-tests/test_smoke.py proves it). With CALLER_AUTH=k8s every request carries the caller's projected
+With CALLER_AUTH=compose the network is the wall (one internal edge network per caller). With CALLER_AUTH=k8s every request carries the caller's projected
 service account token, audience fake-<name>, checked with a TokenReview. Here the TokenReview is an
 injected verifier, so no cluster is needed.
 """
@@ -412,15 +411,3 @@ def test_the_agent_still_logs_security_events():
 
     assert security_event is common_security_event
 
-
-def test_executor_starts_after_the_fakes_it_calls():
-    from pathlib import Path
-
-    import yaml
-
-    compose_file = Path(__file__).resolve().parent.parent / "compose.yaml"
-    services = yaml.safe_load(compose_file.read_text(encoding="utf-8"))["services"]
-    depends = services["executor"]["depends_on"]
-    assert depends["fake-dso"] == {"condition": "service_started"}
-    assert depends["fake-sms"] == {"condition": "service_started"}
-    assert depends["db"] == {"condition": "service_healthy"}

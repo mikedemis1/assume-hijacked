@@ -203,7 +203,7 @@ def main():
     app=build_app(heartbeat=heartbeat)
     ops=start_ops_server(9000,Metrics(),heartbeat)
     try:
-        # Listen on the container's staff network; Compose publishes only the loopback port.
+        # Listen on the container's staff network; the Kubernetes Service decides who reaches it.
         uvicorn.run(app,host="0.0.0.0",port=8084,access_log=False,log_level="warning")  # nosec B104
     finally:
         ops.shutdown()
