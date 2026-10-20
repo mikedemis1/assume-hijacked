@@ -346,7 +346,6 @@ DECLARE
         WHEN 'executor'      THEN 'executor'
         WHEN 'risk_engine'   THEN 'risk-engine'
         WHEN 'dispatcher'    THEN 'dispatcher'
-        WHEN 'register_sync' THEN 'register-sync'
         WHEN 'gateway'       THEN 'tool-gateway'
     END;
 BEGIN
@@ -360,7 +359,7 @@ END $$;
 GRANT SELECT, INSERT (component, last_beat), UPDATE (last_beat) ON heartbeats TO risk_owner;
 ALTER FUNCTION beat(text) OWNER TO risk_owner;
 REVOKE ALL ON FUNCTION beat(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION beat(text) TO executor, risk_engine, dispatcher, register_sync, gateway;
+GRANT EXECUTE ON FUNCTION beat(text) TO executor, risk_engine, dispatcher, gateway;
 
 -- Operational status only: the console cannot beat on a stopped component's behalf.
 GRANT SELECT (component, last_beat) ON heartbeats TO approver;

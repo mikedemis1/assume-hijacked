@@ -33,7 +33,7 @@ BEGIN
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
         EXECUTE format(
             'CREATE POLICY trusted_all ON %I FOR ALL TO executor, approver, risk_engine, dispatcher, '
-            'gateway, register_sync, api_owner, lease_owner, flags_writer, flags_admin, flags_remover, '
+            'gateway, api_owner, lease_owner, flags_writer, flags_remover, '
             'risk_owner '
             'USING (true) WITH CHECK (true)', t);
     END LOOP;

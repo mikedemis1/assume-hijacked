@@ -44,9 +44,8 @@ five). postgres only on kind, where the database is a pod of this chart. */ -}}
 {{- $sources := list
   (list "agent" "ah-agent") (list "llm-gateway" "ah-agent") (list "dispatcher" "ah-intake")
   (list "tool-gateway" "ah-gateway") (list "tool-lookup-account" "ah-tools")
-  (list "risk-engine" "ah-core") (list "executor" "ah-core") (list "register-sync" "ah-core")
-  (list "console" "ah-staff") (list "fake-register" "ah-fakes") (list "fake-dso" "ah-fakes")
-  (list "fake-sms" "ah-fakes") -}}
+  (list "risk-engine" "ah-core") (list "executor" "ah-core")
+  (list "console" "ah-staff") -}}
 {{- if eq $v.env "kind" }}{{ $sources = append $sources (list "postgres" "ah-data") }}{{ end -}}
 {{- $namespaces := list -}}
 {{- range $sources }}{{ $namespaces = append $namespaces (index . 1) }}{{ end -}}

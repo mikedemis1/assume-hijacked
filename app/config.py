@@ -19,10 +19,6 @@ class Settings:
     moveout_max_per_hour: int
     occupier_wait_hours: int
     register_max_age_hours: int
-    # The outside systems (fakes in this project, app/fakes). Empty: no call is made.
-    dso_url: str
-    sms_url: str
-    register_url: str
     caller_auth: str  # k8s, the only mode: how a call says who is calling (app/common/calls.py)
 
 
@@ -37,8 +33,5 @@ def load() -> Settings:
         moveout_max_per_hour=int(os.environ.get("MOVEOUT_MAX_PER_HOUR", "20")),
         occupier_wait_hours=int(os.environ.get("OCCUPIER_WAIT_HOURS", "72")),
         register_max_age_hours=int(os.environ.get("REGISTER_MAX_AGE_HOURS", "24")),
-        dso_url=os.environ.get("DSO_URL", ""),
-        sms_url=os.environ.get("SMS_URL", ""),
-        register_url=os.environ.get("REGISTER_URL", ""),
         caller_auth=caller_auth_mode(),
     )

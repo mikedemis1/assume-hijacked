@@ -39,21 +39,15 @@ COMPONENTS = {
     "dispatcher": ("ah-intake", "dispatcher"),
     "llm-gateway": ("ah-agent", ""),
     "executor": ("ah-core", "executor"),
-    "register-sync": ("ah-core", "register_sync"),
     "console": ("ah-staff", "approver"),
-    "fake-register": ("ah-fakes", ""),
-    "fake-dso": ("ah-fakes", ""),
-    "fake-sms": ("ah-fakes", ""),
 }
 DB_ROLES = sorted({role for _, role in COMPONENTS.values() if role})
 # Components that call the Kubernetes API: TokenReview of their callers' tokens (the three the
-# agent calls, and the three fakes the executor and register sync call); the dispatcher also
-# creates Jobs.
-FAKES = {"fake-register", "fake-dso", "fake-sms"}
-API_CALLERS = {"tool-gateway", "llm-gateway", "dispatcher"} | FAKES
+# agent calls); the dispatcher also creates Jobs.
+API_CALLERS = {"tool-gateway", "llm-gateway", "dispatcher"}
 CLUSTER_SCOPED = {"Namespace", "ClusterRole", "ClusterRoleBinding", "ValidatingAdmissionPolicy",
                   "ValidatingAdmissionPolicyBinding"}
-NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff", "ah-fakes",
+NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff",
               "ah-data"}
 PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\ntest-only\n-----END PUBLIC KEY-----\n"
 
@@ -494,14 +488,10 @@ MATRIX = {
     ("ah-tools", TOOL_PODS, DB, (), (5432,)),                                          # 12
     ("ah-core", ("risk-engine",), DB, (), (5432,)),                                    # 13
     ("ah-core", ("executor",), DB, (), (5432,)),                                       # 14
-    ("ah-core", ("executor",), "ah-fakes", ("fake-dso",), (8091,)),                    # 15
-    ("ah-core", ("executor",), "ah-fakes", ("fake-sms",), (8092,)),                    # 15
-    ("ah-core", ("register-sync",), "ah-fakes", ("fake-register",), (8090,)),          # 16
-    ("ah-core", ("register-sync",), DB, (), (5432,)),                                  # 16
     ("ah-staff", ("console",), DB, (), (5432,)),                                       # 18
 }
 DB_SETUP = {"kind": ("ah-data", ("postgres-init",)), "azure": ("ah-core", ("db-migrate",))}
-OPS_NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff", "ah-fakes"}
+OPS_NAMESPACES = {"ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff"}
 CLUSTER_DNS_PATTERNS = ["*.*.svc.cluster.local.", "*.*.svc.cluster.local.*.svc.cluster.local.",
                         "*.*.svc.cluster.local.svc.cluster.local.", "*.*.svc.cluster.local.cluster.local."]
 ENTRA = "login.microsoftonline.com"
@@ -584,7 +574,7 @@ def test_network_edges_are_exactly_the_matrix(env):
 @pytest.mark.parametrize("env", ENVS)
 def test_the_agent_reaches_only_its_three_services(env):
     """The blocking view of the same walls: no edge from the agent to a tool, the database, the
-    risk engine or a fake, and the tools reach nothing but the database."""
+    risk engine, and the tools reach nothing but the database."""
     edges = expected_edges(env)
     assert {(c, d) for a, b, c, d, _ in edges if b == ("agent",)} == {
         ("ah-gateway", ("tool-gateway",)), ("ah-agent", ("llm-gateway",)), ("ah-intake", ("dispatcher",))}
@@ -681,8 +671,7 @@ def test_only_api_callers_reach_kube_apiserver(env):
             if "kube-apiserver" in rule.get("toEntities", []):
                 callers.add((p["metadata"]["namespace"],
                              p["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/name"]))
-    assert callers == {("ah-intake", "dispatcher"), ("ah-gateway", "tool-gateway"), ("ah-agent", "llm-gateway"),
-                       *{("ah-fakes", fake) for fake in FAKES}}
+    assert callers == {("ah-intake", "dispatcher"), ("ah-gateway", "tool-gateway"), ("ah-agent", "llm-gateway")}
     assert {name for _, name in callers} == API_CALLERS
 
 
@@ -820,8 +809,8 @@ def test_db_callers_resolve_the_database_name_on_azure_only(env):
         if c == AZURE_DB_CIDR:
             expected[a] = tuple(sorted(set(expected.get(a, ())) | set(b)))
     assert callers == expected
-    # Blocking view: the agent and llm-gateway namespace and the fakes never resolve it.
-    assert not {"ah-agent", "ah-fakes"} & set(callers)
+    # Blocking view: the agent and llm-gateway namespace never resolve it.
+    assert "ah-agent" not in set(callers)
 
 
 @pytest.mark.parametrize(("env", "setting", "message"), [
@@ -874,7 +863,7 @@ def container_env(deployment: dict) -> dict:
 
 @pytest.mark.parametrize("env", ENVS)
 def test_every_component_has_ops_probes(env):
-    """Every long-running component, the fakes included, serves /healthz on its ops port 9000, and
+    """Every long-running component serves /healthz on its ops port 9000, and
     the kubelet checks it there (liveness restarts a stuck process, readiness keeps it out of its
     Service until it answers)."""
     for name, d in deployments(env).items():
@@ -914,94 +903,19 @@ def test_risk_engine_runs_exactly_one_process(env):
         assert deployments(env, setting)["risk-engine"]["spec"]["replicas"] == 1
 
 
-# --- the fakes check their callers ----------------------------------------------------------
+# --- the executor calls nothing outside ----------------------------------------------------
 
 @pytest.mark.parametrize("env", ENVS)
-def test_fakes_check_callers_with_tokenreview_and_nothing_else(env):
-    """Each fake asks the API server whose token a caller showed (TokenReview), so it gets an API
-    token and exactly that right, and reaches the API server and nothing else outside its
-    namespace. Same on kind and Azure (the fakes stand in for the outside systems in both)."""
-    ds = deployments(env)
-    for fake in FAKES:
-        d = ds[fake]
-        assert d["metadata"]["namespace"] == "ah-fakes"
-        assert container_env(d)["CALLER_AUTH"] == "k8s"
-        [container] = d["spec"]["template"]["spec"]["containers"]
-        assert {"name": "kube-api-token", "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
-                "readOnly": True} in container["volumeMounts"]
-        # No database, no Secret.
-        assert not [e for e in container["env"] if "valueFrom" in e], fake
-    [binding] = objects(env, "ClusterRoleBinding")
-    assert {s["name"] for s in binding["subjects"] if s["namespace"] == "ah-fakes"} == FAKES
-    [role] = objects(env, "ClusterRole")
-    assert role["rules"] == [{"apiGroups": ["authentication.k8s.io"], "resources": ["tokenreviews"],
-                              "verbs": ["create"]}]
-    # No namespaced right for them either.
-    assert all(s["name"] not in FAKES for b in objects(env, "RoleBinding") for s in b["subjects"])
-    # Network: the API server only (Cilium); no NetworkPolicy egress half starts in ah-fakes.
-    assert not [p for p in network_policies(env)
-                if p["metadata"]["namespace"] == "ah-fakes" and "Egress" in p["spec"]["policyTypes"]
-                and p["metadata"]["name"] != "default-deny"]
-    fake_egress = {}
-    for p in cilium_policies(env):
-        if p["metadata"]["namespace"] == "ah-fakes" and p["spec"]["endpointSelector"] and p["spec"].get("egress"):
-            [rule] = p["spec"]["egress"]
-            fake_egress[p["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/name"]] = rule
-    assert set(fake_egress) == FAKES
-    for rule in fake_egress.values():
-        assert rule == {"toEntities": ["kube-apiserver"],
-                        "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}, {"port": "6443", "protocol": "TCP"}]}]}
-
-
-AUDIENCE_CALLERS = {"executor": ["fake-dso", "fake-sms"], "register-sync": ["fake-register"]}
-FAKE_URLS = {
-    "executor": {"DSO_URL": "http://fake-dso.ah-fakes.svc.cluster.local:8091/orders",
-                 "SMS_URL": "http://fake-sms.ah-fakes.svc.cluster.local:8092/messages"},
-    "register-sync": {"REGISTER_URL": "http://fake-register.ah-fakes.svc.cluster.local:8090/protected"},
-}
-
-
-@pytest.mark.parametrize("env", ENVS)
-def test_executor_and_register_sync_show_tokens_for_their_fakes_only(env):
-    """The executor holds tokens for fake-dso and fake-sms, register sync for fake-register, 10
-    minutes each, read-only; nobody else holds a token for a fake's audience."""
-    for name, d in deployments(env).items():
-        spec = d["spec"]["template"]["spec"]
-        audiences = [s["serviceAccountToken"].get("audience") for v in spec.get("volumes", [])
-                     for s in v.get("projected", {}).get("sources", []) if "serviceAccountToken" in s]
-        assert [a for a in audiences if a in FAKES] == AUDIENCE_CALLERS.get(name, []), name
-        if name not in AUDIENCE_CALLERS:
-            continue
-        [volume] = [v for v in spec["volumes"] if v["name"] == "ah-tokens"]
-        assert [s["serviceAccountToken"] for s in volume["projected"]["sources"]] == [
-            {"audience": a, "expirationSeconds": 600, "path": f"{a}/token"} for a in AUDIENCE_CALLERS[name]]
-        [container] = spec["containers"]
-        assert {"name": "ah-tokens", "mountPath": "/var/run/secrets/ah", "readOnly": True} in container["volumeMounts"]
-        env_vars = container_env(d)
-        assert env_vars["CALLER_AUTH"] == "k8s"
-        assert {k: env_vars[k] for k in FAKE_URLS[name]} == FAKE_URLS[name]
-    # The agent's tokens never name a fake.
-    sources = agent_job(env)["spec"]["template"]["spec"]["volumes"][0]["projected"]["sources"]
-    assert not {s["serviceAccountToken"]["audience"] for s in sources} & FAKES
-
-
-@pytest.mark.parametrize("env", ENVS)
-def test_into_the_fakes_only_their_callers_and_monitoring(env):
-    """Ingress into ah-fakes: executor -> fake-dso:8091 and fake-sms:8092, register sync ->
-    fake-register:8090, and Prometheus on 9000. Nothing else."""
-    ingress = set()
-    for p in network_policies(env):
-        if p["metadata"]["namespace"] != "ah-fakes" or p["metadata"]["name"] == "default-deny":
-            continue
-        [rule] = p["spec"]["ingress"]
-        [peer] = rule["from"]
-        ingress.add((peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"],
-                     name_values(peer.get("podSelector", {})), name_values(p["spec"]["podSelector"]),
-                     tuple(x["port"] for x in rule["ports"])))
-    assert ingress == {("ah-core", ("executor",), ("fake-dso",), (8091,)),
-                       ("ah-core", ("executor",), ("fake-sms",), (8092,)),
-                       ("ah-core", ("register-sync",), ("fake-register",), (8090,)),
-                       ("ah-monitoring", (), (), (9000,))}
+def test_the_executor_holds_no_token_and_no_outside_url(env):
+    """The executor writes rows and calls no peer: no projected token volume, no URL in its
+    environment, and its only network edge is the database."""
+    d = deployments(env)["executor"]
+    spec = d["spec"]["template"]["spec"]
+    assert "ah-tokens" not in {v["name"] for v in spec.get("volumes", [])}
+    assert not [k for k in container_env(d) if k.endswith("_URL")]
+    target = {"kind": ("ah-data", ("postgres",)), "azure": (AZURE_DB_CIDR, ())}[env]
+    assert {(c, d_, e) for a, b, c, d_, e in expected_edges(env) if a == "ah-core" and b == ("executor",)} == {
+        (*target, (5432,))}
 
 
 # --- the ops stand-in (kind only, until the application code is merged) -----------------------
@@ -1014,11 +928,7 @@ ENTRY_POINTS = {
     "dispatcher": ["python", "-m", "app.dispatcher.main"],
     "llm-gateway": ["python", "-m", "app.llmgw.main"],
     "executor": ["python", "-m", "app.executor.main"],
-    "register-sync": ["python", "-m", "app.register.sync"],
     "console": ["python", "-m", "app.console.main"],
-    "fake-register": ["python", "-m", "app.fakes.register"],
-    "fake-dso": ["python", "-m", "app.fakes.dso"],
-    "fake-sms": ["python", "-m", "app.fakes.sms"],
 }
 
 

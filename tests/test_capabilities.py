@@ -60,7 +60,7 @@ def test_the_database_setup_job_has_a_manifest_that_matches_its_chart_and_grants
 def test_every_tool_and_the_database_has_a_manifest():
     found = manifests()
     assert set(TOOL_COMPONENTS.values()) <= set(found)
-    assert {"db", "agent", "executor", "risk-engine", "register-sync", "tool-gateway", "llm-gateway"} <= set(found)
+    assert {"db", "agent", "executor", "risk-engine", "tool-gateway", "llm-gateway"} <= set(found)
 
 
 # --- the descriptor fingerprint ---------------------------------------------------------------

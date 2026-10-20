@@ -20,7 +20,7 @@ locals {
 
   # Namespaces whose container logs are collected (the chart's namespaces). kube-system is
   # left out to stay under the workspace's daily cap.
-  log_namespaces = ["ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff", "ah-fakes"]
+  log_namespaces = ["ah-intake", "ah-agent", "ah-gateway", "ah-tools", "ah-core", "ah-staff"]
 
   attack_kinds_kql = join(", ", [for k in var.attack_event_kinds : "\"${k}\""])
 

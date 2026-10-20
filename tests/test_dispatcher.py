@@ -1167,7 +1167,7 @@ def test_the_dispatcher_role_has_column_grants_and_no_more(admin, as_role):
     assert conn.execute("INSERT INTO replies (ticket_id, text) VALUES (1, 'x') RETURNING ticket_id").fetchone() == {"ticket_id": 1}
 
 
-@pytest.mark.parametrize("role", [*[f"tool_{t}" for t in TOOLS], "gateway", "risk_engine", "executor", "register_sync"])
+@pytest.mark.parametrize("role", [*[f"tool_{t}" for t in TOOLS], "gateway", "risk_engine", "executor"])
 def test_no_other_role_can_use_the_runs_the_replies_or_reply_facts(admin, as_role, role):
     conn = as_role(role)
     lease = open_lease(admin, 1)

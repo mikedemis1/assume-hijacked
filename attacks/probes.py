@@ -53,11 +53,7 @@ COMPONENTS: dict[str, tuple[str, str, tuple[int, ...]]] = {
     "tool-set-temp-protection":   ("ah-tools", "tool-set-temp-protection",   (8000, 9000)),
     "risk-engine":         ("ah-core",    "risk-engine",         (8082, 9000)),
     "executor":            ("ah-core",    "executor",            (9000,)),
-    "register-sync":       ("ah-core",    "register-sync",       (9000,)),
     "console":             ("ah-staff",   "console",             (8084, 9000)),
-    "fake-register":       ("ah-fakes",   "fake-register",       (8090, 9000)),
-    "fake-dso":            ("ah-fakes",   "fake-dso",            (8091, 9000)),
-    "fake-sms":            ("ah-fakes",   "fake-sms",            (8092, 9000)),
     "postgres":            ("ah-data",    "postgres",            (5432,)),
 }
 
@@ -70,7 +66,7 @@ COMPONENTS: dict[str, tuple[str, str, tuple[int, ...]]] = {
 #   outside                no labels the walls know: the control for "the internet, DNS and
 #                          the metadata endpoint are reachable at all from this cluster"
 #   monitoring             in ah-monitoring (matrix row 21: Prometheus scrapes port 9000)
-#   stray                  in ah-fakes with a label no edge names: what default-deny alone
+#   stray                  in ah-core with a label no edge names: what default-deny alone
 #                          guards (every component pod is also selected by its edge policies)
 OUTSIDE_NAMESPACE = "ah-probe-outside"
 EXTRA_SOURCES: dict[str, tuple[str, str, tuple[int, ...]]] = {
@@ -79,7 +75,7 @@ EXTRA_SOURCES: dict[str, tuple[str, str, tuple[int, ...]]] = {
     "outside-agent":        (OUTSIDE_NAMESPACE, "agent",        ()),
     "outside":              (OUTSIDE_NAMESPACE, "probe-outside", ()),
     "monitoring":           ("ah-monitoring",   "prometheus",   ()),
-    "stray":                ("ah-fakes",        "stray",        (8092,)),
+    "stray":                ("ah-core",         "stray",        (8092,)),
 }
 
 # Targets that are not components.
@@ -150,8 +146,7 @@ def _everywhere_denied(source: str, extra: tuple[str, ...] = ()) -> list[Probe]:
     return probes
 
 
-FAKES = ("fake-register", "fake-dso", "fake-sms")
-API_CALLERS = ("dispatcher", "tool-gateway", "llm-gateway", *FAKES)
+API_CALLERS = ("dispatcher", "tool-gateway", "llm-gateway")
 TOOLS = tuple(name for name in COMPONENTS if name.startswith("tool-") and name != "tool-gateway")
 
 
@@ -168,9 +163,6 @@ def matrix() -> list[Probe]:
         *[tcp(a, t, DENY, "agent never reaches a tool directly", 8000) for t in TOOLS],
         tcp(a, "postgres", DENY, "agent has no database"),
         tcp(a, "risk-engine", DENY, "agent never reaches the risk engine", 8082),
-        tcp(a, "fake-register", DENY, "agent never reaches the outside systems"),
-        tcp(a, "fake-dso", DENY, "agent never reaches the outside systems"),
-        tcp(a, "fake-sms", DENY, "agent never reaches the outside systems"),
         tcp(a, "console", DENY, "agent never reaches staff", 8084),
         *_everywhere_denied(a),
         dns(a, "example.com.", DENY, "edge-22: names outside cluster.local are refused"),
@@ -186,7 +178,6 @@ def matrix() -> list[Probe]:
         tcp(t, "tool-read-ticket", DENY, "no tool -> tool", 8000),
         tcp(t, "tool-gateway", DENY, "tools never call back into the gateway", 8080),
         tcp(t, "risk-engine", DENY, "tools never reach the risk engine", 8082),
-        tcp(t, "fake-dso", DENY, "tools never reach the outside systems"),
         tcp(t, "dispatcher", DENY, "tools never reach the dispatcher", 8081),
         *_everywhere_denied(t),
     ]
@@ -198,7 +189,6 @@ def matrix() -> list[Probe]:
         tcp(g, "postgres", ALLOW, "edge-11 tool-gateway -> db"),
         tcp(g, KUBE_API, ALLOW, "edge-10 tool-gateway -> API (TokenReview)"),
         tcp(g, "dispatcher", DENY, "not an edge", 8081),
-        tcp(g, "fake-dso", DENY, "not an edge"),
         *_everywhere_denied(g, API_CALLERS),
     ]
     lg = "llm-gateway"
@@ -220,27 +210,15 @@ def matrix() -> list[Probe]:
     m += [
         tcp(r, "postgres", ALLOW, "edge-13 risk-engine -> db"),
         tcp(r, "tool-read-ticket", DENY, "risk engine never reaches a tool", 8000),
-        tcp(r, "fake-dso", DENY, "not an edge"),
         *_everywhere_denied(r),
     ]
     e = "executor"
     m += [
-        tcp(e, "fake-dso", ALLOW, "edge-15 executor -> fake-dso"),
-        tcp(e, "fake-sms", ALLOW, "edge-15 executor -> fake-sms"),
         tcp(e, "postgres", ALLOW, "edge-14 executor -> db"),
-        tcp(e, "fake-register", DENY, "only register-sync reads the register"),
-        tcp(e, "fake-dso", DENY, "ops port of a fake is for ah-monitoring only", 9000),
+        tcp(e, "risk-engine", DENY, "executor never reaches the risk engine", 8082),
         tcp(e, "tool-read-ticket", DENY, "executor never reaches a tool", 8000),
         tcp(e, "tool-gateway", DENY, "executor never calls the gateway", 8080),
         *_everywhere_denied(e),
-    ]
-    s = "register-sync"
-    m += [
-        tcp(s, "fake-register", ALLOW, "edge-16 register-sync -> fake-register"),
-        tcp(s, "postgres", ALLOW, "edge-16 register-sync -> db"),
-        tcp(s, "fake-dso", DENY, "not an edge"),
-        tcp(s, "fake-sms", DENY, "only the executor sends messages"),
-        *_everywhere_denied(s),
     ]
     c = "console"
     m += [
@@ -249,28 +227,6 @@ def matrix() -> list[Probe]:
         tcp(c, "tool-gateway", DENY, "staff never call the gateway", 8080),
         *_everywhere_denied(c),
     ]
-    f = "fake-sms"
-    m += [
-        tcp(f, "postgres", DENY, "the outside systems never reach in"),
-        tcp(f, "tool-gateway", DENY, "the outside systems never reach in", 8080),
-        tcp(f, "fake-dso", DENY, "the outside systems never reach each other"),
-        tcp(f, "dispatcher", DENY, "the outside systems never reach in", 8081),
-        tcp(f, "executor", DENY, "the outside systems never call back", 9000),
-        *_everywhere_denied(f, API_CALLERS),
-    ]
-    # Each fake checks its caller's token with a TokenReview: the API server, and nothing else.
-    for fake in FAKES:
-        m.append(tcp(fake, KUBE_API, ALLOW, "edge-tokenreview fake -> API (TokenReview of its caller)"))
-    m += [
-        tcp("fake-dso", "executor", DENY, "the outside systems never call back", 9000),
-        tcp("fake-register", "register-sync", DENY, "the outside systems never call back", 9000),
-    ]
-    for fake in ("fake-register", "fake-dso"):
-        m += [
-            tcp(fake, "postgres", DENY, "the outside systems never reach in"),
-            tcp(fake, "fake-sms", DENY, "the outside systems never reach each other"),
-            *_everywhere_denied(fake, API_CALLERS),
-        ]
     p = "postgres"
     m += [
         tcp(p, "tool-read-ticket", DENY, "the database never calls out", 8000),
@@ -293,13 +249,10 @@ def matrix() -> list[Probe]:
         tcp("monitoring", "tool-read-ticket", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
         tcp("monitoring", "tool-gateway", DENY, "ah-monitoring reaches the ops port only", 8080),
         tcp("monitoring", "console", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
-        tcp("monitoring", "fake-dso", ALLOW, "edge-21 ah-monitoring -> ops port of a fake", 9000),
         tcp("monitoring", "executor", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
-        tcp("monitoring", "register-sync", ALLOW, "edge-21 ah-monitoring -> ops port", 9000),
-        tcp("monitoring", "fake-dso", DENY, "ah-monitoring reaches the ops port only", 8091),
         tcp("outside", "stray", DENY, "default-deny: a pod no edge names takes no connection", 8092),
         tcp("stray", INTERNET, DENY, "default-deny: a pod no edge names opens no connection"),
-        tcp("stray", "fake-dso", DENY, "default-deny: a pod no edge names opens no connection", 8091),
+        tcp("stray", "postgres", DENY, "default-deny: a pod no edge names opens no connection"),
         dns("stray", CLUSTER_NAME, ALLOW, "control: the pod runs and its DNS works"),
     ]
     return m

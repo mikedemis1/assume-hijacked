@@ -40,10 +40,6 @@
       },
       {
         "role": "Key Vault Secrets Officer",
-        "scope": "kv-register-sync"
-      },
-      {
-        "role": "Key Vault Secrets Officer",
         "scope": "kv-risk-engine"
       },
       {

@@ -83,18 +83,14 @@ variable "service_account_namespaces" {
   description = "Namespace of each component's ServiceAccount (the Helm chart's layout). Components named tool-* that are not listed here run in ah-tools."
   type        = map(string)
   default = {
-    dispatcher      = "ah-intake"
-    agent           = "ah-agent"
-    "llm-gateway"   = "ah-agent"
-    "tool-gateway"  = "ah-gateway"
-    "risk-engine"   = "ah-core"
-    executor        = "ah-core"
-    "register-sync" = "ah-core"
-    "db-migrate"    = "ah-core"
-    console         = "ah-staff"
-    "fake-register" = "ah-fakes"
-    "fake-dso"      = "ah-fakes"
-    "fake-sms"      = "ah-fakes"
+    dispatcher     = "ah-intake"
+    agent          = "ah-agent"
+    "llm-gateway"  = "ah-agent"
+    "tool-gateway" = "ah-gateway"
+    "risk-engine"  = "ah-core"
+    executor       = "ah-core"
+    "db-migrate"   = "ah-core"
+    console        = "ah-staff"
   }
 }
 

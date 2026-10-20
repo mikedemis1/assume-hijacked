@@ -67,7 +67,7 @@ def test_lease_scope_answers_for_live_leases_only(admin, as_role):
 
 
 @pytest.mark.parametrize(
-    "role", TOOL_ROLES + ["executor", "approver", "risk_engine", "register_sync", "gateway"]
+    "role", TOOL_ROLES + ["executor", "approver", "risk_engine", "gateway"]
 )
 def test_only_dispatcher_opens_and_revokes_and_only_gateway_and_dispatcher_read_scope(admin, as_role, role):
     lease = open_lease(admin, 1, ["read_ticket"])

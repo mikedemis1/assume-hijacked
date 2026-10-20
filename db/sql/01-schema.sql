@@ -4,7 +4,7 @@
 -- function added later starts closed even if its file forgets the REVOKE. Default privileges are
 -- per database, which is why this is here and not in 02-roles.sql.
 -- (tests/test_lease.py: test_no_function_in_public_is_executable_by_public)
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres, api_owner, lease_owner, flags_writer, flags_admin, flags_remover,
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres, api_owner, lease_owner, flags_writer, flags_remover,
     risk_owner
     REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 

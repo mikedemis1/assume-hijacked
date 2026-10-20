@@ -1,7 +1,6 @@
 {{- /*
 TokenReview: the services that check a caller's projected token (audience and identity) ask the
-API server whose token it is. The three the agent calls (tool gateway, LLM gateway, dispatcher)
-and the three fakes of the outside systems (their callers are the executor and register sync).
+API server whose token it is. The three the agent calls (tool gateway, LLM gateway, dispatcher).
 That is the only cluster-wide right in the chart.
 */ -}}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -29,6 +28,3 @@ subjects:
   - {kind: ServiceAccount, name: tool-gateway, namespace: ah-gateway}
   - {kind: ServiceAccount, name: llm-gateway, namespace: ah-agent}
   - {kind: ServiceAccount, name: dispatcher, namespace: ah-intake}
-  - {kind: ServiceAccount, name: fake-register, namespace: ah-fakes}
-  - {kind: ServiceAccount, name: fake-dso, namespace: ah-fakes}
-  - {kind: ServiceAccount, name: fake-sms, namespace: ah-fakes}

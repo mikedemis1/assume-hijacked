@@ -90,9 +90,7 @@
   "network": {
     "ingress_from": [],
     "egress_to": [
-      "db",
-      "fake-dso",
-      "fake-sms"
+      "db"
     ],
     "dns": [
       "cluster"

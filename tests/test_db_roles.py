@@ -313,7 +313,7 @@ def test_every_login_role_has_a_connection_limit(admin):  # gap I9
         **{role: 5 for role in TOOL_ROLES},
         "executor": 3,
         "approver": 5,
-        **{role: 5 for role in ("gateway", "risk_engine", "dispatcher", "register_sync")},
+        **{role: 5 for role in ("gateway", "risk_engine", "dispatcher")},
     }
 
 

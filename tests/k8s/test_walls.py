@@ -121,7 +121,7 @@ def walls(tmp_path_factory):
         # A new policy takes a moment to be enforced: wait until each one refuses its probe. No
         # failure here when one never does: the tests of that policy then fail by name.
         probes = {
-            "ah-images-pinned": pod("ah-fakes", "fake-sms", container={"image": "busybox:1.37"}),
+            "ah-images-pinned": pod("ah-core", "executor", container={"image": "busybox:1.37"}),
             "ah-sandbox-runtime": pod("ah-tools", "tool-read-ticket", runtimeClassName=None),
             "ah-agent-job-template": JOB_CHANGES["run as the llm-gateway ServiceAccount"](ticket_job()),
         }
@@ -176,18 +176,18 @@ def test_cilium_accepted_every_policy(get):
     "postgres:17-alpine@sha256:" + "a" * 64,                         # upstream name, other digest
 ])
 def test_admission_rejects_unpinned_image(image):
-    admitted, error = admit(pod("ah-fakes", "fake-sms", container={"image": image}))
+    admitted, error = admit(pod("ah-core", "executor", container={"image": image}))
     assert not admitted
     assert "ah-images-pinned" in error
     # Init containers are checked too.
-    init = {"name": "init", "image": image, "securityContext": pod("ah-fakes", "x")["spec"]["containers"][0]["securityContext"]}
-    admitted, error = admit(pod("ah-fakes", "fake-sms", initContainers=[init]))
+    init = {"name": "init", "image": image, "securityContext": pod("ah-core", "x")["spec"]["containers"][0]["securityContext"]}
+    admitted, error = admit(pod("ah-core", "executor", initContainers=[init]))
     assert not admitted and "ah-images-pinned" in error
 
 
 def test_admission_admits_pinned_images():
     """Control: the registry by digest, and on kind the exact upstream Postgres image."""
-    assert admit(pod("ah-fakes", "fake-sms")) == (True, "")
+    assert admit(pod("ah-core", "executor")) == (True, "")
     postgres = next(o for o in yaml.safe_load_all(helm("template", "kind").stdout)
                     if o and o["kind"] == "StatefulSet")["spec"]["template"]["spec"]["containers"][0]["image"]
     assert admit(pod("ah-data", "postgres", container={"image": postgres})) == (True, "")
@@ -231,15 +231,15 @@ PRIVILEGED = {
 def test_admission_rejects_privileged_pod(case):
     spec = json.loads(json.dumps(PRIVILEGED[case]))
     if "container" in spec:
-        base = pod("ah-fakes", "fake-sms")["spec"]["containers"][0]
+        base = pod("ah-core", "executor")["spec"]["containers"][0]
         sc = {**base["securityContext"], **spec["container"].pop("securityContext", {})}
         spec["container"] = {**spec["container"], "securityContext": sc}
-    probe = pod("ah-fakes", "fake-sms", **spec)
+    probe = pod("ah-core", "executor", **spec)
     # With Pod Security "restricted" on the namespace (the first wall to answer).
     admitted, error = admit(probe)
     assert not admitted, case
     # With the namespace's Pod Security labels switched to privileged, the policy still refuses.
-    set_enforce = lambda level: kubectl("label", "namespace", "ah-fakes", "--overwrite",  # noqa: E731
+    set_enforce = lambda level: kubectl("label", "namespace", "ah-core", "--overwrite",  # noqa: E731
                                         f"pod-security.kubernetes.io/enforce={level}")
     assert set_enforce("privileged").returncode == 0
     try:
@@ -247,7 +247,7 @@ def test_admission_rejects_privileged_pod(case):
         assert not admitted, case
         assert "ah-no-host-access" in error, error
         # Control: an ordinary restricted pod is still admitted.
-        assert admit(pod("ah-fakes", "fake-sms")) == (True, "")
+        assert admit(pod("ah-core", "executor")) == (True, "")
     finally:
         assert set_enforce("restricted").returncode == 0
 
@@ -335,7 +335,7 @@ def test_admission_rejects_agent_job_off_template(change):
 # A probe aims at the target pod's IP, so it needs no Service and no app.
 #
 # Mutation proofs: AH_WALLS_MUTATION="<kubectl args>" runs one kubectl command once the probe pods
-# are up (e.g. "delete networkpolicy default-deny --namespace ah-fakes"); the named edges must go
+# are up (e.g. "delete networkpolicy default-deny --namespace ah-core"); the named edges must go
 # red. The walls fixture deletes every wall at the end, so the next run starts from the chart.
 
 PROBE_LABEL = "ah/probe"
@@ -546,8 +546,8 @@ def test_probe_pod_search_list_is_the_cluster_suffixes_only(probe_pods):
 
 
 ALLOW_ALL = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
-             "metadata": {"name": "probe-allow-all-egress", "namespace": "ah-fakes"},
-             "spec": {"podSelector": {"matchLabels": {PROBE_LABEL: "fake-sms"}}, "policyTypes": ["Egress"],
+             "metadata": {"name": "probe-allow-all-egress", "namespace": "ah-core"},
+             "spec": {"podSelector": {"matchLabels": {PROBE_LABEL: "executor"}}, "policyTypes": ["Egress"],
                       "egress": [{}]}}
 
 
@@ -557,20 +557,20 @@ def test_metadata_endpoint_denied_even_with_an_allow_all_policy(probe_pods, addr
     opens the internet, so it is in force."""
     assert kubectl("apply", "-f", "-", stdin=json.dumps(ALLOW_ALL)).returncode == 0
     try:
-        plan = [probes.tcp("fake-sms", probes.INTERNET, probes.ALLOW, "control: allow-all is in force"),
-                probes.tcp("fake-sms", probes.IMDS, probes.DENY, "deny-instance-metadata beats allow-all")]
+        plan = [probes.tcp("executor", probes.INTERNET, probes.ALLOW, "control: allow-all is in force"),
+                probes.tcp("executor", probes.IMDS, probes.DENY, "deny-instance-metadata beats allow-all")]
         results = {}
         for _ in range(5):  # the new policy takes a moment
             results = {r["edge"]: r for r in run_matrix(plan, probe_pods, addresses)}
-            if results["fake-sms -> internet:443"]["observed"] == probes.ALLOW:
+            if results["executor -> internet:443"]["observed"] == probes.ALLOW:
                 break
             time.sleep(2)
-        assert results["fake-sms -> internet:443"]["observed"] == probes.ALLOW, results
-        assert results["fake-sms -> imds:80"]["observed"] == probes.DENY, results
+        assert results["executor -> internet:443"]["observed"] == probes.ALLOW, results
+        assert results["executor -> imds:80"]["observed"] == probes.DENY, results
         # On kind nothing answers at 169.254.169.254, so a timeout alone proves little: Hubble
         # must show the policy dropped it, and POLICY_DENY (an explicit deny rule) rather than
         # POLICY_DENIED (no allow): the egressDeny did it, not a missing allow.
-        verdicts = tcp_verdicts(hubble(probe_pods, "fake-sms", "--to-ip", "169.254.169.254"), "169.254.169.254", 80)
+        verdicts = tcp_verdicts(hubble(probe_pods, "executor", "--to-ip", "169.254.169.254"), "169.254.169.254", 80)
         assert verdicts == {("DROPPED", "POLICY_DENY")}, verdicts
     finally:
         kubectl("delete", "-f", "-", "--ignore-not-found", stdin=json.dumps(ALLOW_ALL))
@@ -617,10 +617,10 @@ def test_only_the_llm_gateway_reaches_its_llm_api(probe_pods, addresses, probe_r
 # --- admission on running pods: ephemeral containers and pod updates ----------------------------
 
 def ephemeral(probe_pods: dict, image: str, **security) -> tuple[bool, str]:
-    """Server-side dry run of adding an ephemeral (debug) container to the running fake-sms probe."""
-    target = probe_pods["fake-sms"]
+    """Server-side dry run of adding an ephemeral (debug) container to the running executor probe."""
+    target = probe_pods["executor"]
     live = kubectl_json("--namespace", target["namespace"], "get", "pod", target["name"])
-    sc = {**pod("ah-fakes", "x")["spec"]["containers"][0]["securityContext"], **security}
+    sc = {**pod("ah-core", "x")["spec"]["containers"][0]["securityContext"], **security}
     live["spec"]["ephemeralContainers"] = [{"name": "debug", "image": image, "command": ["sh"],
                                             "securityContext": sc}]
     url = f"/api/v1/namespaces/{target['namespace']}/pods/{target['name']}/ephemeralcontainers?dryRun=All"
@@ -640,7 +640,7 @@ def test_admission_rejects_ephemeral_container_off_the_rules(probe_pods):
 
 def test_admission_rejects_image_swap_on_a_running_pod(probe_pods):
     """kubectl set image on a running pod is a pod UPDATE: the image policy checks it too."""
-    target = probe_pods["fake-sms"]
+    target = probe_pods["executor"]
 
     def set_image(image: str) -> subprocess.CompletedProcess:
         return kubectl("--namespace", target["namespace"], "set", "image", f"pod/{target['name']}",

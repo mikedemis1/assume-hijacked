@@ -8,7 +8,7 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO
     tool_read_ticket, tool_lookup_account, tool_request_disconnection,
     tool_issue_bill_credit, tool_set_temp_protection, executor, approver,
-    gateway, risk_engine, dispatcher, register_sync, api_owner, lease_owner, risk_owner;
+    gateway, risk_engine, dispatcher, api_owner, lease_owner, risk_owner;
 
 -- Tools: no table, column or sequence grant at all. Each tool role may only EXECUTE its one
 -- api_* function, which answers for the ticket of a live lease (05-lease.sql).

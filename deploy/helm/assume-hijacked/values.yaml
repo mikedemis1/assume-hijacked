@@ -8,7 +8,7 @@
 env: kind
 
 # Every image by digest; the schema refuses a tag-only reference.
-#   app       the one application image (all components, the agent Job and the fakes)
+#   app       the one application image (all components and the agent Job)
 #   postgres  kind: the database; also the psql client of the init Job / db-migrate Job
 #   azureCli  azure only: db-migrate exchanges its workload identity token for an Entra token
 images:

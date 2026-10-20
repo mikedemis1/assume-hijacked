@@ -13,12 +13,10 @@ CREATE ROLE approver                   LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_ap
 CREATE ROLE gateway                    LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_gateway';
 CREATE ROLE risk_engine                LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_risk_engine';
 CREATE ROLE dispatcher                 LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_dispatcher';
-CREATE ROLE register_sync              LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_register_sync';
 -- Owners of SECURITY DEFINER functions. Nobody logs in as them; a function runs with its owner's
 -- privileges, so each owner holds only what its functions read and write.
 --   api_owner    the five tool functions (05-lease.sql)
 --   lease_owner  open_lease, revoke_lease, lease_scope (05-lease.sql)
---   flags_admin  the register sync functions, which only add flags (07-register.sql)
 --   flags_remover the flag removal functions (07-register.sql); the only role with DELETE on flags
 --   risk_owner   the risk objects: pause_agents, resume_agents (SECURITY DEFINER), and
 --                required_approvals, check_approval_floor (06-risk.sql)
@@ -27,7 +25,6 @@ CREATE ROLE register_sync              LOGIN CONNECTION LIMIT 5 PASSWORD :'pw_re
 CREATE ROLE flags_writer               NOLOGIN;
 CREATE ROLE api_owner                  NOLOGIN;
 CREATE ROLE lease_owner                NOLOGIN;
-CREATE ROLE flags_admin                NOLOGIN;
 CREATE ROLE flags_remover              NOLOGIN;
 CREATE ROLE risk_owner                 NOLOGIN;
 

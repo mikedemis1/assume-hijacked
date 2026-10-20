@@ -1,25 +1,20 @@
-"""The protection flags and who may change them (db/sql/07-register.sql, app/register/sync.py).
+"""The protection flags and who may change them (db/sql/07-register.sql).
 
 A flag says "someone in this home depends on electricity" (life-support equipment). It is the one
 thing that must never be lost: no flag and a fresh register means the home can be disconnected.
 
-  register-sync   ADDS flags from the state register, and marks the register as freshly synced.
-                  It cannot remove, move or read a flag.
   staff           REMOVE a flag only by request plus two distinct SeniorApprover approvals; the
                   second approval deletes the flag and raises an ALERT.
   anyone else     nothing. Only the removal function's owner holds DELETE on flags, and a trigger
                   refuses any other DELETE or UPDATE even with a grant added by mistake.
 """
 
-import json
 import threading
 import time
 
 import psycopg
 import pytest
 
-from app.common.ops import Heartbeat, Metrics
-from app.register import sync
 
 # Staff are named by their Entra object id (a UUID), so one person has one spelling.
 SENIOR_A = "0f8a3c1e-2b4d-4e6f-8a1b-3c5d7e9f0a11"
@@ -33,10 +28,6 @@ def flags(admin):
     return {r["supply_point_id"]: r["source"] for r in admin.execute("SELECT supply_point_id, source FROM flags")}
 
 
-def last_success(admin):
-    return admin.execute("SELECT last_success FROM register_sync WHERE id = 1").fetchone()["last_success"]
-
-
 def alerts(admin):
     return admin.execute("SELECT actor, detail FROM events WHERE kind = 'ALERT' ORDER BY id").fetchall()
 
@@ -44,11 +35,6 @@ def alerts(admin):
 def login_roles(admin, exclude=()):
     rows = admin.execute("SELECT rolname FROM pg_roles WHERE rolcanlogin AND NOT rolsuper ORDER BY rolname")
     return [r["rolname"] for r in rows if r["rolname"] not in exclude]
-
-
-@pytest.fixture
-def syncer(as_role):
-    return as_role("register_sync")
 
 
 @pytest.fixture
@@ -62,56 +48,6 @@ def request_removal(staff, sp="SP-1003", reason=REASON, by=REQUESTER):
 
 def approve_removal(staff, request_id, who):
     return staff.execute("SELECT approve_flag_removal(%s, %s) AS done", (request_id, who)).fetchone()["done"]
-
-
-# --- register-sync: add only ---
-
-def add_flag(syncer, sp):
-    return syncer.execute("SELECT sync_add_flag(%s, 'state_register') AS s", (sp,)).fetchone()["s"]
-
-
-def test_sync_can_only_add_flags(admin, syncer):
-    admin.execute("UPDATE register_sync SET last_success = now() - interval '30 hours'")
-    assert add_flag(syncer, "SP-1001") == "added"
-    assert add_flag(syncer, "SP-1001") == "present"  # again: still one flag
-    assert add_flag(syncer, "SP-1003") == "present"  # already there: unchanged
-    assert flags(admin) == {"SP-1001": "state_register", "SP-1003": "state_register"}
-    syncer.execute("SELECT sync_heartbeat()")
-    fresh = admin.execute("SELECT last_success > now() - interval '1 minute' AS ok FROM register_sync").fetchone()
-    assert fresh["ok"] is True
-    # Every other way to touch the flags or the sync time is closed to it.
-    refused = []
-    for statement in (
-        "SELECT * FROM flags",
-        "INSERT INTO flags (supply_point_id, source) VALUES ('SP-1002', 'state_register')",
-        "UPDATE flags SET supply_point_id = 'SP-1002'",
-        "DELETE FROM flags",
-        "TRUNCATE flags",
-        "UPDATE register_sync SET last_success = now() + interval '1 year'",
-        f"SELECT request_flag_removal('SP-1003', 'x', '{REQUESTER}')",
-        f"SELECT approve_flag_removal(1, '{SENIOR_A}')",
-    ):
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            syncer.execute(statement)
-        refused.append(statement)
-    assert len(refused) == 8
-    assert flags(admin) == {"SP-1001": "state_register", "SP-1003": "state_register"}
-
-
-def test_sync_cannot_delete_flag(admin, syncer):
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        syncer.execute("DELETE FROM flags WHERE supply_point_id = 'SP-1003'")
-    # A DELETE grant added by mistake: the trigger behind the grants still refuses.
-    with admin.transaction(force_rollback=True):
-        admin.execute("GRANT SELECT, DELETE, UPDATE ON flags TO register_sync")
-        admin.execute("SET SESSION AUTHORIZATION register_sync")
-        for statement in ("DELETE FROM flags WHERE supply_point_id = 'SP-1003'",
-                          "UPDATE flags SET supply_point_id = 'SP-1002' WHERE supply_point_id = 'SP-1003'"):
-            with pytest.raises(psycopg.errors.RaiseException, match="flags"):
-                with admin.transaction():
-                    admin.execute(statement)
-        admin.execute("RESET SESSION AUTHORIZATION")
-    assert flags(admin) == {"SP-1003": "state_register"}
 
 
 @pytest.mark.parametrize("statement", ["DELETE FROM flags", "UPDATE flags SET supply_point_id = 'SP-1002'",
@@ -135,35 +71,6 @@ def test_nobody_but_the_removal_function_owner_holds_delete_on_flags(admin):
         "AND (has_table_privilege(oid, 'flags', 'UPDATE') OR has_table_privilege(oid, 'flags', 'TRUNCATE'))"
     ).fetchall()
     assert rows == []
-
-
-def test_sync_add_flag_answers_unknown_for_a_home_it_does_not_serve(admin, syncer):
-    # No error: an error message would carry the home id into the server log every 30 s, and being
-    # on the life-support register is health data. The sync counts the answer instead.
-    assert add_flag(syncer, "SP-9999") == "unknown"
-    assert flags(admin) == {"SP-1003": "state_register"}
-
-
-def test_sync_add_flag_refuses_free_text_sources_without_echoing_them(admin, syncer):
-    for source in ("", "Life support: oxygen concentrator", "x" * 41, None):
-        with pytest.raises(psycopg.errors.RaiseException, match="source") as refused:
-            syncer.execute("SELECT sync_add_flag('SP-1001', %s)", (source,))
-        assert "oxygen" not in str(refused.value) and "SP-1001" not in str(refused.value)
-    assert flags(admin) == {"SP-1003": "state_register"}
-
-
-def test_sync_add_flag_takes_the_home_lock(admin, syncer):
-    # The executor holds this lock from its protection check to the order (and the order trigger
-    # takes it too), so a flag from the register cannot land in between.
-    syncer.execute("SET lock_timeout = '300ms'")
-    admin.execute("SELECT pg_advisory_lock(hashtext('SP-1001'))")
-    try:
-        with pytest.raises(psycopg.errors.LockNotAvailable):
-            syncer.execute("SELECT sync_add_flag('SP-1001', 'state_register')")
-    finally:
-        admin.execute("SELECT pg_advisory_unlock_all()")
-    syncer.execute("SELECT sync_add_flag('SP-1001', 'state_register')")  # control: lock free
-    assert "SP-1001" in flags(admin)
 
 
 def test_request_flag_removal_takes_the_home_lock(admin, staff):
@@ -191,18 +98,6 @@ def test_a_request_for_another_home_does_not_wait_for_the_lock(admin, staff):
     finally:
         admin.execute("SELECT pg_advisory_unlock_all()")
 
-
-def test_sync_heartbeat_marks_the_register_fresh(admin, syncer):
-    admin.execute("UPDATE register_sync SET last_success = now() - interval '30 hours'")
-    before = last_success(admin)
-    syncer.execute("SELECT sync_heartbeat()")
-    assert last_success(admin) > before
-    admin.execute("DELETE FROM register_sync")  # no row at all: the heartbeat writes it
-    syncer.execute("SELECT sync_heartbeat()")
-    assert admin.execute("SELECT count(*) AS n FROM register_sync").fetchone()["n"] == 1
-
-
-# --- removing a flag: two distinct seniors ---
 
 def test_flag_removal_needs_two_distinct_seniors_and_alerts(admin, staff):
     rid = request_removal(staff)
@@ -286,13 +181,13 @@ def closed(admin, rid):
     return row["done"], row["closed_reason"]
 
 
-def test_a_stale_removal_request_cannot_remove_a_flag_added_later(admin, staff, syncer):
-    # Two requests for the same home. The first removes the flag, the register adds it back, and
+def test_a_stale_removal_request_cannot_remove_a_flag_added_later(admin, staff):
+    # Two requests for the same home. The first removes the flag, the flag is added back, and
     # the second must not remove the new flag: it was raised against the old one.
     first, second = request_removal(staff), request_removal(staff, reason="second request")
     approve_removal(staff, first, SENIOR_A)
     assert approve_removal(staff, first, SENIOR_B) is True
-    assert add_flag(syncer, "SP-1003") == "added"
+    admin.execute("INSERT INTO flags (supply_point_id, source) VALUES ('SP-1003', 'state_register')")
     for who in (SENIOR_A, SENIOR_B):
         with pytest.raises(psycopg.errors.RaiseException, match="closed"):
             approve_removal(staff, second, who)
@@ -384,8 +279,6 @@ def test_only_the_approver_role_can_remove_flags(admin, as_role, staff, call):
 
 REGISTER_FUNCTIONS = {
     # signature: (owner, callers)
-    "sync_add_flag(text,text)": ("flags_admin", {"register_sync"}),
-    "sync_heartbeat()": ("flags_admin", {"register_sync"}),
     "request_flag_removal(text,text,text)": ("flags_remover", {"approver"}),
     "approve_flag_removal(integer,text)": ("flags_remover", {"approver"}),
 }
@@ -411,8 +304,6 @@ def test_register_functions_are_definers_with_a_fixed_search_path_and_named_call
 @pytest.mark.parametrize(
     "signature, call",
     [
-        ("sync_add_flag(text,text)", "sync_add_flag('SP-1001', 'state_register')"),
-        ("sync_heartbeat()", "sync_heartbeat()"),
         ("request_flag_removal(text,text,text)", f"request_flag_removal('SP-1003', 'r', '{REQUESTER}')"),
         ("approve_flag_removal(integer,text)", f"approve_flag_removal(1, '{SENIOR_A}')"),
     ],
@@ -427,16 +318,12 @@ def test_register_functions_check_the_caller_not_only_the_grant(admin, signature
         admin.execute("RESET SESSION AUTHORIZATION")
 
 
-def test_the_adding_owner_cannot_delete_and_the_removing_owner_cannot_add(admin):
-    # Two owners on purpose: the function register-sync calls runs as a role that cannot delete.
-    privileges = {
-        role: admin.execute(
-            "SELECT has_any_column_privilege(%s, 'flags', 'INSERT') AS ins, has_table_privilege(%s, 'flags', 'DELETE') AS del",
-            (role, role),
-        ).fetchone()
-        for role in ("flags_admin", "flags_remover")
-    }
-    assert privileges == {"flags_admin": {"ins": True, "del": False}, "flags_remover": {"ins": False, "del": True}}
+def test_the_removing_owner_can_delete_but_not_add(admin):
+    row = admin.execute(
+        "SELECT has_any_column_privilege('flags_remover', 'flags', 'INSERT') AS ins, "
+        "has_table_privilege('flags_remover', 'flags', 'DELETE') AS del"
+    ).fetchone()
+    assert row == {"ins": False, "del": True}
 
 
 @pytest.mark.parametrize("table", ["flags", "register_sync", "flag_removal_requests", "flag_removal_approvals"])
@@ -445,95 +332,3 @@ def test_rls_is_forced_on_the_register_tables(admin, table):
         "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = %s AND relkind = 'r'", (table,)
     ).fetchone()
     assert row == {"relrowsecurity": True, "relforcerowsecurity": True}
-
-
-# --- app/register/sync.py: the loop ---
-
-def test_parse_register_takes_a_list_of_supply_point_ids():
-    assert sync.parse_register(json.dumps({"protected": ["SP-1003", "SP-1001"]}).encode()) == ["SP-1003", "SP-1001"]
-    assert sync.parse_register(b'{"protected": []}') == []
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [b"", b"not json", b"[]", b'{"protected": "SP-1003"}', b'{"protected": [1]}', b'{"other": []}',
-     b'{"protected": ["SP 1003"]}', b'{"protected": ["' + b"S" * 33 + b'"]}', b'{"protected": [""]}'],
-)
-def test_parse_register_refuses_anything_else(raw):
-    with pytest.raises(sync.RegisterError):
-        sync.parse_register(raw)
-
-
-def poll(conn, fetch, metrics=None, heartbeat=None):
-    sync.poll(conn, fetch, metrics or Metrics(), heartbeat or Heartbeat())
-
-
-def test_poll_adds_the_register_flags_and_marks_the_sync(admin, syncer):
-    admin.execute("UPDATE register_sync SET last_success = now() - interval '30 hours'")
-    before = last_success(admin)
-    metrics = Metrics()
-    poll(syncer, lambda: ["SP-1001", "SP-9999", "SP-1003"], metrics)
-    assert flags(admin) == {"SP-1001": "state_register", "SP-1003": "state_register"}
-    assert last_success(admin) > before
-    lines = metrics.render().splitlines()
-    assert 'register_sync_flags_total{outcome="added"} 1' in lines
-    assert 'register_sync_flags_total{outcome="present"} 1' in lines
-    assert 'register_sync_flags_total{outcome="unknown"} 1' in lines
-    beat = admin.execute("SELECT component FROM heartbeats").fetchall()
-    assert beat == [{"component": "register-sync"}]
-
-
-@pytest.mark.parametrize("failure", [sync.RegisterError("bad"), OSError("down"), TimeoutError()])
-def test_poll_does_not_mark_the_sync_when_the_register_fails(admin, syncer, failure):
-    # Fail closed: the register age keeps growing, and after 24 hours every home counts as UNKNOWN.
-    admin.execute("UPDATE register_sync SET last_success = now() - interval '30 hours'")
-    before = last_success(admin)
-    metrics = Metrics()
-
-    def broken():
-        raise failure
-
-    poll(syncer, broken, metrics)
-    assert last_success(admin) == before
-    assert 'register_sync_errors_total{stage="fetch"} 1' in metrics.render().splitlines()
-    # The process itself is alive, so it still beats.
-    assert admin.execute("SELECT count(*) AS n FROM heartbeats").fetchone()["n"] == 1
-
-
-def test_poll_never_removes_a_flag_the_register_no_longer_lists(admin, syncer):
-    poll(syncer, lambda: [])
-    assert flags(admin) == {"SP-1003": "state_register"}
-
-
-def test_fetch_register_against_the_fake(run_register):
-    url = f"http://127.0.0.1:{run_register.port}/protected"
-    token = {"Authorization": "Bearer sync-token"}
-    assert sync.fetch_register(url, token, timeout_s=5) == ["SP-1003"]
-    with pytest.raises(OSError):                                       # the fake wants the caller's token
-        sync.fetch_register(url, {}, timeout_s=5)
-
-
-def test_fetch_register_refuses_a_huge_answer(monkeypatch):
-    monkeypatch.setattr(sync, "MAX_BODY_BYTES", 10)
-    monkeypatch.setattr(sync.calls, "get_json", lambda url, headers, timeout_s, max_bytes: b"x" * (max_bytes + 1))
-    with pytest.raises(sync.RegisterError, match="too big"):
-        sync.fetch_register("http://register/protected", {}, timeout_s=1)
-
-
-@pytest.fixture
-def run_register(monkeypatch):
-    from app.fakes import FAKES, start_fake
-
-    monkeypatch.delenv("FAKE_REGISTER_PROTECTED", raising=False)
-    def review(token, audience):
-        return FAKES["register"].caller if (token, audience) == ("sync-token", "fake-register") else None
-
-    server = start_fake(FAKES["register"], port=0, mode="k8s", verifier=review, host="127.0.0.1")
-    yield server
-    server.shutdown()
-
-
-def test_register_sync_needs_its_register_url(monkeypatch):
-    monkeypatch.delenv("REGISTER_URL", raising=False)
-    with pytest.raises(SystemExit, match="REGISTER_URL"):
-        sync.main()

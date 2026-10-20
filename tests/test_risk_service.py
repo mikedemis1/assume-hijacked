@@ -576,7 +576,6 @@ COMPONENTS = {
     "executor": "executor",
     "risk_engine": "risk-engine",
     "dispatcher": "dispatcher",
-    "register_sync": "register-sync",
     "gateway": "tool-gateway",
 }
 

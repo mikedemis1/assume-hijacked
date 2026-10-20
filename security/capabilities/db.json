@@ -188,39 +188,6 @@
         ]
       },
       {
-        "role": "flags_admin",
-        "login": false,
-        "schemas": {
-          "public": [
-            "USAGE"
-          ]
-        },
-        "tables": {
-          "flags": [
-            "INSERT (source, supply_point_id)",
-            "SELECT (supply_point_id)"
-          ],
-          "register_sync": [
-            "SELECT",
-            "INSERT (id, last_success)",
-            "UPDATE (last_success)"
-          ],
-          "supply_points": [
-            "SELECT (id)"
-          ]
-        },
-        "execute": [
-          "pg_catalog.pg_advisory_xact_lock(bigint)"
-        ],
-        "owns": [
-          "FUNCTION sync_add_flag(text, text) SECURITY DEFINER",
-          "FUNCTION sync_heartbeat() SECURITY DEFINER"
-        ],
-        "default_privileges": [
-          "ON FUNCTIONS REVOKE EXECUTE FROM PUBLIC"
-        ]
-      },
-      {
         "role": "flags_remover",
         "login": false,
         "schemas": {
@@ -296,12 +263,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -322,12 +287,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -348,12 +311,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -374,12 +335,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -400,12 +359,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -426,12 +383,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -452,12 +407,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -478,12 +431,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -504,12 +455,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -530,12 +479,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -556,12 +503,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -582,12 +527,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -608,12 +551,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -634,12 +575,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -660,12 +599,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -686,12 +623,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],
@@ -712,12 +647,10 @@
               "approver",
               "dispatcher",
               "executor",
-              "flags_admin",
               "flags_remover",
               "flags_writer",
               "gateway",
               "lease_owner",
-              "register_sync",
               "risk_engine",
               "risk_owner"
             ],

@@ -21,7 +21,6 @@ run() {  # run <database> <file>
          -v pw_gateway="$DB_PASSWORD_GATEWAY" \
          -v pw_risk_engine="$DB_PASSWORD_RISK_ENGINE" \
          -v pw_dispatcher="$DB_PASSWORD_DISPATCHER" \
-         -v pw_register_sync="$DB_PASSWORD_REGISTER_SYNC" \
          --username "$POSTGRES_USER" --dbname "$1" -f "$2"
 }
 

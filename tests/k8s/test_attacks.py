@@ -48,13 +48,12 @@ def test_every_probe_names_a_known_source_target_and_port():
 CARRY_IN = {
     # default deny + controls
     "agent -> tool-read-ticket:8000": DENY, "agent -> postgres:5432": DENY,
-    "agent -> risk-engine:8082": DENY, "agent -> fake-register:8090": DENY,
-    "agent -> fake-dso:8091": DENY, "agent -> fake-sms:8092": DENY,
+    "agent -> risk-engine:8082": DENY,
     "agent -> tool-gateway:8080": ALLOW, "agent -> llm-gateway:8083": ALLOW,
     "agent -> dispatcher:8081": ALLOW,
     # tools
     "tool-lookup-account -> tool-gateway:8080": DENY, "tool-lookup-account -> risk-engine:8082": DENY,
-    "tool-lookup-account -> fake-dso:8091": DENY, "tool-lookup-account -> postgres:5432": ALLOW,
+    "tool-lookup-account -> postgres:5432": ALLOW,
     "tool-lookup-account -> tool-read-ticket:8000": DENY,
     # ingress spoofing
     "spoof-tool-gateway -> tool-read-ticket:8000": DENY,
@@ -73,9 +72,9 @@ CARRY_IN = {
     # IMDS, the internet, the gateway to a tool
     "agent -> imds:80": DENY, "tool-lookup-account -> imds:80": DENY,
     "tool-lookup-account -> internet:443": DENY, "tool-gateway -> tool-read-ticket:8000": ALLOW,
-    # executor -> tools, fakes -> anything
-    "executor -> tool-read-ticket:8000": DENY, "fake-sms -> postgres:5432": DENY,
-    "fake-sms -> internet:443": DENY, "fake-sms -> fake-dso:8091": DENY,
+    # executor -> tools; the executor reaches the database and nothing else
+    "executor -> tool-read-ticket:8000": DENY, "executor -> postgres:5432": ALLOW,
+    "executor -> internet:443": DENY, "executor -> risk-engine:8082": DENY,
 }
 
 
@@ -155,7 +154,7 @@ def test_api_server_probes_agree_with_the_chart():
                for rule in p["spec"].get("egress", []) if "kube-apiserver" in rule.get("toEntities", [])}
     api_probes = [p for p in probes.matrix() if p.kind == "tcp" and p.target == probes.KUBE_API
                   and p.source in probes.COMPONENTS]
-    assert len(api_probes) >= 12
+    assert len(api_probes) >= 9
     for p in api_probes:
         namespace, label, _ = probes.placement(p.source)
         assert ((namespace, label) in allowed) == (p.expected == ALLOW), p.edge

@@ -6,17 +6,15 @@
 --
 --   who             may                                          through
 --   --------------  -------------------------------------------  --------------------------------
---   register_sync   add a flag; mark the register freshly synced  sync_add_flag, sync_heartbeat
 --   tool role       add a flag for its ticket's home only          api_set_temp_protection (05)
 --   approver        ask to remove a flag; approve a removal        request_flag_removal,
 --                   (the second distinct senior, never the          approve_flag_removal
 --                   requester, deletes it and raises an ALERT)
 --   anyone else     nothing
 --
--- Two NOLOGIN owners, so that the function register-sync calls runs as a role that cannot delete:
---   flags_admin    owns the sync functions: INSERT on flags, the register_sync row. No DELETE.
---   flags_remover  owns the removal functions: DELETE on flags, the removal tables. No INSERT
---                  on flags. The only role with DELETE on flags.
+-- One NOLOGIN owner of the removal functions:
+--   flags_remover  owns them: DELETE on flags, the removal tables. No INSERT on flags. The only
+--                  role with DELETE on flags.
 -- Behind the grants, refuse_flag_change() refuses every UPDATE of a flag (moving one to another
 -- home is a removal for the first) and every DELETE not made by flags_remover, and
 -- refuse_register_truncate() refuses TRUNCATE of the four register tables, so a grant added by
@@ -59,51 +57,6 @@ CREATE TRIGGER flags_no_truncate BEFORE TRUNCATE ON flags
     FOR EACH STATEMENT EXECUTE FUNCTION refuse_register_truncate();
 CREATE TRIGGER register_sync_no_truncate BEFORE TRUNCATE ON register_sync
     FOR EACH STATEMENT EXECUTE FUNCTION refuse_register_truncate();
-
-
--- ---------------------------------------------------------------------------------------------
--- Register sync: add only.
---
--- sync_add_flag adds the flag for one home the register lists, or leaves an existing one as it
--- is, and says which: added, present, or unknown (a home this supplier does not serve). Unknown is
--- an answer, not an error: an error message would carry the home id into the server log on every
--- sync, and being on the life-support register is health data. No message here names a home.
--- It takes the home's advisory lock first, the one the executor holds from its protection check
--- to the order (and the order trigger takes), so a flag cannot land between the two. The source
--- is a short name such as state_register, never free text that could carry a diagnosis.
-CREATE FUNCTION sync_add_flag(p_sp text, p_source text) RETURNS text
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
-BEGIN
-    IF session_user <> 'register_sync' THEN
-        RAISE EXCEPTION '% may not sync the register', session_user;
-    END IF;
-    IF p_source IS NULL OR p_source !~ '^[a-z_]{1,40}$' THEN
-        RAISE EXCEPTION 'flag source must be a short name (a-z and _, at most 40 characters)';
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM public.supply_points WHERE id = p_sp) THEN
-        RETURN 'unknown';
-    END IF;
-    PERFORM pg_advisory_xact_lock(hashtext(p_sp));
-    INSERT INTO public.flags (supply_point_id, source) VALUES (p_sp, p_source)
-    ON CONFLICT (supply_point_id) DO NOTHING;
-    IF FOUND THEN
-        RETURN 'added';
-    END IF;
-    RETURN 'present';
-END $$;
-
--- The register was read in full and every listed home is flagged. Unflagged homes count as not
--- protected only while this is less than 24 hours old (check_disconnection_order, home_protection,
--- app/executor/protection.py); a sync that fails leaves it to age, and the homes turn UNKNOWN.
-CREATE FUNCTION sync_heartbeat() RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
-BEGIN
-    IF session_user <> 'register_sync' THEN
-        RAISE EXCEPTION '% may not sync the register', session_user;
-    END IF;
-    INSERT INTO public.register_sync AS s (id, last_success) VALUES (1, now())
-    ON CONFLICT (id) DO UPDATE SET last_success = excluded.last_success;
-END $$;
 
 
 -- ---------------------------------------------------------------------------------------------
@@ -185,7 +138,7 @@ END $$;
 -- True when this approval was the second distinct one and the flag is gone.
 --
 -- Locks, in this order: the home's advisory lock, then the request row. The advisory lock is the
--- one every flag writer takes (sync_add_flag, api_set_temp_protection), so the flag cannot be
+-- one every flag writer takes (api_set_temp_protection), so the flag cannot be
 -- added back between the check below and the delete, and two removals for the same home run one
 -- after the other. (SELECT ... FOR UPDATE on flags would need UPDATE on flags, which nobody may
 -- hold.) The row lock makes two seniors approving the same request at the same moment count one
@@ -257,14 +210,11 @@ END $$;
 
 
 -- Who holds what. No login role has a grant on flags, register_sync or the removal tables beyond
--- what is listed here; register_sync has none at all, only EXECUTE on its two functions and beat().
-GRANT USAGE ON SCHEMA public TO flags_admin, flags_remover;
+-- what is listed here.
+GRANT USAGE ON SCHEMA public TO flags_remover;
 
-GRANT SELECT (supply_point_id), INSERT (supply_point_id, source) ON flags TO flags_admin;
-GRANT SELECT (id) ON supply_points TO flags_admin;
-GRANT SELECT, INSERT (id, last_success), UPDATE (last_success) ON register_sync TO flags_admin;
--- Advisory locks are closed to PUBLIC (03-grants.sql); both owners take the home's lock.
-GRANT EXECUTE ON FUNCTION pg_advisory_xact_lock(bigint) TO flags_admin, flags_remover;
+-- Advisory locks are closed to PUBLIC (03-grants.sql); the owner takes the home's lock.
+GRANT EXECUTE ON FUNCTION pg_advisory_xact_lock(bigint) TO flags_remover;
 
 GRANT SELECT (supply_point_id, created_at), DELETE ON flags TO flags_remover;
 GRANT SELECT, INSERT (supply_point_id, reason, requested_by), UPDATE (done_at, closed_reason)
@@ -277,11 +227,8 @@ GRANT USAGE ON SEQUENCE events_id_seq TO flags_remover;
 -- The console lists the open requests and who approved them.
 GRANT SELECT ON flag_removal_requests, flag_removal_approvals TO approver;
 
-ALTER FUNCTION sync_add_flag(text, text) OWNER TO flags_admin;
-ALTER FUNCTION sync_heartbeat() OWNER TO flags_admin;
 ALTER FUNCTION request_flag_removal(text, text, text) OWNER TO flags_remover;
 ALTER FUNCTION approve_flag_removal(int, text) OWNER TO flags_remover;
-REVOKE ALL ON FUNCTION sync_add_flag(text, text), sync_heartbeat(), request_flag_removal(text, text, text),
+REVOKE ALL ON FUNCTION request_flag_removal(text, text, text),
     approve_flag_removal(int, text), refuse_flag_change(), refuse_register_truncate() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION sync_add_flag(text, text), sync_heartbeat() TO register_sync;
 GRANT EXECUTE ON FUNCTION request_flag_removal(text, text, text), approve_flag_removal(int, text) TO approver;

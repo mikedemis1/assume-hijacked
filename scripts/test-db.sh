@@ -32,8 +32,7 @@ DB_PASSWORD_EXECUTOR
 DB_PASSWORD_APPROVER
 DB_PASSWORD_GATEWAY
 DB_PASSWORD_RISK_ENGINE
-DB_PASSWORD_DISPATCHER
-DB_PASSWORD_REGISTER_SYNC"
+DB_PASSWORD_DISPATCHER"
 
 # Read NAME=value lines of .env for the names this script needs, without sourcing the file
 # (a value may hold spaces). Not overriding what is already exported.
@@ -78,7 +77,6 @@ start() {
         -e DB_PASSWORD_GATEWAY \
         -e DB_PASSWORD_RISK_ENGINE \
         -e DB_PASSWORD_DISPATCHER \
-        -e DB_PASSWORD_REGISTER_SYNC \
         "$IMAGE" \
         postgres \
         -c log_min_error_statement=panic \

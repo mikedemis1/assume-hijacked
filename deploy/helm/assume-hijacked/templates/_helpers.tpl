@@ -403,9 +403,9 @@ spec:
 ["read_ticket", "lookup_account", "request_disconnection", "issue_bill_credit", "set_temp_protection"]
 {{- end }}
 
-{{/* Every DB login role that has a password (db/sql/02-roles.sql plus the gateway, risk engine, dispatcher and register sync roles). */}}
+{{/* Every DB login role that has a password (db/sql/02-roles.sql plus the gateway, risk engine and dispatcher roles). */}}
 {{- define "ah.dbRoles" -}}
-["tool_read_ticket", "tool_lookup_account", "tool_request_disconnection", "tool_issue_bill_credit", "tool_set_temp_protection", "executor", "approver", "gateway", "risk_engine", "dispatcher", "register_sync"]
+["tool_read_ticket", "tool_lookup_account", "tool_request_disconnection", "tool_issue_bill_credit", "tool_set_temp_protection", "executor", "approver", "gateway", "risk_engine", "dispatcher"]
 {{- end }}
 
 {{/*
@@ -415,7 +415,7 @@ role's password lives in that component's Secret (kind) or Key Vault (Azure).
 {{- define "ah.dbRoleComponents" -}}
 {{- $out := dict
   "executor" "executor" "approver" "console" "gateway" "tool-gateway" "risk_engine" "risk-engine"
-  "dispatcher" "dispatcher" "register_sync" "register-sync" -}}
+  "dispatcher" "dispatcher" -}}
 {{- range include "ah.tools" . | fromJsonArray }}{{ $_ := set $out (printf "tool_%s" .) (printf "tool-%s" (replace "_" "-" .)) }}{{ end -}}
 {{- toJson $out -}}
 {{- end }}
@@ -489,7 +489,7 @@ The namespaces of the chart, as a JSON list (one per trust zone; ah-data only on
 chart runs PostgreSQL itself). ah-monitoring belongs to the monitoring stack (deploy/monitoring), not here.
 */}}
 {{- define "ah.namespaces" -}}
-{{- $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" "ah-fakes" -}}
+{{- $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" -}}
 {{- if eq .Values.env "kind" }}{{ $ns = append $ns "ah-data" }}{{ end -}}
 {{- toJson $ns -}}
 {{- end }}
@@ -538,10 +538,6 @@ database for every caller. */ -}}
   (dict "id" "edge-12-tools-to-db"              "from" (dict "ns" "ah-tools"   "pods" $tools)                 "to" $db)
   (dict "id" "edge-13-risk-engine-to-db"        "from" (dict "ns" "ah-core"    "pods" (list "risk-engine"))   "to" $db)
   (dict "id" "edge-14-executor-to-db"           "from" (dict "ns" "ah-core"    "pods" (list "executor"))      "to" $db)
-  (dict "id" "edge-15-executor-to-fake-dso"     "from" (dict "ns" "ah-core"    "pods" (list "executor"))      "to" (dict "ns" "ah-fakes"   "pods" (list "fake-dso")     "ports" (list 8091)))
-  (dict "id" "edge-15-executor-to-fake-sms"     "from" (dict "ns" "ah-core"    "pods" (list "executor"))      "to" (dict "ns" "ah-fakes"   "pods" (list "fake-sms")     "ports" (list 8092)))
-  (dict "id" "edge-16-register-sync-to-fake-register" "from" (dict "ns" "ah-core" "pods" (list "register-sync")) "to" (dict "ns" "ah-fakes" "pods" (list "fake-register") "ports" (list 8090)))
-  (dict "id" "edge-16-register-sync-to-db"      "from" (dict "ns" "ah-core"    "pods" (list "register-sync")) "to" $db)
   (dict "id" "edge-18-console-to-db"            "from" (dict "ns" "ah-staff"   "pods" (list "console"))       "to" $db)
 -}}
 {{- /* The database setup job: postgres-init on kind, db-migrate on Azure. */ -}}
@@ -551,7 +547,7 @@ database for every caller. */ -}}
 {{- $edges = append $edges (dict "id" "edge-db-setup-to-db" "from" (dict "ns" "ah-core" "pods" (list "db-migrate")) "to" $db) -}}
 {{- end -}}
 {{- /* Row 21: Prometheus (namespace ah-monitoring, deploy/monitoring) scrapes the ops port, and only that. */ -}}
-{{- range $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" "ah-fakes" -}}
+{{- range $ns := list "ah-intake" "ah-agent" "ah-gateway" "ah-tools" "ah-core" "ah-staff" -}}
 {{- $edges = append $edges (dict "id" "edge-21-monitoring-to-metrics" "from" (dict "ns" "ah-monitoring" "pods" (list) "external" true) "to" (dict "ns" $ns "pods" (list) "ports" (list 9000))) -}}
 {{- end -}}
 {{- toJson $edges -}}

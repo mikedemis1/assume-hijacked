@@ -12,8 +12,8 @@ until two SeniorApprovers released the request. check_occupier_notice (db/sql/06
 the notice otherwise. The release does not count for the order, which still needs two
 SeniorApprovers after the notice, so a held move-out that is real takes four seniors.
 
-After the commit, the notice goes to the SMS provider and the order to the grid operator, once
-each (app/executor/outside.py).
+The executor writes the notice row and the order row and sends nothing outside: no occupier is
+messaged and no grid operator is called.
 """
 
 from __future__ import annotations
@@ -22,20 +22,13 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg
 
-from app.common.events import security_event
 from app.common.ops import Metrics
 from app.config import Settings
 from app.executor.alerts import raise_alert_once
 from app.executor.approvals import approvals_met
 from app.executor.credits import risk_reason
 from app.executor.metrics import count_request
-from app.executor.outside import OutsideCalls
 from app.executor.protection import protection_status
-
-# What _process_one hands back besides the status: the outside call to make after the commit,
-# (target, payload), or None.
-OutsideCall = tuple[str, dict] | None
-
 
 def _decide(conn, request_id: int, status: str, reason: str, now: datetime) -> str:
     conn.execute(
@@ -43,22 +36,6 @@ def _decide(conn, request_id: int, status: str, reason: str, now: datetime) -> s
         (status, reason, now, request_id),
     )
     return status
-
-
-def _process_one(
-    conn, settings: Settings, req, now: datetime, hour_ago: datetime
-) -> tuple[str | None, OutsideCall]:
-    """The status the request moved to (None when it stays where it is), and the outside call."""
-    status = _decide_one(conn, settings, req, now, hour_ago)
-    if status == "notice_sent":
-        notice = conn.execute("SELECT id FROM occupier_notices WHERE request_id = %s", (req["id"],)).fetchone()
-        return status, ("sms", {"request_id": req["id"], "notice_id": notice["id"],
-                                "supply_point_id": req["supply_point_id"]})
-    if status == "executed":
-        order = conn.execute("SELECT id FROM disconnection_orders WHERE request_id = %s", (req["id"],)).fetchone()
-        return status, ("dso", {"request_id": req["id"], "order_id": order["id"],
-                                "supply_point_id": req["supply_point_id"]})
-    return status, None
 
 
 def _decide_one(conn, settings: Settings, req, now: datetime, hour_ago: datetime) -> str | None:
@@ -116,45 +93,8 @@ def _decide_one(conn, settings: Settings, req, now: datetime, hour_ago: datetime
             "INSERT INTO disconnection_orders (request_id, supply_point_id) VALUES (%s, %s)",
             (req["id"], req["supply_point_id"]),
         )
-        return _decide(conn, req["id"], "executed", "order sent to the grid operator", now)
+        return _decide(conn, req["id"], "executed", "order written", now)
     return None
-
-
-def _call_detail(call: tuple[str, dict]) -> str:
-    target, payload = call
-    return f"{target} move_out request={payload['request_id']}"
-
-
-def _call_due(conn: psycopg.Connection, outside: OutsideCalls | None, call: OutsideCall) -> OutsideCall:
-    """Inside the request's transaction: record that a call is owed, so it commits with the row it
-    reports on. A due event with no sent or failed event after it is a call lost to a crash
-    between the commit and the call; staff find it there and resend by hand."""
-    if outside is None or call is None or not outside.wants(call[0]):
-        return None
-    conn.execute("INSERT INTO events (kind, detail) VALUES ('outside_call_due', %s)", (_call_detail(call),))
-    return call
-
-
-def _tell_outside(
-    conn: psycopg.Connection, outside: OutsideCalls | None, call: OutsideCall, metrics: Metrics | None
-) -> None:
-    """One call, after the commit, then its outcome as an event. A failure is logged and counted,
-    never retried."""
-    if outside is None or call is None:
-        return
-    target, payload = call
-    try:
-        outside.send(target, payload)
-    except Exception as exc:
-        outcome = "error"
-        detail = f"{_call_detail(call)}: {type(exc).__name__}"
-        conn.execute("INSERT INTO events (kind, detail) VALUES ('outside_call_failed', %s)", (detail,))
-        security_event("outside_call_failed", target=target, request=payload["request_id"], error=type(exc).__name__)
-    else:
-        outcome = "sent"
-        conn.execute("INSERT INTO events (kind, detail) VALUES ('outside_call_sent', %s)", (_call_detail(call),))
-    if metrics is not None:
-        metrics.inc("executor_outside_calls_total", {"target": target, "outcome": outcome})
 
 
 def process_moveouts(
@@ -162,7 +102,6 @@ def process_moveouts(
     settings: Settings,
     now: datetime,
     metrics: Metrics | None = None,
-    outside: OutsideCalls | None = None,
 ) -> None:
     # The join on risk_assessments is the rule: a request without an assessment is not looked at.
     rows = conn.execute(
@@ -177,8 +116,7 @@ def process_moveouts(
         try:
             # One transaction per request: the row written and the status change land together or not at all.
             with conn.transaction():
-                status, call = _process_one(conn, settings, req, now, hour_ago)
-                call = _call_due(conn, outside, call)
+                status = _decide_one(conn, settings, req, now, hour_ago)
             if status is not None:
                 count_request(metrics, "move_out", status)
         except Exception as exc:
@@ -189,5 +127,3 @@ def process_moveouts(
                 (f"move_out request={req['id']}: {type(exc).__name__}",),
             )
             continue
-        # Committed: now, and only now, the outside world hears about it.
-        _tell_outside(conn, outside, call, metrics)

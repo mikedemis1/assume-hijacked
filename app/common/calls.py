@@ -1,20 +1,16 @@
-"""HTTP calls from a component to a system outside it (the register, the grid operator, the SMS
-provider; fakes of them in this project, app/fakes).
+"""How a component says who it is when it calls a peer.
 
-The caller says who it is with its projected service account token for the peer's audience, read
-from /var/run/secrets/ah/<audience>/token on every call (the kubelet rotates it). The peer checks it
+The caller sends its projected service account token for the peer's audience, read from
+/var/run/secrets/ah/<audience>/token on every call (the kubelet rotates it). The peer checks it
 with a TokenReview. That is the only mode (CALLER_AUTH=k8s); without CALLER_AUTH it is k8s too,
 whatever APP_ENV says.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
-from urllib.parse import urlsplit
 
 MODES = ("k8s",)
 TOKEN_DIR = Path("/var/run/secrets/ah")
@@ -35,30 +31,3 @@ def auth_headers(audience: str, mode: str, token_dir: Path | str = TOKEN_DIR) ->
         raise ValueError(f"CALLER_AUTH must be one of {MODES}, got {mode!r}")
     token = (Path(token_dir) / audience / "token").read_text(encoding="utf-8").strip()
     return {"Authorization": f"Bearer {token}"}
-
-
-def _check_url(url: str) -> None:
-    # urlopen also opens file:// and ftp:// URLs; a call to a peer is plain HTTP(S) only.
-    if urlsplit(url).scheme not in ("http", "https"):
-        raise ValueError("only http and https URLs are called")
-
-
-def post_json(url: str, payload: dict, headers: Mapping[str, str], timeout_s: float) -> int:
-    """POST the payload as JSON. Returns the status; a non-2xx answer raises HTTPError, a network
-    failure URLError (both OSError)."""
-    _check_url(url)
-    request = urllib.request.Request(
-        url, data=json.dumps(payload).encode(), method="POST",
-        headers={"Content-Type": "application/json", **headers},
-    )
-    with urllib.request.urlopen(request, timeout=timeout_s) as answer:  # nosec B310 - scheme checked above
-        return answer.status
-
-
-def get_json(url: str, headers: Mapping[str, str], timeout_s: float, max_bytes: int) -> bytes:
-    """GET the URL. Returns at most max_bytes + 1 bytes of the body, so the caller can tell an
-    answer that is too big without reading all of it."""
-    _check_url(url)
-    request = urllib.request.Request(url, method="GET", headers={"Accept": "application/json", **headers})
-    with urllib.request.urlopen(request, timeout=timeout_s) as answer:  # nosec B310 - scheme checked above
-        return answer.read(max_bytes + 1)

@@ -80,8 +80,8 @@
       "uniqueItems": true,
       "items": {"enum": ["tool-read-ticket", "tool-lookup-account", "tool-request-disconnection",
                          "tool-issue-bill-credit", "tool-set-temp-protection", "tool-gateway",
-                         "risk-engine", "dispatcher", "llm-gateway", "executor", "register-sync",
-                         "console", "fake-register", "fake-dso", "fake-sms"]}
+                         "risk-engine", "dispatcher", "llm-gateway", "executor",
+                         "console"]}
     },
     "secrets": {
       "type": "object",

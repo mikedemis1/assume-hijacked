@@ -1,6 +1,5 @@
 {{- /*
-One namespace per trust zone: intake, agent, gateway, tools, core, staff and the fakes of the
-outside systems. ah-data exists only on kind, where
+One namespace per trust zone: intake, agent, gateway, tools, core, staff. ah-data exists only on kind, where
 the chart runs PostgreSQL itself. ah-monitoring belongs to the monitoring stack (deploy/monitoring), not here.
 
 Pod Security Admission enforces the "restricted" profile in every one of them: no privileged
