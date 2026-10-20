@@ -85,6 +85,12 @@ variable "capabilities_dir" {
   default     = null
 }
 
+variable "optional_components" {
+  description = "Components whose manifest says \"optional\": true get their vault, identity and federated credential only when listed here. Default: none."
+  type        = list(string)
+  default     = []
+}
+
 variable "spoke_subnet_ids" {
   description = "Subnets (with the Microsoft.KeyVault service endpoint) that may reach the vaults. Set after infra/lab has created its VNet (output aks_subnet_ids of infra/lab)."
   type        = list(string)

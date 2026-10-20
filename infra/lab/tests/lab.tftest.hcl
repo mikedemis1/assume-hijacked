@@ -825,3 +825,39 @@ run "only_north_europe_is_accepted" {
 
   expect_failures = [var.location]
 }
+
+# ---------------------------------------------------------------- optional components
+
+run "optional_component_has_no_identity_by_default" {
+  command = plan
+
+  variables {
+    capabilities_dir           = "tests/fixtures/capabilities-optional"
+    service_account_namespaces = { "db-migrate" = "ah-core", "demo" = "ah-demo" }
+  }
+
+  assert {
+    condition     = toset(keys(module.workload_identity)) == toset(["db-migrate", "tool-lookup-account"])
+    error_message = "A manifest marked optional must yield no identity or federated credential unless it is enabled."
+  }
+}
+
+run "optional_component_gets_its_identity_when_enabled" {
+  command = plan
+
+  variables {
+    capabilities_dir           = "tests/fixtures/capabilities-optional"
+    optional_components        = ["demo"]
+    service_account_namespaces = { "db-migrate" = "ah-core", "demo" = "ah-demo" }
+  }
+
+  assert {
+    condition     = toset(keys(module.workload_identity)) == toset(["db-migrate", "tool-lookup-account", "demo"])
+    error_message = "An enabled optional component gets its identity."
+  }
+
+  assert {
+    condition     = module.workload_identity["demo"].subject == "system:serviceaccount:ah-demo:demo"
+    error_message = "The enabled component's federated credential trusts exactly its ServiceAccount."
+  }
+}

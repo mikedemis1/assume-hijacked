@@ -423,3 +423,32 @@ run "other_regions_are_refused" {
 
   expect_failures = [var.location]
 }
+
+# ---------------------------------------------------------------- optional components
+
+run "optional_component_has_no_vault_by_default" {
+  command = plan
+
+  variables {
+    capabilities_dir = "tests/fixtures/capabilities-optional"
+  }
+
+  assert {
+    condition     = toset(keys(azurerm_key_vault.workload)) == toset(["kv-tool-lookup-account"])
+    error_message = "A manifest marked optional must yield no vault unless it is enabled."
+  }
+}
+
+run "optional_component_gets_a_vault_when_enabled" {
+  command = plan
+
+  variables {
+    capabilities_dir    = "tests/fixtures/capabilities-optional"
+    optional_components = ["demo"]
+  }
+
+  assert {
+    condition     = toset(keys(azurerm_key_vault.workload)) == toset(["kv-tool-lookup-account", "kv-demo"])
+    error_message = "An enabled optional component gets its vault."
+  }
+}

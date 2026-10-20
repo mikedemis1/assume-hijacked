@@ -73,6 +73,12 @@ variable "capabilities_dir" {
   default     = null
 }
 
+variable "optional_components" {
+  description = "Components whose manifest says \"optional\": true get their vault, identity and federated credential only when listed here. Default: none."
+  type        = list(string)
+  default     = []
+}
+
 variable "service_account_namespaces" {
   description = "Namespace of each component's ServiceAccount (the Helm chart's layout). Components named tool-* that are not listed here run in ah-tools."
   type        = map(string)

@@ -11,7 +11,7 @@ Nothing in this project has been applied to Azure. No resource exists, nothing b
 
 `infra/modules/workload-identity` is the module the lab uses for the identities. The lab reads `base` through `terraform_remote_state`, so `base` has to be applied first. `base` is applied by hand by the owner and never from CI: the CI identities live in it and none of them can widen its own rights.
 
-Every Key Vault, identity and role assignment is generated from the manifests in `permissions/`. A new part with secrets gets its vault by adding a manifest.
+Every Key Vault, identity and role assignment is generated from the manifests in `permissions/`. A new part with secrets gets its vault by adding a manifest. A manifest with a top-level `"optional": true` gets no vault, identity or federated credential unless its component is listed in the `optional_components` variable of `infra/base` and `infra/lab` (default: none).
 
 Terraform tests (`terraform test`, mock providers) sit next to each stack under `tests/`, with fixtures for awkward manifests. CI runs `terraform fmt -check` and `terraform validate` on every stack.
 

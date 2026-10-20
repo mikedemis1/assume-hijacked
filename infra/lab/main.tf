@@ -50,9 +50,16 @@ locals {
   # ------------------------------------------------------------ capability manifests
   capabilities_dir = coalesce(var.capabilities_dir, "${path.module}/../../permissions")
 
-  manifests = {
+  all_manifests = {
     for f in fileset(local.capabilities_dir, "*.json") :
     trimsuffix(f, ".json") => jsondecode(file("${local.capabilities_dir}/${f}"))
+  }
+
+  # A manifest with "optional": true yields vaults, identities and credentials only when its
+  # component is listed in var.optional_components.
+  manifests = {
+    for k, m in local.all_manifests : k => m
+    if !try(m.optional, false) || contains(var.optional_components, m.component)
   }
 
   # Components that use an Azure identity, keyed by component name.
