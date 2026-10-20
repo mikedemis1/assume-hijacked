@@ -261,15 +261,15 @@ def _value(number: Decimal) -> str:
 @st.composite
 def _written_numbers(draw):
     """(the number as a reply writes it, every value it can mean). "1,000" can mean 1 or 1000."""
-    # `thousands` ends in 0: the guard compares every allowed number again as text, so a returned
-    # "1.001" would also allow 1001 (reported, not fixed here).
-    kind = draw(st.sampled_from(["integer", "decimal", "grouped", "grouped_decimal"]))
-    whole, thousands, cents = draw(st.integers(1, 999)), draw(st.integers(0, 99)) * 10, draw(st.integers(0, 99))
+    kind = draw(st.sampled_from(["integer", "decimal", "long_decimal", "grouped", "grouped_decimal"]))
+    whole, thousands, cents = draw(st.integers(1, 999)), draw(st.integers(0, 999)), draw(st.integers(0, 99))
     if kind == "integer":
         text, values = str(whole * 1000 + thousands), {Decimal(whole * 1000 + thousands)}
     elif kind == "decimal":
         sep = draw(st.sampled_from(".,"))
         text, values = f"{whole}{sep}{cents:02d}", {Decimal(f"{whole}.{cents:02d}")}
+    elif kind == "long_decimal":  # four decimals: one value, but its canonical form "1.001" looks grouped
+        text, values = f"{whole}.{thousands:03d}0", {Decimal(f"{whole}.{thousands:03d}")}
     elif kind == "grouped":
         sep = draw(st.sampled_from(".,"))
         text, values = f"{whole}{sep}{thousands:03d}", {Decimal(f"{whole}.{thousands:03d}"), Decimal(whole * 1000 + thousands)}
@@ -288,20 +288,31 @@ def _written_numbers(draw):
     return text, {_value(v) for v in values}
 
 
-@given(written=_written_numbers())
-@example(written=("49.00", {"49"}))
-@example(written=("１，０００", {"1", "1000"}))
+def _allowed_by(tool_numbers) -> set[str]:
+    """The rule, written out: a tool number adds its value only when it has one reading."""
+    return {v for _, values in tool_numbers if len(values) == 1 for v in values}
+
+
+@given(reply=_written_numbers(), tool=st.lists(st.one_of(_written_numbers(), st.just(None)), max_size=3))
+@example(reply=("49.00", {"49"}), tool=[("49", {"49"})])
+@example(reply=("１，０００", {"1", "1000"}), tool=[("1000", {"1000"}), ("1", {"1"})])
+# A tool number with two readings adds nothing: tool 1.001, reply 1001 is blocked.
+@example(reply=("1001", {"1001"}), tool=[("1.001", {"1.001", "1001"})])
+# A reply number with two readings needs both: tool 1001 alone does not allow "1,001" (1001 or 1.001).
+@example(reply=("1,001", {"1.001", "1001"}), tool=[("1001", {"1001"})])
+# The tool's "1.0010" is 1.001, not 1001: a guard that read its own allowed list again would add 1001.
+@example(reply=("1,001", {"1.001", "1001"}), tool=[("1.0010", {"1.001"})])
 @PROPERTY
-def test_asi09_property_guard_allows_a_number_only_when_every_reading_was_returned(written):
-    text, readings = written
-    reply = f"Your meter number is {text}"
-    # Same value, any spelling ("49.00", full-width digits): allowed when the tool returned it.
-    assert guard_reply(reply, set(readings)) == reply
-    for reading in readings:
-        # Without one of its readings ("1,000" with only 1 returned), or with a near miss instead
-        # ("49.50" with only 49 returned, which is what dropping the fraction would allow): blocked.
-        near = str(int(Decimal(reading)) + (0 if "." in reading else 1))
-        assert guard_reply(reply, (readings - {reading}) | {near}) == SAFE_REPLY, reading
+def test_asi09_property_guard_allows_a_number_only_when_every_reading_was_returned(reply, tool):
+    # None in `tool` stands for the reply's own spelling returned by the tool.
+    tool = [reply if entry is None else entry for entry in tool]
+    text, readings = reply
+    sentence = f"Your meter number is {text}"
+    returned = numbers_in(" ".join(t for t, _ in tool))
+    assert returned == _allowed_by(tool)
+    # Allowed exactly when every reading of the reply's number is a value a tool gave plainly.
+    # So "49.00" is fine when 49 came back, full-width digits too, and "1,000" needs both 1 and 1000.
+    assert (guard_reply(sentence, returned) == sentence) == (readings <= returned)
 
 
 def test_asi09_agent_blocks_a_number_no_tool_returned(settings, admin, as_role):

@@ -26,6 +26,13 @@ followed by exactly three digits ("1,000") is ambiguous (1 or 1000): the reply i
 BOTH readings are allowed. Several separators are a thousands grouping only when every group after
 the first has three digits ("1.000,50"); otherwise each part is its own number (dates, versions).
 
+Fail closed on the tool side too. The numbers a reply may repeat come from `numbers_in` on a tool
+result, and a tool number that is ambiguous ("1.001", "1,000") adds NOTHING: we cannot know which
+value the tool meant, and adding both would let the reply say a value the tool never returned
+(tool "1.001", reply "1001"). `block_reason` uses the allowed set as it is and does not read it again.
+So a reply is allowed only if every reading of each number in it is a value some tool number
+unambiguously gave, and an honest reply that repeats an ambiguous tool number gets SAFE_REPLY.
+
 Limits. Word lists (number words, currency words, money verbs) can never be complete: a spelling or
 word nobody listed gets through. The robust fix is structured or template replies, not a better list.
 The guard also cannot tell what an allowed number means: if a tool returned "10" (Patision 10), a
@@ -118,9 +125,15 @@ def _readings(token: str) -> frozenset[str]:
     return frozenset(_canon(p) for p in parts)
 
 
+def _ambiguous(token: str) -> bool:
+    """One separator and exactly three digits after it ("1,000"): two values, 1 and 1000."""
+    return len(re.findall(r"[.,]", token)) == 1 and len(_readings(token)) == 2
+
+
 def numbers_in(text: str) -> set[str]:
-    """Every value a number in `text` can mean, as canonical strings ('49.00' -> '49')."""
-    return {value for token in NUMBER.findall(_fold(text)) for value in _readings(token)}
+    """The values of the numbers in `text` that mean one thing, as canonical strings ('49.00' -> '49').
+    A number with two readings ("1,000") is left out: see "Fail closed on the tool side" above."""
+    return {value for token in NUMBER.findall(_fold(text)) if not _ambiguous(token) for value in _readings(token)}
 
 
 def block_reason(text: str, allowed_numbers: set[str]) -> str | None:
@@ -134,9 +147,8 @@ def block_reason(text: str, allowed_numbers: set[str]) -> str | None:
         return "number_word"
     if MONEY_WORD.search(folded):
         return "money_wording"
-    allowed = set().union(*(numbers_in(a) for a in allowed_numbers))
     for token in NUMBER.findall(folded):
-        if not _readings(token) <= allowed:
+        if not _readings(token) <= allowed_numbers:
             return "unapproved_number"
     return None
 
