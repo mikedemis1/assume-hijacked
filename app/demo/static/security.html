@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Security console</title>
+<link rel="icon" href="/static/volt.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/base.css">
+<link rel="stylesheet" href="/static/console.css">
+<script src="/static/console.js" defer></script>
+</head>
+<body>
+<p class="vh" id="status" role="status" aria-live="polite"></p>
+
+<header class="top">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.700 8-6 8-11V5z"/></svg></span>
+    <div>
+      <h1 class="brand-name">Security console</h1>
+      <div class="sub">Hijack Lab Energy &middot; read-only &middot; <span id="who">no customer yet</span></div>
+    </div>
+  </div>
+  <ul class="counters" aria-label="Totals for this session">
+    <li class="glass"><span class="k">Attacks blocked</span><strong class="v bad" id="c-blocked">0</strong></li>
+    <li class="glass"><span class="k">Waiting for a human</span><strong class="v accent" id="c-waiting">0</strong></li>
+    <li class="glass"><span class="k">Kill switch</span><strong class="v ok" id="c-kill">off</strong></li>
+  </ul>
+</header>
+
+<p class="banner" id="problem" role="alert" hidden></p>
+
+<main>
+  <section class="glass empty" id="signin-needed" hidden>
+    <h2>Nobody is signed in yet</h2>
+    <p>The console shows the tickets of one customer session. Open <a href="/">the customer site</a> in this browser, choose a customer, then come back here.</p>
+  </section>
+
+  <div id="board" hidden>
+    <section class="glass presenter" aria-labelledby="p-title">
+      <div class="p-head">
+        <h2 id="p-title">Next message: simulate a hijacked model</h2>
+        <p class="note" id="p-note">Off. The next message gets the normal answer.</p>
+      </div>
+      <div class="picks" id="picks" role="group" aria-label="Attack to simulate"></div>
+    </section>
+
+    <section class="glass picker" aria-label="Tickets of this session" id="picker-box" hidden>
+      <div class="tabs" id="tabs"></div>
+    </section>
+
+    <section class="glass order" id="order-box" aria-labelledby="o-title" hidden>
+      <h2 id="o-title">The hijacked model&rsquo;s order <span class="tag" id="o-tag"></span></h2>
+      <div class="order-lines" id="order" tabindex="0"></div>
+    </section>
+
+    <section class="glass flow-box" aria-labelledby="f-title">
+      <h2 id="f-title">What each wall did <span class="tag" id="f-ticket"></span></h2>
+      <ol class="flow" id="flow">
+        <li class="node" data-key="agent">
+          <span class="disc"><img src="/static/volt.svg" alt="" width="26" height="26"></span>
+          <span class="n-name">Agent</span><span class="n-note"></span>
+        </li>
+        <li class="link" aria-hidden="true"></li>
+        <li class="node" data-key="gateway">
+          <span class="disc"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 21V9l8-6 8 6v12M9 21v-7h6v7"/></svg></span>
+          <span class="n-name">Gateway</span><span class="n-note"></span>
+        </li>
+        <li class="link" aria-hidden="true"></li>
+        <li class="node" data-key="risk">
+          <span class="disc"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v18M6 21h12M4 8h16M7 8l-3 7a3 3 0 0 0 6 0zM17 8l-3 7a3 3 0 0 0 6 0z"/></svg></span>
+          <span class="n-name">Risk engine</span><span class="n-note"></span>
+        </li>
+        <li class="link" aria-hidden="true"></li>
+        <li class="node" data-key="tools">
+          <span class="disc"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14.500 6.500a4 4 0 0 0-5 5L3 18l3 3 6.500-6.500a4 4 0 0 0 5-5l-2.500 2.500-2.500-.5-.5-2.500z"/></svg></span>
+          <span class="n-name">Tools</span><span class="n-note"></span>
+        </li>
+        <li class="link" aria-hidden="true"></li>
+        <li class="node" data-key="database">
+          <span class="disc"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6c0-1.700 3.600-3 8-3s8 1.300 8 3-3.600 3-8 3-8-1.300-8-3zM4 6v12c0 1.700 3.600 3 8 3s8-1.300 8-3V6M4 12c0 1.700 3.600 3 8 3s8-1.300 8-3"/></svg></span>
+          <span class="n-name">Database</span><span class="n-note"></span>
+        </li>
+        <li class="link" aria-hidden="true"></li>
+        <li class="node" data-key="reply">
+          <span class="disc"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 5h16v11H9l-5 4zM8 10l3 3 5-5"/></svg></span>
+          <span class="n-name">Reply guard</span><span class="n-note"></span>
+        </li>
+      </ol>
+      <ul class="legend" aria-label="Colour key">
+        <li><i class="dot s-passed"></i>passed</li>
+        <li><i class="dot s-changed"></i>changed</li>
+        <li><i class="dot s-stopped"></i>stopped</li>
+        <li><i class="dot s-ok"></i>ok</li>
+      </ul>
+      <p class="banner-ok" id="contained" hidden></p>
+    </section>
+
+    <section class="glass feed-box" aria-labelledby="d-title">
+      <h2 id="d-title">Live feed</h2>
+      <p class="empty-line" id="feed-empty">Nothing yet. Send a message on the customer site.</p>
+      <ol class="feed" id="feed"></ol>
+    </section>
+    <p class="fine" id="fine">Lines come from the database records of this session&rsquo;s tickets. Lines marked &ldquo;reported by the agent&rdquo; are the agent&rsquo;s own account of what it dropped; the agent could leave one out. A tool or argument that is not in the known list is shown as a fixed phrase.</p>
+  </div>
+</main>
+</body>
+</html>
