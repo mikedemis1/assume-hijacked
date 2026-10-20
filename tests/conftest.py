@@ -200,24 +200,30 @@ ASI_NOT_APPLICABLE = {
     "ASI07": "there is only one agent",
 }
 _ASI_TEST = re.compile(r"::test_(asi\d\d)_")
+# The attack table (tests/attacks/test_attack_table.py): the ids are in the parametrize id, e.g.
+# test_attack_table[ASI01-ASI03-1-another-customers-account].
+_ASI_CASE = re.compile(r"\[((?:ASI\d\d-)+)\d+-")
 
 
-def _asi_id(nodeid: str) -> str | None:
+def _asi_ids(nodeid: str) -> list[str]:
     found = _ASI_TEST.search(nodeid)
-    return found.group(1).upper() if found else None
+    if found:
+        return [found.group(1).upper()]
+    case = _ASI_CASE.search(nodeid)
+    return case.group(1).rstrip("-").split("-") if case else []
 
 
 def pytest_terminal_summary(terminalreporter):
     counts: dict[str, dict[str, int]] = {}
     for outcome in ("passed", "failed", "error", "skipped"):
         for report in terminalreporter.stats.get(outcome, []):
-            asi = _asi_id(getattr(report, "nodeid", ""))
-            if asi and getattr(report, "when", "call") in ("call", "setup") and (
+            if getattr(report, "when", "call") in ("call", "setup") and (
                     report.when == "call" or outcome in ("failed", "error", "skipped")):
-                counts.setdefault(asi, {}).setdefault(outcome, 0)
-                counts[asi][outcome] += 1
-    kind = {_asi_id(item.nodeid) for item in terminalreporter.stats.get("deselected", [])
-            if item.get_closest_marker("k8s")} - {None}
+                for asi in _asi_ids(getattr(report, "nodeid", "")):
+                    counts.setdefault(asi, {}).setdefault(outcome, 0)
+                    counts[asi][outcome] += 1
+    kind = {asi for item in terminalreporter.stats.get("deselected", [])
+            if item.get_closest_marker("k8s") for asi in _asi_ids(item.nodeid)}
     terminalreporter.write_sep("-", "OWASP ASI summary")
     for asi in sorted(ASI_NAMES):
         if asi in ASI_NOT_APPLICABLE:

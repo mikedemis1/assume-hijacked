@@ -8,6 +8,7 @@ from app.executor.approvals import approve
 from app.executor.moveouts import process_moveouts
 from app.tools.set_temp_protection import set_temp_protection
 from tests.conftest import assess, open_lease
+from app.executor.approvals import approver_count
 
 ANNA = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01"
 PETROS = "bbc480b8-6ddb-5ecf-8ce6-876023b4cbc3"
@@ -215,3 +216,20 @@ def test_trigger_takes_the_home_lock(admin, as_role):
     assert orders(admin) == 0
     insert_order(ex, rid, "SP-1001")  # control: without the lock held the same insert works
     assert orders(admin) == 1
+
+
+def test_asi02_database_refuses_order_at_protected_home(admin, as_role):  # ⑦ wall below the executor code
+    rid = ready_for_order(admin, as_role("approver"), account_id=3, ticket_id=3)
+    with pytest.raises(psycopg.errors.RaiseException, match="protected"):
+        insert_order(as_role("executor"), rid, "SP-1003")
+    assert orders(admin) == 0
+
+
+def test_asi03_same_approver_twice_is_rejected(admin, as_role):  # ⑥
+    staff, ex = as_role("approver"), as_role("executor")  # noqa: F811
+    rid = add_moveout(admin)
+    assert approve(staff, rid, ANNA) is True
+    assert approve(staff, rid, ANNA) is False
+    assert approver_count(ex, rid) == 1
+    assert approve(staff, rid, PETROS) is True
+    assert approver_count(ex, rid) == 2

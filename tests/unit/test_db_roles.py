@@ -114,3 +114,10 @@ def test_executor_sessions_time_out_on_locks_and_statements(as_role):  # gap I9
     assert conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "30s"
 
 
+def test_asi03_only_executor_reads_flags(admin, as_role):  # ②
+    # Every login role in the database, so a role added later is checked without editing this test.
+    roles = _login_roles(admin, exclude=("postgres", "executor"))
+    assert set(TOOL_ROLES + ["approver"]) <= set(roles)
+    for role in roles:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            as_role(role).execute("SELECT * FROM flags")

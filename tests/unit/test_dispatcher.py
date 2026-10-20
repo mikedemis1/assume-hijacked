@@ -19,6 +19,7 @@ from app.dispatcher import replies
 from app.gateway.auth import AGENT_USER
 from tests.conftest import TOOLS
 from tests.dispatcherharness import AGENT_IP, TEMPLATE_FILE, Harness, pod_of, post, request
+from app.agent.guard import SAFE_REPLY
 
 
 @pytest.fixture
@@ -342,3 +343,12 @@ def test_a_changed_template_is_refused(tmp_path):
         assert _refused(lambda: templates.load_template(path)), name
 
 
+@pytest.mark.parametrize("name, text, reason", HIJACKED, ids=[h[0] for h in HIJACKED])
+def test_asi09_dispatcher_runs_the_guard_again(kube_harness, admin, name, text, reason):  # noqa: F811
+    # The agent is taken over and sends what the model wrote without its own guard having run.
+    h = kube_harness
+    ticket, lease = claimed(h)
+    answer = post(h.app, "/reply", lease=lease, headers=h.owner(lease), body={"text": text})
+    assert (answer.status_code, answer.json()) == (200, {"stored": True})   # it does not say it replaced the text
+    assert stored(admin, ticket) == SAFE_REPLY
+    assert metric(h, "dispatcher_replies_blocked_total", reason=reason) == 1

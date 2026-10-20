@@ -19,6 +19,7 @@ from app.risk.rules import ENGINE_VERSION
 from tests.conftest import open_lease
 from tests.unit.test_executor_credits import add_credit
 from tests.unit.test_executor_moveouts import add_moveout
+import logging
 
 ANNA = "eeab6c5e-f5bc-5d16-af4b-813d9b88be01"
 
@@ -176,3 +177,13 @@ def test_risk_engine_cannot_read_leases_or_flags_directly(engine):
             engine.execute(statement)
 
 
+def test_asi08_decide_endpoint_fails_closed_when_the_database_fails(caplog):
+    lease = "b" * 64
+    decider = FakeDecider(error=psycopg.OperationalError(f"server closed the connection {lease}"))
+    with caplog.at_level(logging.DEBUG):
+        response = post(decider, {"lease": lease, "tool": "read_ticket"})
+    assert response.status_code == 503
+    assert response.json() == {"decision": "deny", "reasons": ["risk_unavailable"]}
+    # The log names the error class only: never the lease, never the message that may carry it.
+    assert lease not in caplog.text
+    assert "OperationalError" in caplog.text

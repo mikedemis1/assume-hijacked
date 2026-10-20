@@ -21,6 +21,7 @@ from app.gateway.auth import AGENT_USER
 from app.llmgw import backends, main as llmgw_main
 from app.llmgw.backends import AnthropicBackend, ScriptedBackend
 from app.llmgw.main import Budget, LlmGateway, build_app, init_metrics
+from tests.conftest import TOOLS
 
 ROOT = Path(__file__).resolve().parents[2]
 AGENT_IP = "10.250.3.5"  # the address a request comes from (the budget's key; the caller check ignores it)
@@ -262,3 +263,6 @@ def env(**more):
     return {"CALLER_AUTH": "k8s", **more}
 
 
+def test_asi09_the_model_has_no_approve_tool():
+    """Nothing the model is offered can approve or pay: it gets the five tools and no others."""
+    assert sorted(t["name"] for t in backends.MODEL_TOOLS) == sorted(TOOLS)

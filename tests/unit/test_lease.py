@@ -89,3 +89,25 @@ def test_tool_roles_have_no_table_grants(admin):
 RLS_TABLES = ["tickets", "customers", "accounts", "supply_points", "action_requests", "leases"]
 
 
+def test_asi03_rls_hides_rows_from_tool_roles(admin):
+    open_lease(admin, 1, ["read_ticket"])
+    admin.execute("INSERT INTO action_requests (kind, ticket_id, account_id, amount_eur) VALUES ('credit', 1, 1, 5)")
+    for table in RLS_TABLES:
+        assert admin.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"] > 0
+        for role in TOOL_ROLES + ["executor"]:
+            # A grant added by mistake: the tool role still sees no row, because no policy names it.
+            # The executor is the control: a role the policy names sees the rows.
+            with admin.transaction():
+                admin.execute(f"GRANT SELECT ON {table} TO {role}")
+                admin.execute(f"SET LOCAL ROLE {role}")
+                seen = admin.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]
+                admin.execute("RESET ROLE")
+                raise psycopg.Rollback
+            if role == "executor":
+                assert seen > 0, table
+            else:
+                assert seen == 0, (table, role)
+                # The grant was rolled back.
+                assert admin.execute(
+                    "SELECT has_table_privilege(%s, %s, 'SELECT') AS ok", (role, table)
+                ).fetchone()["ok"] is False

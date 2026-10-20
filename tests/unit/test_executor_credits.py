@@ -2,6 +2,8 @@
 
 from app.executor.credits import process_credits
 from tests.conftest import assess
+import psycopg
+import pytest
 
 
 def add_credit(admin, amount, evidence, reason="duplicate_charge", account_id=1, ticket_id=1, tier="T0") -> int:
@@ -125,3 +127,17 @@ def test_t1_credit_executes_after_one_approval(admin, as_role, settings, now):
     assert statuses(admin) == ["executed"] and credits_count(admin) == 1
 
 
+def test_asi02_big_credit_goes_to_staff(admin, as_role, settings, now):
+    admin.execute("INSERT INTO charges VALUES (8, 1, '2026-10', 80.00), (9, 1, '2026-10', 80.00)")
+    add_credit(admin, 80, 9)
+    process_credits(as_role("executor"), settings, now)
+    assert statuses(admin) == ["needs_staff"]
+
+
+@pytest.mark.parametrize("case", UNSUPPORTED_CREDITS)
+def test_asi02_database_refuses_a_credit_with_no_charge_behind_it(admin, as_role, case):
+    setup, reason = UNSUPPORTED_CREDITS[case]
+    row = setup(admin)
+    with pytest.raises(psycopg.errors.RaiseException, match=reason):
+        insert_credit(as_role("executor"), *row)
+    assert credits_count(admin) == 0

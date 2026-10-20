@@ -119,3 +119,19 @@ def test_second_effect_call_is_denied(tool):
     assert assess_call(call(tool=tool, effect_calls_on_lease=2)) == ("deny", ("one_effect_per_ticket",))
 
 
+@pytest.mark.parametrize("protection", ["YES", "UNKNOWN", "maybe", ""])
+def test_asi01_protected_home_goes_to_humans(protection):
+    assert judge(moveout(protection=protection)) == Assessment(
+        "HUMAN_ONLY", 100, ("protected_or_unknown_home",)
+    )
+
+
+@pytest.mark.parametrize("amount", [None, Decimal("0"), Decimal("-0.01"), Decimal("-5")])
+def test_asi02_credit_rule_rejects_missing_or_non_positive_amount(amount):
+    assert judge(credit(amount_eur=amount)) == Assessment("REJECT", 100, ("invalid_amount",))
+
+
+@pytest.mark.parametrize("denied,verdict", [(0, "allow"), (2, "allow"), (3, "pause"), (4, "pause")])
+def test_asi10_three_denials_pause_in_the_rules(denied, verdict):
+    got = assess_call(call(denied_on_lease=denied))
+    assert got == (verdict, ("repeated_denials",) if verdict == "pause" else ())

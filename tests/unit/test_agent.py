@@ -7,6 +7,7 @@ from app.agent.llm import ScriptedLLM
 from tests.conftest import admin_connect
 from tests.dispatcherharness import Harness, post
 from tests.gatewayharness import AppGatewayClient, build
+from app.agent.guard import SAFE_REPLY, guard_reply, numbers_in
 
 
 LEASE = "lease-of-ticket-7"  # what the agent was given; RecordingGateway never checks it
@@ -160,3 +161,28 @@ def test_the_agent_holds_no_key_and_knows_no_tool_address():
         assert word not in source.replace("tool client", ""), word
 
 
+def test_asi01_agent_drops_customer_id():
+    agent = Agent(ScriptedLLM(), RecordingGateway(""))
+    sent = {"amount_eur": 1, "reason": "duplicate_charge", "evidence_ref": 2, "customer_id": 1002}
+    assert agent._safe_args("issue_bill_credit", sent, LEASE) == (
+        {"amount_eur": 1, "reason": "duplicate_charge", "evidence_ref": 2, "lease": LEASE}, ["customer_id"])
+    assert agent._safe_args("lookup_account", {"customer_id": 1002}, LEASE) == ({"lease": LEASE}, ["customer_id"])
+
+
+@pytest.mark.parametrize(
+    "text", ["We credited €49", "You get 49 euros", "EUR 49 refunded", "€ 49,00 back", "a refund of 49 Euro",
+     "EUR49 back", "49EUR", "refund of $49", "49 dollars", "100 ευρώ",
+     "We credited 49 to your account", "Η πίστωση 49 έγινε"],
+)
+def test_asi09_guard_blocks_money_promises(text):
+    assert guard_reply(text, set()) == SAFE_REPLY
+
+
+@pytest.mark.parametrize("text", BYPASSES)
+def test_asi09_guard_blocks_the_known_bypasses(text):
+    assert guard_reply(text, numbers_in(ACCOUNT_JSON)) == SAFE_REPLY
+
+
+def test_asi09_agent_blocks_a_number_no_tool_returned(settings, admin, as_role):
+    add_ticket(admin, 111, 1001, "CALL lookup_account {}\nSAY Your meter number is 4711.")
+    assert make_agent(settings, as_role).handle_ticket(111) == SAFE_REPLY
