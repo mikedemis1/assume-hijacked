@@ -233,12 +233,12 @@ def test_every_container_is_restricted_and_non_root(env):
         uid = 70 if name == "postgres" else APP_UID
         for container in containers(spec):
             assert_restricted(spec, container, uid)
-        # Host namespaces and hostPath volumes of the workloads are checked by Trivy in the lint job
-        # (KSV-0008, 0009, 0010, 0121); the agent Job template is JSON inside a ConfigMap, which
-        # Trivy does not read.
+        # Host namespaces of the workloads are checked by Trivy in the lint job (KSV-0008, 0009,
+        # 0010); the agent Job template is JSON inside a ConfigMap, which Trivy does not read.
+        # hostPath is not left to Trivy: its HIGH rule (KSV-0121) knows only a list of paths.
+        assert all("hostPath" not in v for v in spec.get("volumes", []))
         if name == "agent":
             assert not spec.get("hostNetwork") and not spec.get("hostPID") and not spec.get("hostIPC")
-            assert all("hostPath" not in v for v in spec.get("volumes", []))
 
 
 @pytest.mark.parametrize("env", ENVS)

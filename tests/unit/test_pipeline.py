@@ -148,24 +148,28 @@ def test_lint_job_scans_chart_terraform_and_dockerfiles_with_the_pinned_trivy():
     script = _script("lint")
     assert re.search(r"install_tools\b.*\btrivy\b", script), "the pinned trivy binary is installed"
     assert "sh scripts/trivy-config.sh" in script
+    assert "|| true" not in script and "allow_failure" not in _jobs()["lint"]
     # The binary is the version of the image the build job scans with.
     image = _jobs()["build"]["variables"]["TRIVY_IMAGE"]
     assert f"aquasec/trivy:{_tool_pins()['TRIVY']['VERSION']}@" in image
     # What the script scans, and when it fails.
     scan = _text("scripts/trivy-config.sh")
-    for scanned in ("render-chart.py", "cp -R infra", "Dockerfile", "tests/attacks/Dockerfile"):
+    for scanned in ("render-chart.py", "cp -R infra", 'cp Dockerfile "$scan/Dockerfile"',
+                    'cp tests/attacks/Dockerfile "$scan/tests/attacks/Dockerfile"'):
         assert scanned in scan, scanned
-    assert "--severity HIGH,CRITICAL --exit-code 1" in scan
-    assert "--skip-check-update" in scan, "the checks are the ones built into the pinned version"
+    # The gate is the last command of the script, so its status is the script's (no `|| true`).
+    assert scan.rstrip().endswith("\ntrivy_scan config --severity HIGH,CRITICAL --exit-code 1")
+    assert "scripts/check-trivy-report.py" in scan
+    # The checks are a bundle pinned by digest, not whatever is newest.
+    assert re.search(r"^CHECKS=\S+@sha256:[0-9a-f]{64}$", scan, re.M)
+    assert "--checks-bundle-repository" in scan
 
 
-def test_every_trivy_ignore_has_a_reason():
-    lines = _text(".trivyignore").splitlines()
-    ids = [i for i, line in enumerate(lines) if line and not line.startswith("#")]
-    assert ids, "the ignore file is empty: delete it, and the --ignorefile in the build job"
-    for i in ids:
-        assert re.fullmatch(r"[A-Z]+-\d{4}|CVE-\d{4}-\d+", lines[i]), lines[i]
-        assert lines[i - 1].startswith("#"), f"{lines[i]} has no reason above it"
+def test_every_trivy_ignore_has_a_path_and_a_reason():
+    entries = yaml.safe_load(_text(".trivyignore.yaml"))["misconfigurations"]
+    assert entries
+    for entry in entries:
+        assert entry["paths"] and entry["statement"], entry["id"]
 
 
 # --- pinned tools (scripts/ci-tools.sh) -----------------------------------------------------

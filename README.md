@@ -102,7 +102,7 @@ GitLab CI has three jobs.
 
 | Job | Does |
 |---|---|
-| lint | ruff, gitleaks, `terraform fmt` and `validate`, `helm lint`, `trivy config` on the rendered chart, `infra/` and the Dockerfiles (fails on HIGH and CRITICAL; `.trivyignore` lists what is accepted) |
+| lint | ruff, gitleaks, `terraform fmt` and `validate`, `helm lint`, `trivy config` on the rendered chart, `infra/` and the Dockerfiles (fails on HIGH and CRITICAL; `.trivyignore.yaml` lists what is accepted) |
 | test | the default pytest run against a PostgreSQL service, including the chart render tests (`helm template`, then the network and admission objects, no cluster) |
 | build | the app image and a Trivy scan |
 

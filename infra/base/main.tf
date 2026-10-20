@@ -38,6 +38,8 @@ resource "azurerm_storage_account" "state" {
     prevent_destroy = true
   }
 
+  # Accepted for the lab: Microsoft-managed keys (a customer-managed key needs its own Key Vault
+  # key and identity, backlog); LRS, the cheapest, with versioning and soft delete as the undo.
   name                = var.state_storage_account_name
   resource_group_name = azurerm_resource_group.base.name
   location            = azurerm_resource_group.base.location
@@ -67,6 +69,7 @@ resource "azurerm_storage_account" "state" {
   tags = var.tags
 }
 
+# Blob read logging is off (backlog); the Activity log records management changes.
 resource "azurerm_storage_container" "state" {
   lifecycle {
     prevent_destroy = true
@@ -84,7 +87,7 @@ resource "azurerm_container_registry" "acr" {
   resource_group_name = azurerm_resource_group.base.name
   location            = azurerm_resource_group.base.location
 
-  sku           = "Basic" # cheapest tier; no private endpoint, no zone redundancy
+  sku           = "Basic" # cheapest tier; no private endpoint, no zone redundancy, no Defender scanning
   admin_enabled = false   # pull and push use Entra roles (AcrPull, AcrPush), never the admin user
 
   tags = var.tags

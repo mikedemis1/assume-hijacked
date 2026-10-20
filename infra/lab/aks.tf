@@ -38,6 +38,11 @@ locals {
   )
 }
 
+# Accepted for the lab: the API server is public but limited to api_authorized_ip_ranges (a private
+# cluster needs a runner or jump host inside the VNet); disks use platform-managed keys, with no
+# disk encryption set; host encryption needs the EncryptionAtHost feature on the subscription
+# (backlog); Azure Policy for Kubernetes is off because admission is ValidatingAdmissionPolicy and
+# Pod Security Admission.
 resource "azurerm_kubernetes_cluster" "this" {
   name                = var.cluster_name
   location            = var.location

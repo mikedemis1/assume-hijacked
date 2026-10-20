@@ -51,8 +51,9 @@ lint:
   # helm lint here has no install values (the chart tests in the test job lint with them).
   # trivy config: scripts/trivy-config.sh renders the chart for kind and Azure (the python and the
   # pip install are for scripts/render-chart.py), scans it with infra/ and the Dockerfiles, and
-  # fails on HIGH and CRITICAL that .trivyignore does not accept. The checks are the ones built
-  # into the pinned trivy, so the rules change only with the version.
+  # fails on HIGH and CRITICAL that .trivyignore.yaml does not accept, and
+  # when the accepted findings are not exactly the three it lists. The checks are a bundle pinned
+  # by digest in the script, so the rules change only when that digest does.
   extends: .pip-cache
   stage: lint
   image: python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1

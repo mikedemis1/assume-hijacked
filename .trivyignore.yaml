@@ -1,0 +1,26 @@
+# Findings Trivy reports and we accept, each only in the file it was found in.
+# scripts/check-trivy-report.py fails when the suppressed set differs from the three below.
+# Format: https://trivy.dev/latest/docs/configuration/filtering/ (.trivyignore.yaml)
+misconfigurations:
+  # Storage account of the Terraform state: no network rules, public endpoint. GitLab.com runners
+  # have no fixed IP and no path into the VNet. Shared keys, local users and anonymous access are
+  # off, so every request needs an Entra role.
+  - id: AZU-0012
+    paths:
+      - infra/base/main.tf
+    statement: Entra-only state account that CI runners without a fixed IP must reach over the public endpoint
+
+  # NSG rule allow-node-https-out of the system subnet: node egress to the Internet on 443.
+  - id: AZU-0051
+    paths:
+      - infra/lab/nsg.tf
+    statement: Outbound control is decided at the Azure step (Azure Firewall or ACNS), see docs/azure.md
+
+  # ConfigMap db-sql: "stores secrets" is a false positive. The match is
+  # `CREATE ROLE ... PASSWORD :'pw_<role>'` in db/sql/02-roles.sql, a psql variable; the passwords
+  # come from Secrets (kind) or Key Vault (Azure) and are passed to psql by init.sh.
+  - id: KSV-0109
+    paths:
+      - chart-kind.yaml
+      - chart-azure.yaml
+    statement: psql variable placeholders PASSWORD :'pw_<role>', not secrets
