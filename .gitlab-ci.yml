@@ -148,8 +148,8 @@ build:
   # Needs a runner that allows privileged mode (GitLab.com instance runners do).
   # trivy: https://trivy.dev/latest/docs/configuration/filtering/
   # Two runs: a full report kept as artifacts, including unfixed and fix_deferred vulnerabilities,
-  # and the gate on HIGH/CRITICAL with a fix. An accepted one goes in .trivyignore with the reason
-  # and an expiry date (exp:YYYY-MM-DD).
+  # and the gate on HIGH/CRITICAL with a fix. An accepted one goes in .trivyignore.yaml (key
+  # `vulnerabilities`) with the reason and an `expired_at` date.
   # Container scanning report format: https://docs.gitlab.com/ci/yaml/artifacts_reports/
   stage: build
   image: docker:29.8.1-cli@sha256:018edbc908e08fcc9dbf029c812c34251e9b4719e6f71ca0e5eae2a987d014ca
@@ -200,14 +200,9 @@ build:
       trivy convert --format table --severity HIGH,CRITICAL /repo/reports/trivy-all.json
 
       # 2. Gate: fails on a HIGH or CRITICAL that has a fixed version.
-      ignore=
-      if [ -f .trivyignore ]; then
-        ignore="--ignorefile /repo/.trivyignore"
-      fi
       echo "== gate: HIGH and CRITICAL with a fixed version"
-      # shellcheck disable=SC2086  # $ignore is empty or two words on purpose
       trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
-        --exit-code 1 --no-progress --skip-version-check $ignore "$image"
+        --exit-code 1 --no-progress --skip-version-check --ignorefile /repo/.trivyignore.yaml "$image"
   artifacts:
     when: always
     expire_in: 90 days

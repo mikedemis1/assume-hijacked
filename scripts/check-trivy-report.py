@@ -4,6 +4,8 @@
    so an empty render or a missing directory cannot pass as "no findings".
 2. The suppressed findings are exactly the three accepted in .trivyignore.yaml, so an ignore
    entry cannot start hiding something else.
+3. No failed HIGH or CRITICAL check is left unsuppressed, so the report alone backs the gate even
+   if a gate run on the Docker path fell back to the built-in checks.
 
     python scripts/check-trivy-report.py <report.json>
 """
@@ -45,6 +47,10 @@ def main(path: str) -> list[str]:
     found = suppressed(results)
     if found != SUPPRESSED:
         problems.append(f"suppressed findings differ:\n  found    {dict(found)}\n  expected {dict(SUPPRESSED)}")
+    for result in results:
+        for finding in result.get("Misconfigurations", []):
+            if finding["Status"] == "FAIL" and finding["Severity"] in ("HIGH", "CRITICAL"):
+                problems.append(f"{result['Target']}: unsuppressed {finding['Severity']} {finding['ID']}: {finding['Message']}")
     return problems
 
 
