@@ -4,7 +4,7 @@ An AI support agent for a fictional electricity supplier, built on one assumptio
 
 Azure deployment: Terraform and CI are ready; first live run in progress.
 
-Demo video: <link coming>
+Demo video (2.5 min, the real app on kind): [docs/demo.mp4](docs/demo.mp4). Real Claude Haiku answers a normal question and refuses a direct injection on its own; then a fully hijacked model sends five attacks and the walls stop all five; Grafana shows the same events as metrics.
 
 ## The idea
 
@@ -58,7 +58,7 @@ Nine parts: dispatcher, agent, llm-gateway, tool-gateway, risk-engine, tools, ex
 - Brain Claude: honest messages go to real Claude Haiku through the llm-gateway when deployed with the Anthropic backend (`LLM_BACKEND=anthropic`); otherwise the scripted model answers. It is the only holder of the API key and it enforces a token budget.
 - Brain Hijacked: five attack chips send a message whose ticket carries a scripted attack plan (marker line `[simulated hijacked model]`). The llm-gateway routes that ticket to a scripted model that obeys every order.
 
-![The customer site](docs/images/demo-ui.png)
+![The presenter view after five attacks](docs/images/demo-ui.png)
 
 ## The five attacks and the wall that stops each
 

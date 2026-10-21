@@ -5,6 +5,8 @@
 # docs: the images need none of them.
 .*
 *.md
+# docs (images, the demo video)
+docs
 context
 wheels
 tests/*
