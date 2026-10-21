@@ -118,13 +118,6 @@ override_resource {
   values = {
     id              = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.ContainerService/managedClusters/aks-assume-hijacked"
     oidc_issuer_url = "https://swedencentral.oic.prod-aks.azure.com/66666666-7777-8888-9999-000000000000/cluster/"
-    oms_agent = {
-      oms_agent_identity = [{
-        client_id                 = "bbbbbbbb-0000-0000-0000-0000000000a1"
-        object_id                 = "aaaaaaaa-0000-0000-0000-0000000000a1"
-        user_assigned_identity_id = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab-aks-nodes/providers/Microsoft.ManagedIdentity/userAssignedIdentities/omsagent"
-      }]
-    }
   }
 }
 
@@ -437,7 +430,7 @@ run "every_subnet_has_an_nsg_that_ends_in_deny_all" {
   assert {
     condition = alltrue([
       for k, n in azurerm_network_security_group.subnet :
-      anytrue([for r in n.security_rule : r.direction == "Inbound" && r.access == "Deny" && r.priority == 4096 && r.source_address_prefixes == toset(["*"])])
+      anytrue([for r in n.security_rule : r.direction == "Inbound" && r.access == "Deny" && r.priority == 4096 && r.source_address_prefix == "*"])
     ])
     error_message = "Every NSG must end with an inbound deny-all rule."
   }
@@ -445,7 +438,7 @@ run "every_subnet_has_an_nsg_that_ends_in_deny_all" {
   assert {
     condition = alltrue([
       for k, n in azurerm_network_security_group.subnet :
-      anytrue([for r in n.security_rule : r.direction == "Outbound" && r.access == "Deny" && r.priority == 4096 && r.destination_address_prefixes == toset(["*"])])
+      anytrue([for r in n.security_rule : r.direction == "Outbound" && r.access == "Deny" && r.priority == 4096 && r.destination_address_prefix == "*"])
     ])
     error_message = "Every NSG must end with an outbound deny-all rule."
   }
@@ -496,11 +489,6 @@ run "postgres_is_private_b1ms_17_with_password_and_entra" {
   assert {
     condition     = azurerm_postgresql_flexible_server_active_directory_administrator.db_migrate.object_id == "aaaaaaaa-0000-0000-0000-00000000db01" && azurerm_postgresql_flexible_server_active_directory_administrator.db_migrate.principal_name == "id-db-migrate"
     error_message = "The Entra administrator must be the db-migrate workload identity."
-  }
-
-  assert {
-    condition     = azurerm_postgresql_flexible_server_database.supplier.name == "supplier"
-    error_message = "Database supplier must exist before db-migrate connects to it."
   }
 
   assert {

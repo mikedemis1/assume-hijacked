@@ -48,7 +48,8 @@ resource "azurerm_postgresql_flexible_server" "this" {
   location            = var.location
 
   version      = "17"
-  sku_name     = "B_Standard_B1ms"
+  sku_name     = var.postgres_sku_name
+  zone         = var.postgres_zone
   storage_mb   = 32768
   storage_tier = "P4"
 
@@ -85,8 +86,10 @@ resource "azurerm_postgresql_flexible_server_active_directory_administrator" "db
   principal_type      = "ServicePrincipal"
 }
 
-# The chart's db-migrate Job connects to `supplier` before init runs, so the database must
-# exist on the server already.
+# No database resource: db/init/init.sh (the chart's db-migrate Job) creates `supplier`, so the
+# Entra admin owns it. The admin is not a superuser and needs that ownership to set up the
+# schema; a database created here would be owned by the break-glass login.
+
 # Extensions must be allow-listed on Flexible Server before CREATE EXTENSION works.
 # db/sql/05-lease.sql runs CREATE EXTENSION pgcrypto (lease tokens are hashed with it).
 # Docs: learn.microsoft.com/azure/postgresql/extensions/how-to-allow-extensions
@@ -111,15 +114,6 @@ resource "azurerm_postgresql_flexible_server_configuration" "privacy" {
   name      = each.key
   server_id = azurerm_postgresql_flexible_server.this.id
   value     = each.value
-}
-
-# The lab is destroyed every night on purpose, so prevent_destroy would only get in the way.
-# tflint-ignore: azurerm_resources_missing_prevent_destroy
-resource "azurerm_postgresql_flexible_server_database" "supplier" {
-  name      = "supplier"
-  server_id = azurerm_postgresql_flexible_server.this.id
-  charset   = "UTF8"
-  collation = "en_US.utf8"
 }
 
 resource "azurerm_private_endpoint" "postgres" {

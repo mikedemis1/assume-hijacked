@@ -44,11 +44,6 @@ output "postgres_host" {
   value       = azurerm_postgresql_flexible_server.this.fqdn
 }
 
-output "postgres_database" {
-  description = "Application database created by Terraform."
-  value       = azurerm_postgresql_flexible_server_database.supplier.name
-}
-
 output "postgres_entra_admin" {
   description = "Helm azure.dbAdmin: the Entra principal name db-migrate logs in as."
   value       = azurerm_postgresql_flexible_server_active_directory_administrator.db_migrate.principal_name

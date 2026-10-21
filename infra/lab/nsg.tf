@@ -67,8 +67,8 @@ locals {
     })
 
     snet-aks-sandbox = merge(local.aks_common_rules, {
-      # Tools and agents run here: no general Internet rule. Azure allows ONE service tag
-      # per rule, so every tag gets its own rule.
+      # Tools and agents run here. Azure allows ONE service tag per rule, so every tag gets
+      # its own rule.
       #
       # Platform ranges the node itself needs (registry, AKS control plane):
       allow-azure-cloud-out = {
@@ -90,6 +90,14 @@ locals {
       allow-key-vault-out = {
         priority         = 170, direction = "Outbound", access = "Allow", protocol = "Tcp"
         dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureKeyVault.${var.location}"]
+      }
+      # The Kata node installs its runtime from packages.microsoft.com at boot. That host is
+      # global (Azure Front Door), outside AzureCloud.<region>, and without it the node never
+      # joins (vmssCSE exit 124). No service tag names it alone, so the node gets HTTPS out like
+      # the system pool; the pods stay limited by their CiliumNetworkPolicy.
+      allow-node-https-out = {
+        priority         = 180, direction = "Outbound", access = "Allow", protocol = "Tcp"
+        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["Internet"]
       }
     })
 
@@ -131,15 +139,20 @@ resource "azurerm_network_security_group" "subnet" {
     for_each = each.value
 
     content {
-      name                         = security_rule.key
-      priority                     = security_rule.value.priority
-      direction                    = security_rule.value.direction
-      access                       = security_rule.value.access
-      protocol                     = security_rule.value.protocol
-      source_port_range            = "*"
-      destination_port_ranges      = security_rule.value.dest_port_ranges
-      source_address_prefixes      = security_rule.value.source_prefixes
-      destination_address_prefixes = security_rule.value.dest_prefixes
+      name              = security_rule.key
+      priority          = security_rule.value.priority
+      direction         = security_rule.value.direction
+      access            = security_rule.value.access
+      protocol          = security_rule.value.protocol
+      source_port_range = "*"
+      # Azure accepts "*" and service tags (Internet) only in the single-value fields, not in a
+      # list, for ports and addresses alike: one value goes in the single field.
+      destination_port_range       = length(security_rule.value.dest_port_ranges) == 1 ? security_rule.value.dest_port_ranges[0] : null
+      destination_port_ranges      = length(security_rule.value.dest_port_ranges) == 1 ? null : security_rule.value.dest_port_ranges
+      source_address_prefix        = length(security_rule.value.source_prefixes) == 1 ? security_rule.value.source_prefixes[0] : null
+      source_address_prefixes      = length(security_rule.value.source_prefixes) == 1 ? null : security_rule.value.source_prefixes
+      destination_address_prefix   = length(security_rule.value.dest_prefixes) == 1 ? security_rule.value.dest_prefixes[0] : null
+      destination_address_prefixes = length(security_rule.value.dest_prefixes) == 1 ? null : security_rule.value.dest_prefixes
     }
   }
 }

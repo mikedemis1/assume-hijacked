@@ -238,6 +238,23 @@ variable "aks_audit_log_category" {
 
 # ---------------------------------------------------------------- PostgreSQL
 
+variable "postgres_sku_name" {
+  description = "Flexible Server size. B1ms is the cheapest; a larger Burstable size helps when the region has no B1ms capacity (RegionalAllocationFailed)."
+  type        = string
+  default     = "B_Standard_B1ms"
+
+  validation {
+    condition     = startswith(var.postgres_sku_name, "B_Standard_")
+    error_message = "postgres_sku_name must be a Burstable size (B_Standard_...): the lab does not need more."
+  }
+}
+
+variable "postgres_zone" {
+  description = "Availability zone for the Flexible Server (\"1\", \"2\", \"3\"), or null to let Azure pick. Pinning one helps when the zone Azure picks is out of capacity."
+  type        = string
+  default     = null
+}
+
 variable "postgres_admin_login" {
   description = "Password administrator of the flexible server (break glass only; nobody holds its password, see postgres.tf)."
   type        = string

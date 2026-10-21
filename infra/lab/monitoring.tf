@@ -43,8 +43,8 @@ locals {
       query       = <<-KQL
           ContainerLogV2
           | where PodNamespace startswith "ah-"
-          | extend kind = extract(@'"kind":\s*"([a-z_]+)"', 1, tostring(LogMessage))
-          | where kind in (${local.attack_kinds_kql})
+          | extend event_kind = extract(@'"kind":\s*"([a-z_]+)"', 1, tostring(LogMessage))
+          | where event_kind in (${local.attack_kinds_kql})
           | summarize events = count()
         KQL
       column      = "events"
@@ -142,14 +142,9 @@ resource "azurerm_monitor_data_collection_rule_association" "container_logs" {
   data_collection_rule_id = azurerm_monitor_data_collection_rule.container_logs.id
 }
 
-# The agent's identity publishes its own health metrics on the cluster.
-resource "azurerm_role_assignment" "oms_agent_metrics" {
-  scope                            = azurerm_kubernetes_cluster.this.id
-  role_definition_name             = "Monitoring Metrics Publisher"
-  principal_id                     = azurerm_kubernetes_cluster.this.oms_agent[0].oms_agent_identity[0].object_id
-  principal_type                   = "ServicePrincipal"
-  skip_service_principal_aad_check = true
-}
+# No role for the agent: with msi_auth_for_monitoring_enabled the logs go through the data
+# collection rule above, and AKS returns no oms_agent_identity to hand a role to (the first real
+# apply failed on that index).
 
 # ---------------------------------------------------------------- alerts
 
