@@ -17,8 +17,8 @@ override_resource {
 variables {
   name                = "id-tool-lookup-account"
   resource_group_name = "rg-lab"
-  location            = "northeurope"
-  oidc_issuer_url     = "https://northeurope.oic.prod-aks.azure.com/tenant/cluster/"
+  location            = "swedencentral"
+  oidc_issuer_url     = "https://swedencentral.oic.prod-aks.azure.com/tenant/cluster/"
   namespace           = "ah-tools"
   service_account     = "tool-lookup-account"
   role_assignments = {

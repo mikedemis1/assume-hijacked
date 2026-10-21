@@ -21,11 +21,11 @@ variable "tenant_id" {
 variable "location" {
   description = "Azure region for every resource. The design allows exactly one."
   type        = string
-  default     = "northeurope"
+  default     = "swedencentral"
 
   validation {
-    condition     = var.location == "northeurope"
-    error_message = "This build runs in North Europe only."
+    condition     = var.location == "swedencentral"
+    error_message = "This build runs in Sweden Central only."
   }
 }
 

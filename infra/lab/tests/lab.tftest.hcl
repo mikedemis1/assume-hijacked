@@ -37,7 +37,7 @@ override_data {
   values = {
     id       = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab"
     name     = "rg-lab"
-    location = "northeurope"
+    location = "swedencentral"
   }
 }
 
@@ -117,7 +117,7 @@ override_resource {
   override_during = plan
   values = {
     id              = "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg-lab/providers/Microsoft.ContainerService/managedClusters/aks-assume-hijacked"
-    oidc_issuer_url = "https://northeurope.oic.prod-aks.azure.com/66666666-7777-8888-9999-000000000000/cluster/"
+    oidc_issuer_url = "https://swedencentral.oic.prod-aks.azure.com/66666666-7777-8888-9999-000000000000/cluster/"
     oms_agent = {
       oms_agent_identity = [{
         client_id                 = "bbbbbbbb-0000-0000-0000-0000000000a1"

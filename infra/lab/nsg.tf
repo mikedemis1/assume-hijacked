@@ -73,7 +73,7 @@ locals {
       # Platform ranges the node itself needs (registry, AKS control plane):
       allow-azure-cloud-out = {
         priority         = 140, direction = "Outbound", access = "Allow", protocol = "Tcp"
-        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureCloud.northeurope"]
+        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureCloud.${var.location}"]
       }
       allow-container-registry-out = {
         priority         = 150, direction = "Outbound", access = "Allow", protocol = "Tcp"
@@ -89,7 +89,7 @@ locals {
       }
       allow-key-vault-out = {
         priority         = 170, direction = "Outbound", access = "Allow", protocol = "Tcp"
-        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureKeyVault.northeurope"]
+        dest_port_ranges = ["443"], source_prefixes = ["*"], dest_prefixes = ["AzureKeyVault.${var.location}"]
       }
     })
 

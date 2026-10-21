@@ -338,8 +338,8 @@ run "rg_lab_exists_as_an_empty_shell" {
   command = plan
 
   assert {
-    condition     = azurerm_resource_group.lab.name == "rg-lab" && azurerm_resource_group.lab.location == "northeurope"
-    error_message = "Base must create rg-lab in North Europe so ci-apply's grants survive a lab destroy."
+    condition     = azurerm_resource_group.lab.name == "rg-lab" && azurerm_resource_group.lab.location == "swedencentral"
+    error_message = "Base must create rg-lab in Sweden Central so ci-apply's grants survive a lab destroy."
   }
 }
 
