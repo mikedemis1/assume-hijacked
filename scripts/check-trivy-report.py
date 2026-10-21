@@ -22,6 +22,7 @@ SUPPRESSED = Counter({
     ("KSV-0109", "chart-azure.yaml", "ConfigMap 'db-sql'"): 1,
     ("AZU-0012", "infra/base/main.tf", "azurerm_storage_account.state"): 1,
     ("AZU-0051", "infra/lab/nsg.tf", "azurerm_network_security_group.subnet[\"snet-aks-system\"]"): 1,
+    ("AZU-0051", "infra/lab/nsg.tf", "azurerm_network_security_group.subnet[\"snet-aks-sandbox\"]"): 1,
 })
 
 
