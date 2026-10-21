@@ -4,7 +4,11 @@
 
 A support chat agent for a made-up electricity supplier. I built it on the assumption that the model is already hijacked, then tried to make it hurt customers. The model never holds a password, a database connection or a route to the internet. Every action it asks for goes through checks that ignore what the model says.
 
-Demo video (2.5 min, recorded from the running app on kind): [docs/demo.mp4](docs/demo.mp4)
+Demo video (2.5 min, recorded from the running app on kind):
+
+https://github.com/user-attachments/assets/c8265ecc-b919-424a-8068-07076368f309
+
+The same file is in the repo: [docs/demo.mp4](docs/demo.mp4).
 
 Azure: the Terraform for AKS is written and tested offline. It has not been applied yet.
 
