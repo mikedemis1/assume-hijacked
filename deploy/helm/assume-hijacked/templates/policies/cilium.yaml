@@ -88,7 +88,7 @@ spec:
           rules:
             dns:
               {{- range $host := $x.hosts }}
-              {{- range include "ah.searchNames" (dict "host" $host "ns" $x.ns) | fromJsonArray }}
+              {{- range include "ah.searchNames" (dict "host" $host "ns" $x.ns "extra" $root.Values.network.podSearchDomain) | fromJsonArray }}
               - matchName: {{ . | quote }}
               {{- end }}
               {{- end }}
@@ -121,7 +121,7 @@ spec:
             - {port: "53", protocol: ANY}
           rules:
             dns:
-              {{- range include "ah.searchNames" (dict "host" (required "db.host is required" $root.Values.db.host) "ns" $ns) | fromJsonArray }}
+              {{- range include "ah.searchNames" (dict "host" (required "db.host is required" $root.Values.db.host) "ns" $ns "extra" $root.Values.network.podSearchDomain) | fromJsonArray }}
               - matchName: {{ . | quote }}
               {{- end }}
 {{- end }}

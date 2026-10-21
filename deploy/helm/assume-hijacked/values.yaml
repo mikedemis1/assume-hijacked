@@ -56,6 +56,10 @@ network:
   # azure only: the private endpoint subnet of PostgreSQL (infra/lab snet-pe). The database is
   # outside the cluster there, so its NetworkPolicy edges end at this CIDR.
   databaseCidr: ""
+  # A search domain the platform adds to every pod's resolv.conf besides cluster.local. On AKS it
+  # is the VNet's internal DNS suffix (<id>.<region>.internal.cloudapp.net, the node NIC's
+  # internalDomainNameSuffix). An external name is first tried with it too, so it must be allowed.
+  podSearchDomain: ""
 
 # Public half of the gateway's ES256 signing key (PEM). Not a secret; the tools verify with it.
 gateway:

@@ -581,7 +581,9 @@ as a JSON list of {name, ns, hosts}. Nothing else in the chart resolves a name o
 cluster.local.
   llm-gateway  anthropic: the API host
   console      Entra sign-in keys, when authMode=entra
-  db-migrate   Entra (Azure only: it trades its workload identity token for a database token)
+  db-migrate   Entra (Azure only: it trades its workload identity token for a database token),
+               and ARM: `az login` lists subscriptions even with --allow-no-subscriptions (the
+               identity has no ARM role, so the list is empty)
 */}}
 {{- define "ah.externalNames" -}}
 {{- $v := .Values -}}
@@ -600,7 +602,7 @@ cluster.local.
 {{- $vault := required (printf "azure.keyVaults.%s is required with env=azure" $component) (index $v.azure.keyVaults $component) -}}
 {{- $vaults = append $vaults (printf "%s.vault.azure.net" $vault) -}}
 {{- end -}}
-{{- $out = append $out (dict "name" "db-migrate" "ns" "ah-core" "hosts" (concat (list $entra) ($vaults | uniq | sortAlpha))) -}}
+{{- $out = append $out (dict "name" "db-migrate" "ns" "ah-core" "hosts" (concat (list $entra "management.azure.com") ($vaults | uniq | sortAlpha))) -}}
 {{- end -}}
 {{- toJson $out -}}
 {{- end }}
@@ -618,10 +620,13 @@ the search list (<ns>.svc.cluster.local, svc.cluster.local, cluster.local; ndots
 for a name with fewer than five dots, and the resolver gives up at the first REFUSED, so a DNS
 rule must allow every form (Cilium docs, layer7 page, Kubernetes note). The extra names all end
 in cluster.local, which CoreDNS answers itself and never forwards.
-Call with (dict "host" ... "ns" ...).
+On AKS the resolver also tries <host>.<network.podSearchDomain> before <host> itself.
+Call with (dict "host" ... "ns" ... "extra" network.podSearchDomain).
 */}}
 {{- define "ah.searchNames" -}}
-{{- toJson (list .host (printf "%s.%s.svc.cluster.local" .host .ns) (printf "%s.svc.cluster.local" .host) (printf "%s.cluster.local" .host)) -}}
+{{- $names := list .host (printf "%s.%s.svc.cluster.local" .host .ns) (printf "%s.svc.cluster.local" .host) (printf "%s.cluster.local" .host) -}}
+{{- if .extra }}{{- $names = append $names (printf "%s.%s" .host .extra) -}}{{- end -}}
+{{- toJson $names -}}
 {{- end }}
 
 {{/*

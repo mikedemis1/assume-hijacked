@@ -395,14 +395,17 @@ def test_asi02_only_named_components_reach_names_outside_the_cluster():
     assert external_names("kind") == {}
     assert external_names("kind", "llm.backend=anthropic", "secrets.anthropicApiKey=test-only") == {
         "llm-gateway": (search_names("api.anthropic.com", "ah-agent"), ["api.anthropic.com"])}
-    # db-migrate: Entra, and the vault of every workload with a database role (it writes their
-    # passwords there).
+    # db-migrate: Entra, ARM (az login lists subscriptions), and the vault of every workload with
+    # a database role (it writes their passwords there).
     vault_hosts = sorted({f"{install_values('azure')['azure']['keyVaults'][c]}.vault.azure.net"
                           for c, (_, role) in COMPONENTS.items() if role})
-    migrate_hosts = [ENTRA, *vault_hosts]
+    migrate_hosts = [ENTRA, "management.azure.com", *vault_hosts]
     assert external_names("azure") == {
         "console": (search_names(ENTRA, "ah-staff"), [ENTRA]),
         "db-migrate": ([n for h in migrate_hosts for n in search_names(h, "ah-core")], migrate_hosts)}
+    # AKS adds the VNet's DNS suffix to the pods' search list: that form is allowed too, and only it.
+    names, hosts = external_names("azure", "network.podSearchDomain=abc.gvxx.internal.cloudapp.net")["console"]
+    assert names == [*search_names(ENTRA, "ah-staff"), f"{ENTRA}.abc.gvxx.internal.cloudapp.net"] and hosts == [ENTRA]
     # No other Cilium egress to the world: no CIDR allow, no entity but the API server.
     for env in ENVS:
         for p in cilium_policies(env):

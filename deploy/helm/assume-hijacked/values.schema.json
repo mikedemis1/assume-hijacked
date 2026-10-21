@@ -63,7 +63,10 @@
     },
     "network": {
       "type": "object",
-      "properties": {"databaseCidr": {"type": "string"}}
+      "properties": {
+        "databaseCidr": {"type": "string"},
+        "podSearchDomain": {"type": "string", "pattern": "^$|^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"}
+      }
     },
     "attackSuite": {
       "type": "object",
