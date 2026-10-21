@@ -1,5 +1,7 @@
 "use strict";
 
+// Everything is inside this function so the two scripts of /security share no names.
+(() => {
 // The chat, on both pages. It shows the visitor's own words and the replies, and nothing about the
 // walls. Everything is put on the page with textContent, never as HTML, because a reply can hold
 // whatever a model wrote. The chat signs in as Eleni (customer 1001) by itself.
@@ -198,3 +200,4 @@ if (els.widget) {
 }
 
 refresh();
+})();

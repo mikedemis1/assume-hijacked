@@ -1,5 +1,7 @@
 "use strict";
 
+// Everything is inside this function so the two scripts of /security share no names.
+(() => {
 // The presenter view. The chat is site.js; this file adds the brain switch, the five attack chips
 // and the cards of what the walls did. Everything is put on the page with textContent, never as
 // HTML. The server sends only fixed phrases; this file adds nothing from the records.
@@ -127,3 +129,4 @@ function renderCards() {
 
 setHijacked(false);
 refresh();
+})();

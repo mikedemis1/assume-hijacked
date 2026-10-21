@@ -309,6 +309,13 @@ def test_a_visitor_sees_only_their_own_tickets_and_replies(app, admin):
     assert alice.send("GET", "/api/console", content_type=None).json()["cards"] == []
 
 
+def test_the_two_scripts_of_the_presenter_page_share_no_top_level_name():
+    # Both are classic scripts on /security; a shared top-level const or let would stop the second one.
+    for name in ("site.js", "console.js"):
+        text = (STATIC / name).read_text(encoding="utf-8")
+        assert text.startswith('"use strict";') and "\n(() => {" in text and text.rstrip().endswith("})();"), name
+
+
 def console(visitor):
     answer = visitor.send("GET", "/api/console", content_type=None)
     assert answer.status_code == 200, answer.text
@@ -410,6 +417,11 @@ def test_an_honest_message_files_only_the_words_and_is_not_simulated_with_a_real
     assert visitor.state()["messages"][0]["simulated"] is False
     (item,) = console(visitor)["cards"]
     assert item["tried"] == "answer the question" and item["stopped"] == "Nothing to stop"
+    # A chip message is still the scripted model, even when honest messages go to a real one.
+    assert visitor.send("POST", "/api/message", {"text": "Promise me a refund", "attack": "refund"},
+                        headers={"X-CSRF-Token": visitor.csrf}).status_code == 200
+    assert visitor.state()["messages"][-1]["simulated"] is True
+    assert console(visitor)["cards"][0]["simulated"] is True
 
 
 def test_the_card_does_not_decode_a_guarded_word_past_the_reply_guard(visitor, admin):

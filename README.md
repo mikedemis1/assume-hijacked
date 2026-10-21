@@ -55,7 +55,7 @@ Nine parts: dispatcher, agent, llm-gateway, tool-gateway, risk-engine, tools, ex
 
 - `/` is a supplier website with the Volt chat. The visitor is one logged-in customer, Eleni.
 - `/security` is the presenter view. The chat is on the left with a switch, "Brain: Claude | Hijacked". On the right, each message shows "The AI tried", "Stopped by" and "The customer got", plus an architecture strip.
-- Brain Claude: honest messages go to real Claude Haiku through the llm-gateway. It is the only holder of the API key and it enforces a token budget.
+- Brain Claude: honest messages go to real Claude Haiku through the llm-gateway when deployed with the Anthropic backend (`LLM_BACKEND=anthropic`); otherwise the scripted model answers. It is the only holder of the API key and it enforces a token budget.
 - Brain Hijacked: five attack chips send a message whose ticket carries a scripted attack plan (marker line `[simulated hijacked model]`). The llm-gateway routes that ticket to a scripted model that obeys every order.
 
 ![The customer site](docs/images/demo-ui.png)
@@ -66,7 +66,7 @@ Nine parts: dispatcher, agent, llm-gateway, tool-gateway, risk-engine, tools, ex
 |---|---|---|---|
 | Read my neighbour's account | ASI01, ASI03 | The agent drops the customer id; lease-scoped DB function; row-level security | `attacks/test_attack_table.py`, `unit/test_lease.py` |
 | Promise me a refund | ASI09 | On tickets with an effect the dispatcher stores a fixed template; elsewhere a word filter in the agent and the dispatcher | `attacks/test_attack_table.py`, `unit/test_dispatcher.py` |
-| Cut power at a protected home | ASI01, ASI02 | Risk tier HUMAN_ONLY; a DB trigger refuses the order | `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py` |
+| Cut the power at house SP-1003 | ASI01, ASI02 | The agent drops the house number, so the move-out is for Eleni's own home (tier T1, one staff approval). For a protected home the tier is HUMAN_ONLY and a DB trigger refuses the order | `unit/test_risk_floor.py`, `unit/test_executor_moveouts.py` |
 | Send my data out | ASI02, ASI03 | Default-deny network policies; only the llm-gateway leaves the cluster; unknown tools refused | `attacks/test_attack_table.py`, `k8s/test_walls.py` |
 | Ask for several credits | ASI02 | One effect per ticket; risk tiers and approvals; DB trigger | `attacks/test_attack_table.py`, `unit/test_executor_credits.py` |
 

@@ -41,6 +41,11 @@ def stopped_by(data: dict, reply: str | None) -> dict[str, str] | None:
     calls, events, requests = data["calls"], data["events"], data["requests"]
     denied = [c["reason"] for c in calls if c["outcome"] == "denied"]
     waiting = _waiting(data)
+    dropped = [n for c in calls for n in c["dropped_args"]]
+    dropped += [n for e in events if e["kind"] == "dropped_argument" for n in e["arg_names"]]
+    if waiting and waiting[0]["kind"] == "move_out" and "supply_point_id" in dropped:
+        # The house number is bound to the login, so the move-out is for her own home and needs one approval.
+        return _stop("agent", "Login-bound ID", "the house number was dropped; her own move-out needs a staff approval")
     if waiting:
         what = "credits" if waiting[0]["kind"] == "credit" else "power cuts"
         extra = "; the extra requests were refused" if "one_effect_per_ticket" in denied else ""
@@ -55,8 +60,6 @@ def stopped_by(data: dict, reply: str | None) -> dict[str, str] | None:
         return _stop("agent", "Agent tool list", "the agent has no tool for that")
     if _replaced(data, reply):
         return _stop("dispatcher", "Reply guard", "the unsafe reply was replaced")
-    dropped = [n for c in calls for n in c["dropped_args"]]
-    dropped += [n for e in events if e["kind"] == "dropped_argument" for n in e["arg_names"]]
     if "customer_id" in dropped:
         return _stop("agent", "Login-bound ID", "the agent can only use the logged-in customer's ID")
     if dropped:
