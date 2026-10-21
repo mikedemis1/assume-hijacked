@@ -6,7 +6,7 @@ A support chat agent for a made-up electricity supplier. I built it on the assum
 
 Demo video (2.5 min, recorded from the running app on kind):
 
-https://github.com/user-attachments/assets/c8265ecc-b919-424a-8068-07076368f309
+https://github.com/user-attachments/assets/8cd6dfd5-42f2-4673-8a8c-99ddab344284
 
 The same file is in the repo: [docs/demo.mp4](docs/demo.mp4).
 
