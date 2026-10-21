@@ -1,5 +1,7 @@
 # assume-hijacked
 
+[![pipeline](https://gitlab.com/michail-demis/assume-hijacked/badges/main/pipeline.svg)](https://gitlab.com/michail-demis/assume-hijacked/-/pipelines)
+
 An AI support agent for a fictional electricity supplier, built on one assumption: the model is already hijacked. The walls around it (network, identities, database) do not depend on what the model says.
 
 Azure deployment: Terraform and CI are ready; first live run in progress.
