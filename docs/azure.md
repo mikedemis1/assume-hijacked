@@ -1,6 +1,6 @@
 # Azure
 
-Nothing in this project has been applied to Azure. No resource exists, nothing billable has run, and everything below describes Terraform code that is only checked offline (`terraform validate`, `terraform test` with mock providers). The rule for the Azure step: a price per hour and per day for every resource and an explicit yes from the owner before anything is created.
+Both stacks were applied once, on 2026-10-21 in Sweden Central (pay-as-you-go). `infra/base` stays; `infra/lab` came up after the fixes listed in the README and was destroyed the same evening. All three nodes were Ready, including the Kata node, and db-migrate signed in to PostgreSQL with its workload identity. The app did not run yet: the first attempt stopped in the database setup (fixed and checked against a local non-superuser PostgreSQL), and the second could not create the PostgreSQL server (`RegionalAllocationFailed` in all three zones). The rule stays: a price per hour and per day for every resource and an explicit yes from me before anything is created.
 
 ## Two stacks
 
@@ -40,6 +40,44 @@ RESET ROLE;
 
 The roles must match the app roles assigned in Entra. No automation yet. Whether the admin may act as `staff_owner` (a `GRANT staff_owner TO <admin>` may be needed) belongs to the Azure migration work.
 
+## First run
+
+What worked on 2026-10-21, from the repo root in Git Bash.
+
+```sh
+# 1. base, on local state first (the state account is created by this stack)
+terraform -chdir=infra/base init && terraform -chdir=infra/base apply
+
+# 2. move the base state to the storage account: Storage Blob Data Contributor for me on it,
+#    then infra/base/backend_override.tf (git-ignored) = the backend block from versions.tf, filled in
+terraform -chdir=infra/base init -migrate-state
+
+# 3. lab
+terraform -chdir=infra/lab init && terraform -chdir=infra/lab apply
+
+# 4. vault firewalls: in infra/base/terraform.tfvars set
+#      spoke_subnet_ids            = <terraform -chdir=infra/lab output aks_subnet_ids>
+#      key_vault_allowed_ip_ranges = [<my public IPs>]
+terraform -chdir=infra/base apply
+
+# 5. roles for me: Key Vault Secrets Officer on rg-base (the script writes secrets) and
+#    Azure Kubernetes Service RBAC Cluster Admin on the cluster (local accounts are off)
+az aks get-credentials --resource-group rg-lab --name aks-assume-hijacked
+kubelogin convert-kubeconfig -l azurecli
+
+# 6. image, secrets, Helm values, install
+CONSOLE_CLIENT_ID=<console app id> LLM_BACKEND=anthropic ANTHROPIC_KEY_FILE=<key file>     sh scripts/azure-deploy.sh
+```
+
+`LLM_BACKEND` defaults to `scripted`, and then no key file is needed. `SOURCE_IMAGE` reuses an image already built for kind; `LAB_OUTPUTS` is for when the lab state is locked by a running apply.
+
+Things that cost time:
+
+- base applied 52 of 53: the flexible federated credential for `ci-plan` failed (a preview Graph API). CI does not use it yet.
+- My laptop has two public egress IPs. Both have to be in `key_vault_allowed_ip_ranges` and in the lab's `api_authorized_ip_ranges`.
+- PostgreSQL deletes slowly and answers `ServerIsBusy` while a setting changes; a destroy with low parallelism, or deleting the server directly, got past it.
+- If the region has no capacity for the PostgreSQL size, `postgres_sku_name` and `postgres_zone` in the lab's tfvars change it.
+
 ## Order
 
 1. Owner upgrades from the free trial to pay-as-you-go and raises the vCPU quota (the trial has 4).
@@ -50,7 +88,7 @@ The roles must match the app roles assigned in Entra. No automation yet. Whether
 
 ## Teardown
 
-`terraform destroy` for `infra/lab` at the end of every session. It never touches `rg-base` or the resource groups themselves. Afterwards check by hand:
+First remove the AKS subnets from the vault firewalls (`spoke_subnet_ids = []`, apply base), then `terraform destroy` for `infra/lab` at the end of every session. It never touches `rg-base` or the resource groups themselves. Afterwards check by hand:
 
 ```sh
 az resource list --resource-group rg-lab --output table

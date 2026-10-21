@@ -10,7 +10,7 @@ https://github.com/user-attachments/assets/e98e4808-eca9-4066-ba70-08c62d58cf8d
 
 The same file is in the repo: [docs/demo.mp4](docs/demo.mp4).
 
-Azure: the Terraform for AKS is written and tested offline. It has not been applied yet.
+Azure: both Terraform stacks were applied once, on 2026-10-21. AKS came up with its Kata node; the app itself has not run on AKS yet (details under [Azure](#azure)).
 
 ## What the demo shows
 
@@ -137,7 +137,7 @@ Tests:
 
 ```sh
 cp .env.example .env && sh scripts/test-db.sh start   # PostgreSQL in Docker
-python -m pytest -q                                   # 716 tests: unit, attack table, chart render
+python -m pytest -q                                   # 717 tests: unit, attack table, chart render
 python -m pytest -m k8s tests/k8s                     # 170 network and admission tests, needs the cluster
 ```
 
@@ -150,6 +150,12 @@ The attack table in `tests/attacks/` runs every attack ticket through the real g
 - Grafana first showed "3.10 tool calls refused", and T0 0 and T2 0 right after a T0 and a T2 credit. `increase()` extrapolates, and a counter series that appears with the value 1 has no earlier sample, so its first event is lost. The gateway already created its series at 0 on start; the risk engine did not. It does now, and the count panels use `round()`. The packet panel also counted Cilium drops like `UNSUPPORTED_L3_PROTOCOL` under the title "dropped by the network walls". It now counts only `POLICY_DENIED`.
 - The reply guard fails closed, and on the recording day it replaced harmless Claude answers: "my lights are flickering in a storm, is that dangerous?" in 5 of 8 tries (`money_wording`, Claude writes "switch off"), the moving question in 2 of 7 (`unapproved_number`), a question about a toddler and sockets in 1 of 3 (`currency`; the word list matches substrings such as "cent", which also catches "recently"). The recording script stops before any credit when this happens.
 - After three practice takes the 30 euro credit was no longer paid. The executor also caps automatic credits at 100 euros per account per month, and the takes had used 91. The card for that case said "No wall acted", because the presenter view did not count `needs_staff` as waiting. Fixed, and the final take ran on a fresh database (`sh scripts/kind-deploy.sh reset`).
+- The first real `terraform apply` on `infra/lab` failed on things the mock-provider tests accepted: `kind` is a reserved word in KQL (the log alert column is now `event_kind`), and the NSG rules had `"*"` and the `Internet` tag inside list fields, which Azure only accepts in the single-value ones.
+- The Kata node never joined the cluster (`vmssCSE` exit 124). It installs its runtime from packages.microsoft.com, a global host outside the `AzureCloud.swedencentral` tag, and the sandbox subnet NSG denied it. That subnet now allows node HTTPS out like the system subnet; the pods there stay limited by their CiliumNetworkPolicy. The next Kata node joined in 5 minutes instead of failing for 40.
+- AKS adds the VNet DNS suffix (`<id>.gvxx.internal.cloudapp.net`) to every pod's search list. With `ndots:5` the resolver asked for `<name>.<suffix>` first, Cilium's DNS rule refused it, and the resolver gave up. The chart takes the suffix as `network.podSearchDomain`; the deploy script reads it from a node NIC.
+- The database setup assumed a superuser. On Azure the admin is the Entra identity of db-migrate and is not one. Now the setup creates the database itself (so it owns it), gives the owner roles CREATE on `public` only while it runs, and can run again after a failure. I reproduced Azure's permission model on a local PostgreSQL before trying again. One wall is weaker on Azure: the REVOKE on the `pg_advisory_*` functions has no effect without a superuser; the connection limits and timeouts per role still apply.
+- The second attempt the same evening never got that far: Azure refused to create the PostgreSQL server, `RegionalAllocationFailed` for B1ms and B2s in all three zones of Sweden Central. The size and zone are now variables.
+- Avast on my laptop re-signs the AKS API certificate with its "untrusted" root, so kubectl rejected the cluster. For that session I turned TLS verification off for that one cluster; the real fix is an Avast exclusion for `*.azmk8s.io`. The laptop also has two public egress IPs, and both had to be in the Key Vault and API allow lists.
 - Azure: after the upgrade from the free trial, every D-series size I needed was `NotAvailableForSubscription` in North Europe and four other EU regions. Sweden Central offered them, so the Terraform region moved there and the nodes became `Standard_D4s_v6`.
 
 ## Azure
@@ -159,7 +165,9 @@ The same chart is meant for AKS, with two Terraform stacks:
 - `infra/base`: kept between sessions. Key Vaults, identities, container registry, Terraform state, budgets, policy.
 - `infra/lab`: AKS, VNet with NSGs, private PostgreSQL. Created for a session, destroyed after it.
 
-`terraform validate` and `terraform test` (mock providers) pass for both. Costs, order and teardown: [docs/azure.md](docs/azure.md).
+`terraform validate` and `terraform test` (mock providers) pass for both. `scripts/azure-deploy.sh` pushes the image to ACR, turns the Terraform outputs into Helm values and installs the chart.
+
+Both stacks were applied once in Sweden Central on 2026-10-21: AKS 1.36 with two system nodes and one Kata node, all Ready, the `kata-vm-isolation` RuntimeClass, the Key Vaults, workload identities, the private PostgreSQL and the NSGs. db-migrate signed in to PostgreSQL with its workload identity. The app did not run: the first attempt stopped in the database setup (fixed since, see above), the second could not create the PostgreSQL server. The lab was destroyed the same evening; the day cost about 3 EUR. Order, commands and teardown: [docs/azure.md](docs/azure.md).
 
 ## CI
 
@@ -180,7 +188,7 @@ GitLab CI, three jobs: **lint** (ruff, gitleaks, `terraform fmt` and `validate`,
 
 ## Not verified
 
-- Azure: nothing applied yet.
+- The app on AKS: the infrastructure was applied, the app has not run there yet, so no attack has run on Azure.
 - Entra sign-in against a real tenant. On kind the console uses dev identities.
 - Kata: on kind the `kata-vm-isolation` RuntimeClass runs on runc, so there is no micro-VM locally.
 - How often real Claude falls for an injection. The tests measure the walls, not the model.
