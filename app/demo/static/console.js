@@ -120,7 +120,7 @@ function renderCards() {
     const item = el("li", "glass wcard");
     item.append(
       line("The AI tried: ", c.tried),
-      line("Stopped by: ", c.stopped),
+      line(c.decided ? "Decided by: " : "Stopped by: ", c.stopped),
       line("The customer got: ", c.got),
       el("span", "badge " + c.badge.kind, c.badge.text));
     els.cards.append(item);

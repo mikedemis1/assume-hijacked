@@ -191,7 +191,7 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
                 return error(503, "database")
             body.update(customer=CUSTOMER, csrf=session.csrf, messages=[
                 {"id": t.id, "text": t.text, "reply": texts.get(t.id), "card": card.account_card(texts.get(t.id)),
-                 "simulated": backend["scripted"] or t.attack is not None}
+                 "simulated": backend["scripted"] or attacks.of_ticket(t.attack, t.body) is not None}
                 for t in session.tickets])
         return JSONResponse(body)
 
@@ -207,10 +207,12 @@ def build_app(*, heartbeat: Heartbeat | None = None, sessions: Sessions | None =
             paused = await run_in_threadpool(database.kill_switch_on)
         except psycopg.Error:
             return error(503, "database")
-        cards = [console.view(
-            ticket_id=t.id, attack=attacks.BY_ID.get(t.attack or ""),
-            simulated=backend["scripted"] or t.attack is not None, data=audit[t.id], reply=texts.get(t.id))
-            for t in reversed(session.tickets)]
+        cards = []
+        for t in reversed(session.tickets):
+            attack = attacks.of_ticket(t.attack, t.body)
+            cards.append(console.view(
+                ticket_id=t.id, attack=attack,
+                simulated=backend["scripted"] or attack is not None, data=audit[t.id], reply=texts.get(t.id)))
         return JSONResponse({
             "backend": backend, "summary": console.summary(cards, paused), "cards": cards,
             "attacks": [{"id": a.id, "typed": a.typed} for a in attacks.ATTACKS],

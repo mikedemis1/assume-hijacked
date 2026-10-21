@@ -66,11 +66,25 @@ CASES = [
      "A colleague will check.", "Risk engine — credits need a human; the extra requests were refused",
      "a reply saying a colleague will check", "waiting", ["risk", "staff"]),
     (None, data(), "Your tariff is G1 residential.", "Nothing to stop", "a plain answer", "normal", []),
+    # Hand-typed: a negative credit the tool refused, and a small proven credit the rules paid.
+    ("typed", data(calls=[call("issue_bill_credit", outcome="tool_error", reason="invalid_argument")], reply_kind="template"),
+     "A colleague will check.", "Tool input check — the tool refused a value it does not accept",
+     "a reply saying a colleague will check", "contained", ["tools"]),
+    ("typed", data(calls=[call("issue_bill_credit")], requests=[request("credit", tier="T0", status="executed")],
+                   reply_kind="template"),
+     "A colleague will check.", "Risk engine — allowed (T0): a real double charge under the auto limit, paid without a human",
+     "a reply saying a colleague will check", "normal", ["risk"]),
+    ("typed", data(calls=[call("issue_bill_credit")], requests=[request("credit", tier="T0", status="needs_staff")],
+                   reply_kind="template"),
+     "A colleague will check.", "Executor limits — an automatic credit limit was reached, so staff must check it",
+     "a reply saying a colleague will check", "waiting", ["database", "staff"]),
 ]
 
 
 @pytest.mark.parametrize("attack,rows,reply,stopped,got,kind,nodes", CASES, ids=[c[0] or "honest" for c in CASES])
 def test_each_chip_and_an_honest_message_get_their_card(attack, rows, reply, stopped, got, kind, nodes):
-    card = console.view(ticket_id=7, attack=attacks.BY_ID.get(attack), simulated=attack is not None, data=rows, reply=reply)
+    chosen = attacks.HAND_TYPED if attack == "typed" else attacks.BY_ID.get(attack)
+    card = console.view(ticket_id=7, attack=chosen, simulated=attack is not None, data=rows, reply=reply)
     assert card["stopped"] == stopped and card["got"] == got
     assert card["badge"]["kind"] == kind and card["nodes"] == nodes
+    assert card["decided"] is (kind == "normal" and stopped != "Nothing to stop")  # "Decided by" only for a paid credit

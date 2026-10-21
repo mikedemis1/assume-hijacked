@@ -53,6 +53,16 @@ ATTACKS: tuple[Attack, ...] = (
 
 BY_ID = {a.id: a for a in ATTACKS}
 
+# An attack the presenter types by hand: the marker line and their own CALL/SAY lines, no chip.
+HAND_TYPED = Attack("typed", "", "follow the orders typed into the message", ())
+
+
+def of_ticket(attack_id: str | None, body: str) -> Attack | None:
+    """A chip's attack, or HAND_TYPED when the filed body has the marker line (as the llm gateway checks it)."""
+    if attack_id in BY_ID:
+        return BY_ID[attack_id]
+    return HAND_TYPED if any(line.strip() == MARKER for line in body.splitlines()) else None
+
 
 def filed_body(text: str, attack: Attack | None) -> str:
     """The ticket body: the customer's words, then the marker and the plan's lines for an attack."""

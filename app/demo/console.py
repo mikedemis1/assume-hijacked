@@ -4,8 +4,8 @@ Nothing is invented: every line is derived from the rows the database holds for 
 (app/demo/database.py reads them as demo_ops). Only fixed phrases are printed, never a name or a
 word from a ticket, so a ticket cannot put text on the screen (ruling R14).
 
-    The AI tried:        the attack's sentence (attacks.py), or "answer the question"
-    Stopped by:          the strongest wall that acted, from the records
+    The AI tried:        the attack's sentence (attacks.py, also for a hand-typed one), or "answer the question"
+    Stopped by:          the strongest wall that acted, from the records ("Decided by" for a credit the rules paid)
     The customer got:    from the stored reply and its kind
 
 `node` says which part of the architecture strip lights up: agent, gateway, risk or dispatcher.
@@ -23,8 +23,15 @@ RISK_REASONS = {"one_effect_per_ticket", "effect_already_requested", "call_budge
 
 
 def _waiting(data: dict) -> list[dict]:
-    return [r for r in data["requests"] if r["status"] == "manual_only"
+    """Requests a person must decide: HUMAN_ONLY, a T1/T2 tier, or a T0 credit the executor sent to staff."""
+    return [r for r in data["requests"] if r["status"] in ("manual_only", "needs_staff")
             or (r["status"] == "pending" and r["risk"] is not None and r["risk"]["tier"] in WAITING_TIERS)]
+
+
+def _paid_by_rules(data: dict) -> bool:
+    """A credit the risk engine put in T0 (proof in her charges, under the auto limit) and the executor paid."""
+    return any(r["status"] == "executed" and r["risk"] is not None and r["risk"]["tier"] == "T0"
+               for r in data["requests"])
 
 
 def _stop(node: str, wall: str, why: str) -> dict[str, str]:
@@ -46,6 +53,9 @@ def stopped_by(data: dict, reply: str | None) -> dict[str, str] | None:
     if waiting and waiting[0]["kind"] == "move_out" and "supply_point_id" in dropped:
         # The house number is bound to the login, so the move-out is for her own home and needs one approval.
         return _stop("agent", "Login-bound ID", "the house number was dropped; her own move-out needs a staff approval")
+    if waiting and waiting[0]["status"] == "needs_staff":
+        # T0 by the rules, but the executor's own checks (evidence, monthly limit) sent it to staff.
+        return _stop("database", "Executor limits", "an automatic credit limit was reached, so staff must check it")
     if waiting:
         what = "credits" if waiting[0]["kind"] == "credit" else "power cuts"
         extra = "; the extra requests were refused" if "one_effect_per_ticket" in denied else ""
@@ -56,6 +66,8 @@ def stopped_by(data: dict, reply: str | None) -> dict[str, str] | None:
         return _stop("risk", "Risk engine", "this action is not allowed")
     if denied:
         return _stop("gateway", "Tool gateway", "this tool is not allowed")
+    if any(c["outcome"] == "tool_error" for c in calls):
+        return _stop("tools", "Tool input check", "the tool refused a value it does not accept")
     if any(e["kind"] == "unknown_tool" for e in events):
         return _stop("agent", "Agent tool list", "the agent has no tool for that")
     if _replaced(data, reply):
@@ -64,6 +76,8 @@ def stopped_by(data: dict, reply: str | None) -> dict[str, str] | None:
         return _stop("agent", "Login-bound ID", "the agent can only use the logged-in customer's ID")
     if dropped:
         return _stop("agent", "Argument filter", "arguments the tool does not take were dropped")
+    if _paid_by_rules(data):
+        return _stop("risk", "Risk engine", "allowed (T0): a real double charge under the auto limit, paid without a human")
     return None
 
 
@@ -84,6 +98,8 @@ def view(*, ticket_id: int, attack: attacks.Attack | None, simulated: bool, data
         badge = ("running", "Working")
     elif waiting:
         badge = ("waiting", "⏳ Waiting for a human")
+    elif _paid_by_rules(data):
+        badge = ("normal", "✓ Allowed by the rules")
     elif stop is None and attack is None:
         badge = ("normal", "✓ Normal answer")
     elif stop is not None:
@@ -94,7 +110,7 @@ def view(*, ticket_id: int, attack: attacks.Attack | None, simulated: bool, data
     return {
         "id": ticket_id, "simulated": simulated, "attack": attack is not None,
         "tried": attack.tried if attack else "answer the question",
-        "stopped": line, "got": _got(data, reply, waiting),
+        "stopped": line, "decided": _paid_by_rules(data) and not waiting, "got": _got(data, reply, waiting),
         "badge": {"kind": badge[0], "text": badge[1]},
         "nodes": ([stop["node"]] if stop else []) + (["staff"] if waiting else []),
     }
