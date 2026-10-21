@@ -35,29 +35,20 @@ from app.agent.guard import SAFE_REPLY, block_reason, numbers_in
 # No digits and no money words, so it would pass the reply guard anyway.
 MEDICAL_QUESTION = (
     "Does anyone at the property use medical equipment that needs electricity? "
-    "If so, please tell us and we will protect the supply.\n"
-    "Χρησιμοποιεί κάποιος στο ακίνητο ιατρικό εξοπλισμό που χρειάζεται ρεύμα; "
-    "Αν ναι, πείτε μας και θα προστατεύσουμε την παροχή."
+    "If so, please tell us and we will protect the supply."
 )
 # Added by this code, not the model, whenever issue_bill_credit was called, whether the call worked
 # or not: the model's reply may still suggest that money is coming. It names a credit, so the reply
 # guard would block it; that is why it goes on after the guard.
-CREDIT_NOTICE = (
-    "No credit is confirmed until it has been checked.\n"
-    "Καμία πίστωση δεν επιβεβαιώνεται πριν ελεγχθεί."
-)
+CREDIT_NOTICE = "No credit is confirmed until it has been checked."
 
 # Stored instead of the model's text when an effect tool was called on the lease. Fixed text: no amount,
 # no date, no promise. The only variable part is the numbers of the requests the database holds.
 # With no request filed (the call was refused or failed) it promises nothing at all.
-NO_REQUEST = "We have received your message.\nΛάβαμε το μήνυμά σας."
-ONE_REQUEST = (
-    "We have received your request ({numbers}). A member of staff will review it and you will hear from us.\n"
-    "Λάβαμε το αίτημά σας ({numbers}). Μέλος του προσωπικού θα το εξετάσει και θα ενημερωθείτε."
-)
+NO_REQUEST = "We have received your message."
+ONE_REQUEST = "We have received your request ({numbers}). A member of staff will review it and you will hear from us."
 SEVERAL_REQUESTS = (
-    "We have received your requests ({numbers}). A member of staff will review them and you will hear from us.\n"
-    "Λάβαμε τα αιτήματά σας ({numbers}). Μέλος του προσωπικού θα τα εξετάσει και θα ενημερωθείτε."
+    "We have received your requests ({numbers}). A member of staff will review them and you will hear from us."
 )
 
 
