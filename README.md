@@ -14,8 +14,6 @@ Azure: the Terraform for AKS is written and tested offline. It has not been appl
 
 ## What the demo shows
 
-![The presenter view after five attacks](docs/images/demo-ui.png)
-
 `/` is the supplier website with the Volt chat, logged in as one customer, Eleni (1001). `/security` is the presenter view: the same chat on the left, and on the right one card per message ("The AI tried", "Stopped by", "The customer got") built from the audit rows in PostgreSQL.
 
 The chat has two brains, switched per message:
