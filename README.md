@@ -4,9 +4,9 @@
 
 A support chat agent for a made-up electricity supplier. I built it on the assumption that the model is already hijacked, then tried to make it hurt customers. The model never holds a password, a database connection or a route to the internet. Every action it asks for goes through checks that ignore what the model says.
 
-Demo video (4.5 min, recorded from the running app on kind):
+Demo video (4.7 min, recorded from the running app on kind):
 
-https://github.com/user-attachments/assets/e98e4808-eca9-4066-ba70-08c62d58cf8d
+https://github.com/user-attachments/assets/5a82edfb-3881-4a4a-a4a6-443ac6375604
 
 The same file is in the repo: [docs/demo.mp4](docs/demo.mp4).
 
