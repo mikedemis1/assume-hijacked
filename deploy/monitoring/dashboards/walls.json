@@ -168,7 +168,7 @@
       "id": 3,
       "type": "stat",
       "title": "Approvals waiting",
-      "description": "Effect requests that wait for approvers (status pending).",
+      "description": "Effect requests that wait for approvers (status pending), all of them, not only the time range.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -248,7 +248,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(gateway_denials_total[$__range])) or vector(0)",
+          "expr": "round(sum(increase(gateway_denials_total[$__range]))) or vector(0)",
           "legendFormat": "refused",
           "instant": true
         }
@@ -309,7 +309,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (tier) (increase(risk_tiers_total[$__range]))",
+          "expr": "round(sum by (tier) (increase(risk_tiers_total[$__range])))",
           "legendFormat": "{{tier}}",
           "instant": true
         }
@@ -408,7 +408,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (reason) (increase(gateway_denials_total[$__range]))",
+          "expr": "round(sum by (reason) (increase(gateway_denials_total[$__range])))",
           "legendFormat": "{{reason}}",
           "instant": true
         }
@@ -447,7 +447,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "Packets dropped by the network walls (Hubble)",
-      "description": "Hubble's drop counter, per source and destination namespace. Needs hubble.metrics in deploy/kind/cilium-values.yaml; empty on a cluster without it.",
+      "description": "Packets Cilium dropped because a network policy denied them (reason POLICY_DENIED), per source and destination namespace. Other drop reasons (unsupported protocol, stale address) are not the walls and are left out. Needs hubble.metrics in deploy/kind/cilium-values.yaml; empty on a cluster without it.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -465,8 +465,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (source_namespace, destination_namespace, reason) (rate(hubble_drop_total[5m]))",
-          "legendFormat": "{{source_namespace}} -> {{destination_namespace}} ({{reason}})"
+          "expr": "sum by (source_namespace, destination_namespace) (rate(hubble_drop_total{reason=\"POLICY_DENIED\"}[5m]))",
+          "legendFormat": "{{source_namespace}} -> {{destination_namespace}}"
         }
       ],
       "fieldConfig": {
@@ -507,7 +507,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (kind) (increase(dispatcher_agent_events_total[$__range]))",
+          "expr": "round(sum by (kind) (increase(dispatcher_agent_events_total[$__range])))",
           "legendFormat": "{{kind}}",
           "instant": true
         },
@@ -517,7 +517,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(dispatcher_agent_events_rejected_total[$__range]))",
+          "expr": "round(sum(increase(dispatcher_agent_events_rejected_total[$__range])))",
           "legendFormat": "report rejected",
           "instant": true
         }
@@ -574,7 +574,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(gateway_denials_total{reason=\"effect_already_requested\"}[$__range])) or vector(0)",
+          "expr": "round(sum(increase(gateway_denials_total{reason=\"effect_already_requested\"}[$__range]))) or vector(0)",
           "legendFormat": "refused",
           "instant": true
         }

@@ -47,6 +47,7 @@ def serve_decide(app, port: int = DECIDE_PORT) -> threading.Thread:
 def main() -> None:
     settings = config.load()
     metrics = Metrics()
+    service.init_metrics(metrics)
     heartbeat = Heartbeat()
     start_ops_server(OPS_PORT, metrics, heartbeat)
     decide = serve_decide(service.build_app(service.Decider(lambda: service.connect_for_decide(settings), metrics), metrics))

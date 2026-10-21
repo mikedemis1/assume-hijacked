@@ -64,6 +64,15 @@ def connect_for_decide(settings: Settings) -> psycopg.Connection:
     )
 
 
+TIERS = ("T0", "T1", "T2", "HUMAN_ONLY", "REJECT")
+
+
+def init_metrics(metrics: Metrics) -> None:
+    """Every tier exists at 0 from the start, so increase() over a range also sees the first request of a tier."""
+    for tier in TIERS:
+        metrics.inc("risk_tiers_total", {"tier": tier}, by=0)
+
+
 def _count(metrics: Metrics | None, name: str, labels: dict[str, str]) -> None:
     if metrics is not None:
         metrics.inc(name, labels)

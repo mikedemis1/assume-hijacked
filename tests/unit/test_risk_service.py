@@ -134,6 +134,8 @@ def test_assess_pending_gives_each_pending_request_one_assessment(admin, engine,
     protected = add_moveout(admin, account_id=3, ticket_id=3, tier=None)  # SP-1003, life support
     plain = add_moveout(admin, tier=None)  # SP-1001
     metrics = Metrics()
+    service.init_metrics(metrics)
+    assert 'risk_tiers_total{tier="REJECT"} 0' in lines(metrics)  # every tier is there before the first request
     assert service.assess_pending(engine, settings, now, metrics) == 5
     assert assessments(admin) == {
         t0: ("T0", []),
