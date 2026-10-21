@@ -139,7 +139,7 @@ variable "budget_notification_emails" {
 variable "allowed_vm_sizes" {
   description = "VM sizes the subscription may use (Azure Policy). AKS nodes are VM scale sets, so this covers them."
   type        = list(string)
-  default     = ["Standard_D4als_v6"]
+  default     = ["Standard_D4s_v6"]
 }
 
 variable "lab_resource_group_name" {

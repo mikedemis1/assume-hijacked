@@ -154,7 +154,7 @@ variable "kubernetes_version" {
 variable "node_vm_size" {
   description = "VM size of both node pools. Must support nested virtualization (Kata) and must not be burstable B-series."
   type        = string
-  default     = "Standard_D4als_v6"
+  default     = "Standard_D4s_v6"
 
   validation {
     condition     = !startswith(lower(var.node_vm_size), "standard_b")

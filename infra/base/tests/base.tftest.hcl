@@ -71,7 +71,7 @@ run "policy_denies_vm_sizes_outside_allowlist" {
   command = plan
 
   assert {
-    condition     = jsondecode(azurerm_subscription_policy_assignment.deny_vm_sizes.parameters).listOfAllowedSizes.value == ["Standard_D4als_v6"]
+    condition     = jsondecode(azurerm_subscription_policy_assignment.deny_vm_sizes.parameters).listOfAllowedSizes.value == ["Standard_D4s_v6"]
     error_message = "Only the AKS node size may be allowed by default."
   }
 

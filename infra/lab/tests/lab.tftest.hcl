@@ -207,8 +207,8 @@ run "system_pool_has_two_or_more_nodes_and_is_not_b_series" {
   }
 
   assert {
-    condition     = azurerm_kubernetes_cluster.this.default_node_pool[0].vm_size == "Standard_D4als_v6"
-    error_message = "The node size is Standard_D4als_v6 (the only size the base policy allows)."
+    condition     = azurerm_kubernetes_cluster.this.default_node_pool[0].vm_size == "Standard_D4s_v6"
+    error_message = "The node size is Standard_D4s_v6 (the only size the base policy allows)."
   }
 
   assert {

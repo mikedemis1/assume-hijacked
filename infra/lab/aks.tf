@@ -2,10 +2,10 @@
 # Networking Services (Cilium FQDN/DNS policies), Entra-only access with Azure
 # RBAC, workload identity, two node pools:
 #
-#   system   2+ x Standard_D4als_v6, Azure Linux, tainted CriticalAddonsOnly=true:NoSchedule
+#   system   2+ x Standard_D4s_v6, Azure Linux, tainted CriticalAddonsOnly=true:NoSchedule
 #            (only_critical_addons_enabled). There is no user pool, so the app
 #            components that are not sandboxed tolerate the taint and run here.
-#   sandbox  0-3 x Standard_D4als_v6, Azure Linux, workload runtime KataVmIsolation. AKS
+#   sandbox  0-3 x Standard_D4s_v6, Azure Linux, workload runtime KataVmIsolation. AKS
 #            provides the RuntimeClass `kata-vm-isolation`; agent Jobs and tools use it.
 #            No taint: the AKS RuntimeClass carries no toleration, and the system taint
 #            already keeps the sandboxed pods off the system pool.
@@ -15,7 +15,7 @@
 #     values KataVmIsolation, OCIContainer, WasmWasi; the old KataMshvVmIsolation is not in the
 #     4.81.0 binary). AKS: learn.microsoft.com/azure/aks/use-pod-sandboxing (--workload-runtime
 #     KataVmIsolation, Azure Linux only, Gen2 size with nested virtualization).
-#   - Standard_D4als_v6: Gen2, nested virtualization supported, no local disk so no ephemeral
+#   - Standard_D4s_v6: Gen2, nested virtualization supported, no local disk so no ephemeral
 #     OS disk (learn.microsoft.com/azure/virtual-machines/sizes/general-purpose/dalsv6-series).
 #   - network_profile.advanced_networking {observability_enabled, security_enabled} = ACNS.
 #   - Outbound type loadBalancer: nodes leave through the cluster's standard load balancer.
